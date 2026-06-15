@@ -20,15 +20,17 @@ import {
   type LlmWebAutoTriggerPending,
 } from "./llm-web-autotrigger-script";
 import {
+  llmWebDismissCleanupScript,
+  llmWebDismissInstallScript,
+  llmWebDismissPollScript,
   llmWebHotkeyCleanupScript,
   llmWebHotkeyInstallScript,
   llmWebHotkeyPollScript,
-  type LlmWebHotkeyPending,
-} from "./llm-web-menu-script";
-import {
   llmWebMenuCleanupScript,
   llmWebMenuInstallScript,
   llmWebMenuPollScript,
+  type LlmWebDismissPending,
+  type LlmWebHotkeyPending,
   type LlmWebPendingInvoke,
 } from "./llm-web-menu-script";
 import { activeWorkspaceLeaf, currentWorkspaceContext } from "./workspace-context";
@@ -81,6 +83,10 @@ const HOTKEY_POLL_INTERVAL_MS = 300;
 const AUTOTRIGGER_INSTALL_INTERVAL_MS = 2000;
 /** Polling interval for picking up web auto-trigger selections. */
 const AUTOTRIGGER_POLL_INTERVAL_MS = 300;
+/** Throttle for re-injecting the web dismiss-signal script. */
+const WEB_DISMISS_INSTALL_INTERVAL_MS = 2000;
+/** Polling interval for picking up web dismiss clicks. */
+const WEB_DISMISS_POLL_INTERVAL_MS = 150;
 const WEBVIEW_EXECUTION_FAILED = Symbol("webview-execution-failed");
 
 function canExecuteWebviewScript(webview: WebviewElement): boolean {
@@ -152,6 +158,19 @@ export class LlmFeature {
   /** Prevent concurrent executeJavaScript polls for the same webview. */
   private readonly hotkeyPollInFlight = new WeakSet<WorkspaceLeaf>();
   private hotkeyPollTimer: number | null = null;
+
+  // ---- Independent dismiss-signal chain (parallel to menu/hotkey chains).
+  // The webview is an isolated browsing context, so its pointerdown never
+  // reaches Obsidian's main document. We inject a listener that stashes a
+  // dismiss signal on left-click; polling it lets us close an unpinned,
+  // non-streaming result surface when the user clicks elsewhere on the page.
+  private readonly webDismissInstallLeaves = new Set<WorkspaceLeaf>();
+  private readonly lastWebDismissInstall = new WeakMap<WorkspaceLeaf, number>();
+  /** Prevent concurrent executeJavaScript polls for the same webview. */
+  private readonly webDismissPollInFlight = new WeakSet<WorkspaceLeaf>();
+  private webDismissPollTimer: number | null = null;
+  private disposed = false;
+
   private currentSurface: LlmResultSurface | null = null;
   private currentAbortController: AbortController | null = null;
   private invocationGeneration = 0;
@@ -249,6 +268,7 @@ export class LlmFeature {
       this.cleanupAllWebMenus();
       this.cleanupAllWebHotkeys();
       this.cleanupAllWebAutoTriggers();
+      this.cleanupAllWebDismiss();
       this.cleanupSameOriginDocumentWatchers();
       this.cleanupAllWebviewLifecycles();
       this.stopPolling();
@@ -270,6 +290,7 @@ export class LlmFeature {
         if (this.isWebviewReady(leaf)) {
           this.installWebMenu(leaf);
           this.installWebHotkeys(leaf);
+          this.installWebDismiss(leaf);
           // Auto-trigger injection is gated by the session toggle, so it only
           // runs while the user has actually turned on the ribbon button.
           if (this.isAutoTriggerArmed()) this.installWebAutoTrigger(leaf);
@@ -284,6 +305,7 @@ export class LlmFeature {
         void this.uninstallWebMenu(leaf);
         void this.uninstallWebHotkeys(leaf);
         void this.uninstallWebAutoTrigger(leaf);
+        void this.uninstallWebDismiss(leaf);
         this.detachWebviewLifecycle(leaf);
       }
     }
@@ -297,6 +319,12 @@ export class LlmFeature {
     for (const leaf of Array.from(this.autoTriggerInstallLeaves)) {
       if (!seenWebLeaves.has(leaf)) {
         void this.uninstallWebAutoTrigger(leaf);
+      }
+    }
+
+    for (const leaf of Array.from(this.webDismissInstallLeaves)) {
+      if (!seenWebLeaves.has(leaf)) {
+        void this.uninstallWebDismiss(leaf);
       }
     }
 
@@ -326,6 +354,7 @@ export class LlmFeature {
 
     // Hotkey polling runs whenever the feature is enabled.
     this.ensureHotkeyPolling();
+    this.ensureWebDismissPolling();
 
     // Auto-trigger polling runs only while the session toggle is armed.
     if (this.isAutoTriggerArmed()) {
@@ -404,8 +433,10 @@ export class LlmFeature {
       this.lastWebInstall.set(leaf, 0);
       this.lastHotkeyInstall.set(leaf, 0);
       this.lastAutoTriggerInstall.set(leaf, 0);
+      this.lastWebDismissInstall.set(leaf, 0);
       this.installWebMenu(leaf);
       this.installWebHotkeys(leaf);
+      this.installWebDismiss(leaf);
       if (this.isAutoTriggerArmed()) this.installWebAutoTrigger(leaf);
     };
     const didStartLoading = () => {
@@ -413,6 +444,7 @@ export class LlmFeature {
       this.webInstallLeaves.delete(leaf);
       this.hotkeyInstallLeaves.delete(leaf);
       this.autoTriggerInstallLeaves.delete(leaf);
+      this.webDismissInstallLeaves.delete(leaf);
     };
     try {
       webview.addEventListener("dom-ready", domReady);
@@ -641,6 +673,101 @@ export class LlmFeature {
     }
   }
 
+  // ---- Independent dismiss-signal chain (parallel to menu/hotkey chains).
+  // Injects a pointerdown listener into the page that stashes a dismiss flag
+  // on left-click; the Obsidian side polls it and closes an unpinned,
+  // non-streaming result surface. Gated only by `enabled`, independent of the
+  // `webContextMenu` toggle (a surface can be invoked via hotkey even when the
+  // in-page menu is off, so dismiss must still work).
+
+  private installWebDismiss(leaf: WorkspaceLeaf): void {
+    if (this.disposed || !this.settings.enabled) return;
+    if (!this.isWebviewReady(leaf)) return;
+    const now = Date.now();
+    const last = this.lastWebDismissInstall.get(leaf) ?? 0;
+    if (now - last < WEB_DISMISS_INSTALL_INTERVAL_MS) return;
+    this.lastWebDismissInstall.set(leaf, now);
+
+    const view = leaf.view as WebViewerLike;
+    const webview = view.webview;
+    if (!webview) return;
+    void executeWebviewScript(webview, llmWebDismissInstallScript()).then(
+      (result) => {
+        if (result === WEBVIEW_EXECUTION_FAILED || !this.isWebviewReady(leaf)) {
+          return;
+        }
+        if (this.disposed || !this.settings.enabled) {
+          void executeWebviewScript(webview, llmWebDismissCleanupScript());
+          return;
+        }
+        this.webDismissInstallLeaves.add(leaf);
+      },
+    );
+  }
+
+  private async uninstallWebDismiss(leaf: WorkspaceLeaf): Promise<void> {
+    const view = leaf.view as WebViewerLike;
+    const webview = view.webview;
+    this.webDismissInstallLeaves.delete(leaf);
+    this.lastWebDismissInstall.set(leaf, 0);
+    if (!webview || !this.isWebviewReady(leaf)) return;
+    await executeWebviewScript(webview, llmWebDismissCleanupScript());
+  }
+
+  private cleanupAllWebDismiss(): void {
+    this.stopWebDismissPolling();
+    for (const leaf of Array.from(this.webDismissInstallLeaves)) {
+      void this.uninstallWebDismiss(leaf);
+    }
+  }
+
+  private ensureWebDismissPolling(): void {
+    if (this.webDismissPollTimer !== null) return;
+    const id = window.setInterval(
+      () => this.pollWebDismiss(),
+      WEB_DISMISS_POLL_INTERVAL_MS,
+    );
+    this.webDismissPollTimer = this.plugin.registerInterval(id);
+  }
+
+  private stopWebDismissPolling(): void {
+    if (this.webDismissPollTimer !== null) {
+      window.clearInterval(this.webDismissPollTimer);
+      this.webDismissPollTimer = null;
+    }
+  }
+
+  private pollWebDismiss(): void {
+    if (!this.settings.enabled) return;
+    const active = activeWorkspaceLeaf(this.app);
+    if (!active || active.view.getViewType() !== "webviewer") return;
+    const surface = this.currentSurface;
+    if (this.webDismissPollInFlight.has(active)) return;
+    const view = active.view as WebViewerLike;
+    const webview = view.webview;
+    if (!webview || !this.isWebviewReady(active)) return;
+    this.webDismissPollInFlight.add(active);
+    void executeWebviewScript(webview, llmWebDismissPollScript())
+      .then((result) => {
+        if (result === WEBVIEW_EXECUTION_FAILED) return;
+        const pending = result as LlmWebDismissPending | null;
+        if (!pending || !Number.isFinite(pending.at)) return;
+        // Surface may have closed/transitions during the round-trip; re-check.
+        const current = this.currentSurface;
+        if (!current || current !== surface || !current.isOpen) return;
+        if (current.isPinned) return;
+        if (current.isActive) return;
+        if (pending.at <= current.openedAt) return;
+        current.close();
+      })
+      .catch(() => {
+        // ignore transient webview errors
+      })
+      .finally(() => {
+        this.webDismissPollInFlight.delete(active);
+      });
+  }
+
   private pollWebHotkeys(): void {
     if (!this.settings.enabled) return;
     const active = this.app.workspace.activeLeaf;
@@ -673,10 +800,12 @@ export class LlmFeature {
 
   /** Tear down all hotkey-sync state (called on plugin unload / feature off). */
   dispose(): void {
+    this.disposed = true;
     this.cancelCurrentInvocation(true);
     this.cleanupAllWebMenus();
     this.cleanupAllWebHotkeys();
     this.cleanupAllWebAutoTriggers();
+    this.cleanupAllWebDismiss();
     this.cleanupSameOriginDocumentWatchers();
     this.cleanupAllWebviewLifecycles();
     this.stopPolling();

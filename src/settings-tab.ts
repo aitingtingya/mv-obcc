@@ -562,7 +562,7 @@ export class MvObccIdeSettingTab extends PluginSettingTab {
 
     new Setting(wrap)
       .setName("API Key")
-      .setDesc("明文保存在插件 data.json。")
+      .setDesc("明文保存在插件 data.json。本地无鉴权服务（如 Ollama）可留空。")
       .addText((text) => {
         text.inputEl.type = "password";
         text

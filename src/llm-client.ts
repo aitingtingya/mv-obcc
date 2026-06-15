@@ -170,9 +170,7 @@ export function resolveProvider(
   if (!model) {
     throw new Error(`模板「${template.label}」引用的模型已不存在，请在设置中重新选择。`);
   }
-  if (!provider.apiKey.trim()) {
-    throw new Error(`提供商「${provider.name}」未配置 API Key。`);
-  }
+  // API Key 可选：适配 Ollama / LM Studio 等本地无鉴权服务。仅 Base URL 必填。
   if (!provider.baseUrl.trim()) {
     throw new Error(`提供商「${provider.name}」未配置 API Base URL。`);
   }
@@ -214,10 +212,13 @@ function buildRequest(
   }
 
   if (isAnthropic) {
-    headers["x-api-key"] = target.apiKey;
+    // API Key 可选：为空时不带鉴权头（适配本地无鉴权服务）。
+    if (target.apiKey.trim()) {
+      headers["x-api-key"] = target.apiKey;
+    }
     headers["anthropic-version"] = "2023-06-01";
     body.max_tokens = 2048;
-  } else {
+  } else if (target.apiKey.trim()) {
     headers.authorization = `Bearer ${target.apiKey}`;
   }
 
@@ -242,7 +243,6 @@ export async function callLlm(
   }
   const model = target.model.trim();
   if (!model) throw new Error("未配置模型名称。");
-  if (!target.apiKey.trim()) throw new Error("未配置 API Key。");
   if (!target.baseUrl.trim()) throw new Error("未配置 API Base URL。");
 
   const { url, headers, body } = buildRequest(target, model, userMessage, false);
@@ -290,7 +290,6 @@ export async function callLlmStream(
   }
   const model = target.model.trim();
   if (!model) throw new Error("未配置模型名称。");
-  if (!target.apiKey.trim()) throw new Error("未配置 API Key。");
   if (!target.baseUrl.trim()) throw new Error("未配置 API Base URL。");
 
   const extractDelta = target.type === "anthropic" ? extractAnthropicDelta : extractOpenAiDelta;

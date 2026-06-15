@@ -174,6 +174,107 @@ export function llmWebMenuCleanupScript(): string {
 }
 
 // ===========================================================================
+// Independent dismiss-signal chain (parallel to the context-menu/hotkey chains).
+// Separate idempotent key, separate state, separate listener. When the user
+// left-clicks anywhere on the page (outside the context menu), stashes a
+// pending signal that the Obsidian side polls and uses to close an unpinned,
+// non-streaming result surface. Needed because the Electron <webview> is an
+// isolated browsing context: its pointerdown never bubbles to Obsidian's main
+// document, so the surface's own outside-click listener cannot see it.
+// ===========================================================================
+
+export const WEB_DISMISS_STATE_KEY = "__mvObccLlmDismiss";
+
+export interface LlmWebDismissPending {
+  at: number;
+}
+
+/**
+ * Returns the IIFE source string to inject. Idempotent re-injection preserves
+ * any pending signal. The listener
+ * fires only on left-button (button === 0) clicks so right-click still
+ * reaches the context-menu chain, and ignores clicks inside the in-page
+ * context menu so menu items can dispatch their invoke without dismissing.
+ */
+export function llmWebDismissInstallScript(): string {
+  return `(() => {
+    try {
+      const key = ${JSON.stringify(WEB_DISMISS_STATE_KEY)};
+      const existing = window[key];
+      if (existing && existing.version === 2) {
+        return { success: true, installed: false };
+      }
+      if (existing && typeof existing.cleanup === "function") {
+        existing.cleanup();
+      }
+
+      const onPointerDown = (event) => {
+        try {
+          // Only left-button clicks dismiss; right-click feeds the context-menu chain.
+          if (event.button !== 0) return;
+          // Ignore clicks inside the in-page context menu so menu items can
+          // dispatch their invoke without the surface being torn down.
+          const menu = document.querySelector('[data-mv-obcc-llm-menu="true"]');
+          if (menu && menu.contains(event.target)) return;
+          const state = window[key];
+          if (state) state.pending = { at: Date.now() };
+        } catch {
+          // Never break page interaction.
+        }
+      };
+
+      const cleanup = () => {
+        document.removeEventListener("pointerdown", onPointerDown, true);
+        delete window[key];
+      };
+
+      document.addEventListener("pointerdown", onPointerDown, true);
+      window[key] = {
+        version: 2,
+        pending: null,
+        cleanup: cleanup,
+      };
+      return { success: true, installed: true };
+    } catch (error) {
+      return {
+        success: false,
+        reason: error instanceof Error ? error.message : String(error),
+      };
+    }
+  })()`;
+}
+
+/**
+ * Polling script: returns and clears the pending dismiss payload if any.
+ * Its timestamp prevents old clicks from dismissing a surface created later.
+ */
+export function llmWebDismissPollScript(): string {
+  return `(() => {
+    try {
+      const state = window[${JSON.stringify(WEB_DISMISS_STATE_KEY)}];
+      if (!state || !state.pending) return null;
+      const pending = state.pending;
+      state.pending = null;
+      return pending;
+    } catch {
+      return null;
+    }
+  })()`;
+}
+
+export function llmWebDismissCleanupScript(): string {
+  return `(() => {
+    try {
+      const state = window[${JSON.stringify(WEB_DISMISS_STATE_KEY)}];
+      if (state && typeof state.cleanup === "function") state.cleanup();
+      return true;
+    } catch {
+      return false;
+    }
+  })()`;
+}
+
+// ===========================================================================
 // Independent hotkey-sync chain (parallel to the context-menu chain above).
 // Separate idempotent key, separate state, separate listeners — the
 // context-menu code above is never touched or referenced.
