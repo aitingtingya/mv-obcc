@@ -62,6 +62,13 @@
   background-color: var(--text-selection);
 }
 
+.mv-obcc-selection-color-probe {
+  background-color: var(--text-selection);
+  pointer-events: none;
+  position: fixed;
+  visibility: hidden;
+}
+
 .cm-editor:focus-within .mv-obcc-persistent-selection {
   background-color: transparent;
 }
@@ -114,6 +121,7 @@
   max-height: none;
   padding: 0;
   overflow: visible;
+  position: fixed;
   touch-action: none;
   background: var(--background-primary);
   border: 1px solid var(--background-modifier-border);

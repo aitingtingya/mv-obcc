@@ -232,7 +232,6 @@ export class LlmResultSurface implements LlmResultSink {
     );
     root.setAttribute("role", "dialog");
     root.setAttribute("aria-label", "LLM 结果");
-    root.style.position = "fixed";
     const viewport = viewportSize(this.doc);
     const width = Math.min(450, Math.max(MIN_WIDTH, viewport.width - 24));
     const height = Math.min(520, Math.max(MIN_HEIGHT, viewport.height - 24));
