@@ -1,0 +1,9 @@
+{
+  "id": "mv-obcc",
+  "name": "MV OBCC",
+  "version": "0.3.5",
+  "minAppVersion": "1.5.0",
+  "description": "Connects Obsidian to Claude Code with configurable page tracking, session-aware terminals, MCP tools, editable diffs, and optional upstream compatibility.",
+  "author": "MV",
+  "isDesktopOnly": true
+}
