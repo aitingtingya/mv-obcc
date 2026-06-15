@@ -99,3 +99,60 @@
   “切换标签时保留选区高亮”功能仅为视觉辅助，在您切换到终端等标签时，原页面的选词高亮依然保留。这不影响内部发送给 Claude 的实际内容。
 - **配置的隔离性**：
   划词助手的网络错误、API Key 暴露或调用失败，均只影响划词助手自身，**绝对不会**波及或影响 Claude Code 桥接通道的稳定性。
+
+---
+
+# Mv obcc (English Documentation)
+
+**Mv obcc** is a desktop bridge connecting your local vaults to Claude Code. It runs passively in the background to streamline your developer workflow in Obsidian.
+
+This plugin provides two key capabilities:
+1. **IDE Bridge**: Feeds contextual information (active tab, selections) from your vault to Claude Code, supports MCP tools, and enables visual diff reviews (via CodeMirror MergeView).
+2. **LLM Assistant (Selection Reader)**: A completely independent feature to call OpenAI or Anthropic compatible APIs directly from Obsidian views (Markdown, PDF, Web Viewer) using custom prompt templates, streaming responses into a floating output window.
+
+---
+
+## Installation Guide
+
+You can install this plugin either **manually (simplest, no compilation needed)** or by **building from source**.
+
+### Method 1: Manual Installation (Recommended)
+
+1. Go to the [Releases](https://github.com/aitingtingya/mv-obcc/releases) page of this repository and download the latest release files:
+   - `main.js`
+   - `manifest.json`
+   - `styles.css`
+2. Create a new folder named `mv-obcc` under your vault's plugins directory: `<vault>/.obsidian/plugins/mv-obcc/`
+3. Copy the three downloaded files into this folder.
+4. Restart or reload Obsidian, navigate to **Settings -> Community Plugins**, locate `Mv obcc`, and enable it.
+   *(Note: Ensure you disable any other Claude Code bridge plugins in the same vault to prevent conflicts).*
+
+### Method 2: Build From Source
+
+If you prefer to clone and compile the source code yourself:
+
+1. Clone this repository to your local machine.
+2. In the project root directory, run:
+   ```bash
+   # Install dependencies
+   npm ci
+   # Compile and build the plugin
+   npm run build
+   ```
+3. Create a folder named `mv-obcc` in your vault's plugins directory: `<vault>/.obsidian/plugins/mv-obcc/`
+4. Copy the compiled files into the new directory:
+   - `dist/main.js` (Rename this file to `main.js` in the destination folder)
+   - `manifest.json`
+   - `styles.css`
+5. Enable the plugin in Obsidian settings.
+
+---
+
+## Feature Scope & Notes
+
+> [!WARNING]
+> Please review the limitations of the web reader and PDF highlights.
+>
+> - **Web Reader Limits**: Standard iframe and canvas reading limits apply.
+> - **PDF Reading**: Scanned PDF pages without text layers cannot be read.
+> - **Config Isolation**: Errors or issues with the LLM selection assistant will not affect the main Claude Code IDE bridge.
