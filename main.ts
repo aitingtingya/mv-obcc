@@ -205,15 +205,16 @@ export default class MvObccIdePlugin extends Plugin {
     this.scheduleBroadcast();
   }
 
-  async onunload(): Promise<void> {
-    if (this.broadcastTimer !== null) activeWindow.clearTimeout(this.broadcastTimer);
+  onunload(): void {
+    if (this.broadcastTimer !== null) {
+      activeWindow.clearTimeout(this.broadcastTimer);
+      this.broadcastTimer = null;
+    }
     this.selectionHighlighter?.destroy();
     this.selectionHighlighter = null;
     this.llmFeature?.dispose();
     this.llmFeature = null;
-    await this.restoreClaudeSettings();
-    await this.closeDiffs();
-    await this.stopBridge();
+    void this.finishUnload();
   }
 
   async saveAndApplySettings(): Promise<void> {
@@ -240,6 +241,16 @@ export default class MvObccIdePlugin extends Plugin {
     this.settings = restoreManagedBaseUrl(filePath, this.settings);
     restoreManagedTerminalHooks(filePath);
     await this.saveData(this.settings);
+  }
+
+  private async finishUnload(): Promise<void> {
+    try {
+      await this.restoreClaudeSettings();
+      await this.closeDiffs();
+      await this.stopBridge();
+    } catch (error) {
+      console.error("[mv-obcc-ide] unload cleanup failed", error);
+    }
   }
 
   resolvedUpstream(): ResolvedUpstream {

@@ -144,7 +144,7 @@ export class ToolRegistry {
       }
       editor.scrollIntoView({ from: start, to: end }, true);
     }
-    if (makeFrontmost) this.app.workspace.revealLeaf(leaf);
+    if (makeFrontmost) await this.app.workspace.revealLeaf(leaf);
     return { success: true, filePath: file.path, line: line ?? null };
   }
 
@@ -188,32 +188,37 @@ export class ToolRegistry {
     }
     const diffView = leaf.view;
 
-    const decision = await new Promise<{
+    let settleDecision:
+      | ((value: { decision: "accept" | "reject"; contents: string }) => void)
+      | null = null;
+    const decisionPromise = new Promise<{
       decision: "accept" | "reject";
       contents: string;
     }>((resolve) => {
-      let settled = false;
-      const payload: DiffPayload = {
-        sessionId,
-        oldFilePath,
-        newFilePath,
-        oldContents,
-        newContents,
-        tabName,
-        validateOriginal: async () => {
-          if (!oldFile) return true;
-          const currentFile = findFile(this.app, oldFile.path);
-          return !!currentFile && (await this.app.vault.cachedRead(currentFile)) === oldContents;
-        },
-        onResolve: async (nextDecision, contents) => {
-          if (settled) return;
-          settled = true;
-          resolve({ decision: nextDecision, contents });
-        },
-      };
-      diffView.setPayload(payload);
-      this.app.workspace.revealLeaf(leaf);
+      settleDecision = resolve;
     });
+    let settled = false;
+    const payload: DiffPayload = {
+      sessionId,
+      oldFilePath,
+      newFilePath,
+      oldContents,
+      newContents,
+      tabName,
+      validateOriginal: async () => {
+        if (!oldFile) return true;
+        const currentFile = findFile(this.app, oldFile.path);
+        return !!currentFile && (await this.app.vault.cachedRead(currentFile)) === oldContents;
+      },
+      onResolve: async (nextDecision, contents) => {
+        if (settled || !settleDecision) return;
+        settled = true;
+        settleDecision({ decision: nextDecision, contents });
+      },
+    };
+    diffView.setPayload(payload);
+    await this.app.workspace.revealLeaf(leaf);
+    const decision = await decisionPromise;
 
     return decision.decision === "accept"
       ? {

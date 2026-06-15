@@ -249,10 +249,7 @@ export function webSelectionHighlightCleanupScript(): string {
 function resolvedSelectionColor(document: Document): string {
   const parent = document.body ?? document.documentElement;
   const probe = document.createElement("span");
-  probe.style.backgroundColor = "var(--text-selection)";
-  probe.style.position = "fixed";
-  probe.style.pointerEvents = "none";
-  probe.style.visibility = "hidden";
+  probe.addClass("mv-obcc-selection-color-probe");
   parent.appendChild(probe);
   const color =
     document.defaultView?.getComputedStyle(probe).backgroundColor ?? "";

@@ -99,6 +99,8 @@
   “切换标签时保留选区高亮”功能仅为视觉辅助，在您切换到终端等标签时，原页面的选词高亮依然保留。这不影响内部发送给 Claude 的实际内容。
 - **配置的隔离性**：
   划词助手的网络错误、API Key 暴露或调用失败，均只影响划词助手自身，**绝对不会**波及或影响 Claude Code 桥接通道的稳定性。
+- **桌面权限说明**：
+  插件会读取和更新 Claude Code 的项目配置、会话信息与 IDE lock 文件，以建立和恢复桥接连接。进程识别与 MCP 注册仅通过 Node.js `execFile` 调用明确的可执行文件和参数，不拼接或执行任意 shell 命令。
 
 ---
 
@@ -156,3 +158,4 @@ If you prefer to clone and compile the source code yourself:
 > - **Web Reader Limits**: Standard iframe and canvas reading limits apply.
 > - **PDF Reading**: Scanned PDF pages without text layers cannot be read.
 > - **Config Isolation**: Errors or issues with the LLM selection assistant will not affect the main Claude Code IDE bridge.
+> - **Desktop Permissions**: The plugin reads and updates Claude Code project settings, session metadata, and IDE lock files to manage the bridge. Process detection and MCP registration use Node.js `execFile` with explicit executables and arguments; the plugin does not construct or execute arbitrary shell commands.

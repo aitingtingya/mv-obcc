@@ -18,6 +18,10 @@ const SOURCE_LABELS = {
   none: "未找到",
 } as const;
 
+function addHeading(containerEl: HTMLElement, text: string): void {
+  new Setting(containerEl).setName(text).setHeading();
+}
+
 export class MvObccIdeSettingTab extends PluginSettingTab {
   constructor(app: App, private readonly plugin: MvObccIdePlugin) {
     super(app, plugin);
@@ -26,7 +30,7 @@ export class MvObccIdeSettingTab extends PluginSettingTab {
   display(): void {
     const { containerEl } = this;
     containerEl.empty();
-    containerEl.createEl("h2", { text: "MV OBCC IDE" });
+    addHeading(containerEl, "MV OBCC IDE");
 
     new Setting(containerEl)
       .setName("桥接状态")
@@ -46,9 +50,9 @@ export class MvObccIdeSettingTab extends PluginSettingTab {
       text: "🔌 IDE 桥接",
       cls: "mv-obcc-section-title setting-item-name",
     });
-    containerEl.createEl("h3", { text: "功能与工具" });
+    addHeading(containerEl, "功能与工具");
 
-    containerEl.createEl("h4", { text: "被动：状态感知" });
+    addHeading(containerEl, "被动：状态感知");
     new Setting(containerEl)
       .setName("支持所有活动页面")
       .setDesc(
@@ -106,7 +110,7 @@ export class MvObccIdeSettingTab extends PluginSettingTab {
         );
     }
 
-    containerEl.createEl("h4", { text: "视觉辅助" });
+    addHeading(containerEl, "视觉辅助");
     new Setting(containerEl)
       .setName("切换标签时保留选区高亮")
       .setDesc(
@@ -120,7 +124,7 @@ export class MvObccIdeSettingTab extends PluginSettingTab {
           }),
       );
 
-    containerEl.createEl("h4", { text: "主动：MCP 工具" });
+    addHeading(containerEl, "主动：MCP 工具");
     new Setting(containerEl)
       .setName("启用 MCP 主动工具")
       .setDesc(
@@ -245,7 +249,7 @@ export class MvObccIdeSettingTab extends PluginSettingTab {
       text: "✍️ 划词助手（选词调用 LLM）",
       cls: "mv-obcc-section-title setting-item-name",
     });
-    containerEl.createEl("h3", { text: "总开关" });
+    addHeading(containerEl, "总开关");
 
     new Setting(containerEl)
       .setName("启用")
@@ -271,7 +275,7 @@ export class MvObccIdeSettingTab extends PluginSettingTab {
 
     if (this.plugin.settings.llm.enabled) {
       // ---- 提供商 ----
-      containerEl.createEl("h4", { text: "API 提供商" });
+      addHeading(containerEl, "API 提供商");
       this.renderProviders(containerEl);
 
       new Setting(containerEl)
@@ -295,7 +299,7 @@ export class MvObccIdeSettingTab extends PluginSettingTab {
         );
 
       // ---- 提示词模板 ----
-      containerEl.createEl("h4", { text: "提示词模板" });
+      addHeading(containerEl, "提示词模板");
       const hint = containerEl.createEl("div", {
         text: "提示词中可用 {selection} 占位符表示划词内容；不含占位符时，划词会自动追加到末尾。每个模板可单独开关，并选择用哪个提供商的哪个模型。",
       });
@@ -323,7 +327,7 @@ export class MvObccIdeSettingTab extends PluginSettingTab {
       );
     }
 
-    containerEl.createEl("h3", { text: "上游兼容" });
+    addHeading(containerEl, "上游兼容");
     new Setting(containerEl)
       .setName("上游模式")
       .setDesc(
@@ -382,7 +386,7 @@ export class MvObccIdeSettingTab extends PluginSettingTab {
         );
     }
 
-    containerEl.createEl("h3", { text: "Diff 与维护" });
+    addHeading(containerEl, "Diff 与维护");
     new Setting(containerEl)
       .setName("Diff 审核行为")
       .setDesc(
