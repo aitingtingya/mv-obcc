@@ -68,7 +68,7 @@
 
 划词助手完全独立于 IDE 桥接，不依赖 Claude Code 即可使用。
 
-1. **配置 API**：在插件设置中的“划词助手”区域，添加您的模型提供商（如 OpenAI 兼容端点或 Anthropic），并配置 API Base URL、API Key 及模型名称。
+1. **配置 API**：在插件设置中的“划词助手”区域添加模型提供商（如 OpenAI 兼容端点或 Anthropic）。API Base URL 和模型名称必填；API Key 仅在服务需要鉴权时必填，Ollama、LM Studio 等本地无鉴权服务可留空。
 2. **配置提示词**：您可以配置多个提示词模板。支持 `{selection}` 占位符；若不包含，则划词内容会自动附加在末尾。
 3. **触发方式**：
    - **Markdown / Web Viewer 视图**：划词后，可以通过右键菜单选择 `LLM -> {您的模板}`，或者通过 Obsidian 的快捷键系统绑定相应的命令触发。
@@ -164,5 +164,6 @@ If you prefer to clone and compile the source code yourself:
 
 ### LLM Assistant Interaction
 
+- Configure an API Base URL and model name for each provider. An API key is only required when the endpoint uses authentication; it may be left empty for unauthenticated local services such as Ollama or LM Studio.
 - Choose an enabled prompt template in settings to expose the **Selection auto-trigger** ribbon button. It starts disabled after every Obsidian launch and only fires when a new selection gesture is completed.
 - The floating result window remembers its position and size. Pin it from the title bar to reuse the same window for later requests and keep it open after insert or replace actions.

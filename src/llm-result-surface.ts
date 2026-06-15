@@ -55,6 +55,7 @@ interface ResizeEdges {
 
 const MIN_WIDTH = 420;
 const MIN_HEIGHT = 280;
+const OUTSIDE_CLICK_DISMISS_DELAY_MS = 150;
 let surfaceLayer = 60;
 
 function createElement<K extends keyof HTMLElementTagNameMap>(
@@ -151,6 +152,7 @@ export class LlmResultSurface implements LlmResultSink {
   private pinned = false;
   private pinEl: HTMLElement | null = null;
   private cleanupFns: Array<() => void> = [];
+  private openedAtMs = 0;
 
   constructor(
     private readonly app: App,
@@ -161,6 +163,7 @@ export class LlmResultSurface implements LlmResultSink {
 
   open(): void {
     if (this.rootEl || this.state === "closed") return;
+    this.openedAtMs = Date.now();
     this.buildWindow();
     this.initializing = true;
     void this.initializeEmbeddedEditor()
@@ -292,6 +295,14 @@ export class LlmResultSurface implements LlmResultSink {
     return this.state !== "closed" && this.rootEl?.isConnected === true;
   }
 
+  get isActive(): boolean {
+    return this.state === "opening" || this.state === "streaming";
+  }
+
+  get openedAt(): number {
+    return this.openedAtMs;
+  }
+
   /** 当前是否被钉住（固定悬浮窗）。供外部复用判断读取。 */
   get isPinned(): boolean {
     return this.pinned;
@@ -403,6 +414,8 @@ export class LlmResultSurface implements LlmResultSink {
     this.pinEl = pin;
     this.cleanupFns.push(this.installDrag(root, titlebar));
     this.cleanupFns.push(this.installActivation(root));
+    this.cleanupFns.push(this.installOutsideClickDismiss(root));
+    this.cleanupFns.push(this.installEscapeDismiss());
     this.renderStatus();
   }
 
@@ -622,6 +635,48 @@ export class LlmResultSurface implements LlmResultSink {
     const activate = () => this.activate(root);
     root.addEventListener("pointerdown", activate, true);
     return () => root.removeEventListener("pointerdown", activate, true);
+  }
+
+  /**
+   * 未钉住时点击窗口外部自动关闭。生成中（opening/streaming）不响应，
+   * 避免误触打断正在流式输出的结果。捕获阶段监听，确保先于 Obsidian
+   * 内部处理命中。
+   */
+  private installOutsideClickDismiss(root: HTMLElement): () => void {
+    const win = this.doc.defaultView ?? window;
+    let dismissTimer: number | null = null;
+    const onPointerDown = (event: PointerEvent) => {
+      if (event.button !== 0) return;
+      if (this.pinned) return;
+      if (this.isActive) return;
+      const target = event.target as Node | null;
+      if (!target || root.contains(target)) return;
+      if (dismissTimer !== null) return;
+      dismissTimer = win.setTimeout(() => {
+        dismissTimer = null;
+        if (this.pinned || this.isActive) return;
+        this.close();
+      }, OUTSIDE_CLICK_DISMISS_DELAY_MS);
+    };
+    this.doc.addEventListener("pointerdown", onPointerDown, true);
+    return () => {
+      this.doc.removeEventListener("pointerdown", onPointerDown, true);
+      if (dismissTimer !== null) win.clearTimeout(dismissTimer);
+    };
+  }
+
+  /**
+   * 未钉住时按 Escape 自动关闭，判定条件与外部点击一致。
+   */
+  private installEscapeDismiss(): () => void {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      if (this.pinned) return;
+      if (this.isActive) return;
+      this.close();
+    };
+    this.doc.addEventListener("keydown", onKeyDown, true);
+    return () => this.doc.removeEventListener("keydown", onKeyDown, true);
   }
 
   private activate(root: HTMLElement): void {
