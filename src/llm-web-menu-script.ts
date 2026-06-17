@@ -5,7 +5,7 @@
  * events do not bubble out to Obsidian, and Obsidian's `document.getSelection()`
  * cannot read the page's selection. So we run this script inside the page: it
  * intercepts `contextmenu`, draws a floating menu, and on click stashes the
- * selection + chosen label into `window.__mvObccLlmMenu.pendingInvoke`. The
+ * selection + chosen label into `window.__mvSenceAiLlmMenu.pendingInvoke`. The
  * Obsidian side polls that field via `executeJavaScript` and dispatches the LLM
  * call (see `LlmFeature.installWebMenus`).
  *
@@ -19,7 +19,7 @@ export interface LlmWebPendingInvoke {
   selection: string;
 }
 
-const WEB_MENU_STATE_KEY = "__mvObccLlmMenu";
+const WEB_MENU_STATE_KEY = "__mvSenceAiLlmMenu";
 
 /**
  * Returns the IIFE source string to inject. `templatesJson` must be a JSON
@@ -53,7 +53,7 @@ export function llmWebMenuInstallScript(templatesJson: string): string {
           event.stopPropagation();
           closeMenu();
           menuEl = document.createElement("div");
-          menuEl.setAttribute("data-mv-obcc-llm-menu", "true");
+          menuEl.setAttribute("data-mv-senceai-llm-menu", "true");
           menuEl.style.cssText = [
             "position:fixed",
             "z-index:2147483647",
@@ -183,7 +183,7 @@ export function llmWebMenuCleanupScript(): string {
 // document, so the surface's own outside-click listener cannot see it.
 // ===========================================================================
 
-export const WEB_DISMISS_STATE_KEY = "__mvObccLlmDismiss";
+export const WEB_DISMISS_STATE_KEY = "__mvSenceAiLlmDismiss";
 
 export interface LlmWebDismissPending {
   at: number;
@@ -214,7 +214,7 @@ export function llmWebDismissInstallScript(): string {
           if (event.button !== 0) return;
           // Ignore clicks inside the in-page context menu so menu items can
           // dispatch their invoke without the surface being torn down.
-          const menu = document.querySelector('[data-mv-obcc-llm-menu="true"]');
+          const menu = document.querySelector('[data-mv-senceai-llm-menu="true"]');
           if (menu && menu.contains(event.target)) return;
           const state = window[key];
           if (state) state.pending = { at: Date.now() };
@@ -280,7 +280,7 @@ export function llmWebDismissCleanupScript(): string {
 // context-menu code above is never touched or referenced.
 // ===========================================================================
 
-export const WEB_HOTKEY_STATE_KEY = "__mvObccLlmHotkey";
+export const WEB_HOTKEY_STATE_KEY = "__mvSenceAiLlmHotkey";
 
 export interface LlmWebHotkeyPending {
   index: number;

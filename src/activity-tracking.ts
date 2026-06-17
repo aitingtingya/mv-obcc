@@ -2,7 +2,7 @@ import type { ActivityTrackingSettings, SelectionState } from "./types";
 import { TERMINAL_MARKER_PREFIX } from "./constants";
 
 const SESSION_ID_PATTERN =
-  /mv-obcc-ide:([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i;
+  /mv-senceai-ide:([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i;
 
 export function isSelectedPageType(
   state: SelectionState,

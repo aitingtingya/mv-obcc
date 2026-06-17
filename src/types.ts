@@ -94,6 +94,64 @@ export interface LlmFeatureSettings {
   autoTriggerTemplateId: string | null;
 }
 
+/**
+ * CodeMirror keymap binding strings for inline completion. Each value uses
+ * CodeMirror's normalized key format (e.g. "Tab", "Escape", "Cmd-Shift-Enter",
+ * "Mod-]"). An empty string means the binding is not registered.
+ */
+export interface InlineCompletionKeymap {
+  /** Accept the current ghost-text completion. Default "Tab". */
+  accept: string;
+  /**
+   * Reject the completion and ask the model for a different one. Empty string
+   * = no binding (reject then behaves like a no-op; use cancel instead).
+   */
+  reject: string;
+  /** Dismiss the current ghost-text completion without re-querying. Default "Escape". */
+  cancel: string;
+  /** Request a completion manually. Empty string = no manual request binding. */
+  request: string;
+}
+
+/**
+ * Independent inline-completion (ghost text) feature settings. Lives as a peer
+ * of `llm` under `BridgeSettings`; providers are shared (referenced by id) but
+ * the feature is otherwise self-contained.
+ */
+export interface InlineCompletionSettings {
+  /** Master switch. When off the ribbon button is hidden and nothing fires. */
+  enabled: boolean;
+  /** Session toggle exposed as a ribbon button; persisted so users keep intent across reloads. */
+  armed: boolean;
+  /** Provider id from the shared `llm.providers` list, or null when unselected. */
+  providerId: string | null;
+  /** Model id within the chosen provider, or null when unselected. */
+  modelId: string | null;
+  /** Thinking mode applied to inline completion requests. "default" sends nothing. */
+  thinkingMode: LlmThinkingMode;
+  /** Raw JSON merged into the request body when thinkingMode === "custom". */
+  thinkingCustom?: string;
+  keymap: InlineCompletionKeymap;
+  /** Idle delay after the last keystroke before requesting a completion. */
+  debounceMs: number;
+  /** Number of characters before the cursor sent as context. */
+  contextBeforeChars: number;
+  /** Number of characters after the cursor sent as context. */
+  contextAfterChars: number;
+  /** Legacy single context limit kept only for migrating older persisted data. */
+  contextChars?: number;
+  /** Hard cap on completion length (characters). */
+  maxChars: number;
+  /** Hard cap on completion length (lines). */
+  maxLines: number;
+  /** Main body of the system prompt (role + rules). Falls back to default when empty. */
+  systemPromptBody: string;
+  /** No-completion sentinel instruction. Falls back to default when empty. */
+  noCompletionPrompt: string;
+  /** User message template for reject-and-regenerate. Falls back to default when empty. */
+  rejectPrompt: string;
+}
+
 export interface BridgeSettings {
   upstreamMode: UpstreamMode;
   /** Optional manual override. Empty means resolve from Claude settings. */
@@ -106,6 +164,7 @@ export interface BridgeSettings {
   toolToggles: ToolToggles;
   toolContextLimits: ToolContextLimits;
   llm: LlmFeatureSettings;
+  inlineCompletion: InlineCompletionSettings;
   mcpEnabled: boolean;
   mcpAuthToken: string;
   claudeExecutable: string;

@@ -63,7 +63,7 @@ const INTERNAL_TOOL_DEFINITIONS: ToolDefinition[] = [
   },
   {
     name: "closeAllDiffTabs",
-    description: "Close all MV OBCC IDE diff tabs and reject pending diffs.",
+    description: "Close all MV SenceAI IDE diff tabs and reject pending diffs.",
     inputSchema: { type: "object", properties: {}, additionalProperties: true },
   },
   {
@@ -73,7 +73,7 @@ const INTERNAL_TOOL_DEFINITIONS: ToolDefinition[] = [
   },
   {
     name: "close_tab",
-    description: "Close a pending MV OBCC IDE diff tab.",
+    description: "Close a pending MV SenceAI IDE diff tab.",
     inputSchema: {
       type: "object",
       properties: {

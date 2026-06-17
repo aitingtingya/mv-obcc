@@ -211,7 +211,7 @@ export class LlmResultSurface implements LlmResultSink {
     if (this.textarea) {
       this.textarea.value = "";
     }
-    this.rootEl?.querySelector(".mv-obcc-llm-error")?.remove();
+    this.rootEl?.querySelector(".mv-senceai-llm-error")?.remove();
     if (this.rootEl) this.activate(this.rootEl);
     this.renderStatus();
   }
@@ -334,7 +334,7 @@ export class LlmResultSurface implements LlmResultSink {
     const root = createElement(
       this.doc,
       "div",
-      "popover hover-popover mv-obcc-llm-popover",
+      "popover hover-popover mv-senceai-llm-popover",
     );
     root.setAttribute("role", "dialog");
     root.setAttribute("aria-label", "LLM 结果");
@@ -365,25 +365,25 @@ export class LlmResultSurface implements LlmResultSink {
     const titlebar = createElement(
       this.doc,
       "div",
-      "mv-obcc-llm-titlebar",
+      "mv-senceai-llm-titlebar",
     );
     const title = createElement(
       this.doc,
       "div",
-      "mv-obcc-llm-title",
+      "mv-senceai-llm-title",
       "LLM 结果",
     );
     const status = createElement(
       this.doc,
       "span",
-      "mv-obcc-llm-status",
+      "mv-senceai-llm-status",
     );
     title.appendChild(status);
     // 固定后插入/替换不会关闭窗口，下一次调用会复用当前窗口。
     const pin = createElement(
       this.doc,
       "button",
-      "mv-obcc-llm-title-action mv-obcc-llm-pin",
+      "mv-senceai-llm-title-action mv-senceai-llm-pin",
     );
     pin.type = "button";
     pin.setAttribute("aria-pressed", "false");
@@ -392,7 +392,7 @@ export class LlmResultSurface implements LlmResultSink {
     const close = createElement(
       this.doc,
       "button",
-      "mv-obcc-llm-title-action",
+      "mv-senceai-llm-title-action",
       "×",
     );
     close.type = "button";
@@ -400,7 +400,7 @@ export class LlmResultSurface implements LlmResultSink {
     close.addEventListener("click", () => this.close());
     titlebar.append(pin, title, close);
 
-    const host = createElement(this.doc, "div", "mv-obcc-llm-host");
+    const host = createElement(this.doc, "div", "mv-senceai-llm-host");
     const toolbar = this.buildToolbar();
     root.append(titlebar, host, toolbar);
     this.createResizeHandles(root);
@@ -423,7 +423,7 @@ export class LlmResultSurface implements LlmResultSink {
     const toolbar = createElement(
       this.doc,
       "div",
-      "mv-obcc-llm-toolbar",
+      "mv-senceai-llm-toolbar",
     );
     toolbar.appendChild(
       this.actionButton("复制", async () => {
@@ -491,7 +491,7 @@ export class LlmResultSurface implements LlmResultSink {
     split.getContainer = () => containerForDocument(this.app, this.doc);
 
     // Hover Editor's critical ordering: attach the split before creating a leaf.
-    split.containerEl.classList.add("mv-obcc-llm-workspace");
+    split.containerEl.classList.add("mv-senceai-llm-workspace");
     host.replaceChildren(split.containerEl);
     const leaf = temporarilySuppressActiveLeaf(this.app, () =>
       this.app.workspace.createLeafInParent(split, 0),
@@ -524,7 +524,7 @@ export class LlmResultSurface implements LlmResultSink {
     this.fallbackReason =
       error instanceof Error ? error.message : String(error);
     console.warn(
-      "[mv-obcc] LLM embedded editor failed; using textarea fallback:",
+      "[mv-senceai] LLM embedded editor failed; using textarea fallback:",
       this.fallbackReason,
     );
     this.cleanupEmbeddedLeaf();
@@ -534,7 +534,7 @@ export class LlmResultSurface implements LlmResultSink {
     const area = createElement(
       this.doc,
       "textarea",
-      "mv-obcc-llm-result",
+      "mv-senceai-llm-result",
     );
     area.value = this.buffer;
     area.spellcheck = false;
@@ -581,7 +581,7 @@ export class LlmResultSurface implements LlmResultSink {
   private renderStatus(): void {
     const status = this.statusEl;
     if (!status) return;
-    status.className = "mv-obcc-llm-status";
+    status.className = "mv-senceai-llm-status";
     const fallback = this.textarea ? " · 文本兜底" : "";
     if (this.state === "opening") {
       status.textContent = "准备编辑器…";
@@ -589,10 +589,10 @@ export class LlmResultSurface implements LlmResultSink {
       status.textContent = `生成中…${fallback}`;
     } else if (this.state === "done") {
       status.textContent = `可编辑${fallback}`;
-      status.classList.add("mv-obcc-llm-status-done");
+      status.classList.add("mv-senceai-llm-status-done");
     } else if (this.state === "error") {
       status.textContent = `调用失败${fallback}`;
-      status.classList.add("mv-obcc-llm-status-error");
+      status.classList.add("mv-senceai-llm-status-error");
     }
     if (this.fallbackReason) {
       status.title = this.fallbackReason;
@@ -604,15 +604,15 @@ export class LlmResultSurface implements LlmResultSink {
   private renderError(): void {
     const root = this.rootEl;
     if (!root) return;
-    root.querySelector(".mv-obcc-llm-error")?.remove();
+    root.querySelector(".mv-senceai-llm-error")?.remove();
     if (this.state !== "error" || !this.errorMessage) return;
     const error = createElement(
       this.doc,
       "div",
-      "mv-obcc-llm-error",
+      "mv-senceai-llm-error",
       this.errorMessage,
     );
-    const toolbar = root.querySelector(".mv-obcc-llm-toolbar");
+    const toolbar = root.querySelector(".mv-senceai-llm-toolbar");
     root.insertBefore(error, toolbar);
   }
 
@@ -748,7 +748,7 @@ export class LlmResultSurface implements LlmResultSink {
       const handle = createElement(
         this.doc,
         "div",
-        `mv-obcc-llm-resize-handle ${direction}`,
+        `mv-senceai-llm-resize-handle ${direction}`,
       );
       handle.dataset.direction = direction;
       root.appendChild(handle);

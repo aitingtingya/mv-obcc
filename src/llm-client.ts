@@ -1,5 +1,11 @@
 import { requestUrl } from "obsidian";
-import type { LlmFeatureSettings, LlmPromptTemplate, LlmProviderType, LlmThinkingMode } from "./types";
+import type {
+  InlineCompletionSettings,
+  LlmFeatureSettings,
+  LlmPromptTemplate,
+  LlmProviderType,
+  LlmThinkingMode,
+} from "./types";
 
 /**
  * Call an OpenAI- or Anthropic-compatible chat completion endpoint.
@@ -25,6 +31,12 @@ export interface LlmRequestTarget {
    * use the streaming global fetch.
    */
   useProxy: boolean;
+}
+
+/** A single chat message used by the multi-turn endpoint variants. */
+export interface LlmMessage {
+  role: "system" | "user" | "assistant";
+  content: string;
 }
 
 function normalizeBaseUrl(raw: string): string {
@@ -192,6 +204,22 @@ function buildRequest(
   userMessage: string,
   stream: boolean,
 ): { url: string; headers: Record<string, string>; body: Record<string, unknown> } {
+  return buildMessagesRequest(target, model, [{ role: "user", content: userMessage }], stream);
+}
+
+/**
+ * Build a request carrying an explicit message list. This is the multi-turn
+ * path used by inline completion (and available to any future multi-turn
+ * caller). For Anthropic, the leading `system` message is lifted to the
+ * top-level `system` field per the Messages API; OpenAI-compatible endpoints
+ * keep it inline as the first message.
+ */
+function buildMessagesRequest(
+  target: LlmRequestTarget,
+  model: string,
+  messages: LlmMessage[],
+  stream: boolean,
+): { url: string; headers: Record<string, string>; body: Record<string, unknown> } {
   const base = normalizeBaseUrl(target.baseUrl);
   const isAnthropic = target.type === "anthropic";
   const url = isAnthropic ? `${base}/v1/messages` : `${base}/chat/completions`;
@@ -203,10 +231,18 @@ function buildRequest(
     headers.accept = "text/event-stream";
   }
 
-  const body: Record<string, unknown> = {
-    model,
-    messages: [{ role: "user", content: userMessage }],
-  };
+  let body: Record<string, unknown>;
+  if (isAnthropic) {
+    // Anthropic Messages API: system is a top-level field, not a message role.
+    const systemParts = messages.filter((m) => m.role === "system");
+    const convo = messages.filter((m) => m.role !== "system");
+    body = { model, messages: convo };
+    if (systemParts.length > 0) {
+      body.system = systemParts.map((m) => m.content).join("\n\n");
+    }
+  } else {
+    body = { model, messages };
+  }
   if (stream) {
     body.stream = true;
   }
@@ -351,6 +387,122 @@ export async function callLlmStream(
   }
 
   return readEventStream(response.body, extractDelta, onDelta, signal);
+}
+
+/**
+ * Multi-turn streaming variant. Like {@link callLlmStream} but sends an
+ * explicit message list (system/user/assistant) so callers can carry
+ * conversational context — used by inline completion's reject-and-regenerate
+ * flow. Empty/whitespace-only messages are dropped before sending.
+ */
+export async function callLlmStreamMessages(
+  target: LlmRequestTarget,
+  messages: LlmMessage[],
+  onDelta: (delta: string) => void,
+  signal?: AbortSignal,
+): Promise<string> {
+  throwIfAborted(signal);
+  const cleaned = messages.filter((m) => m.content.trim().length > 0);
+  if (cleaned.length === 0) {
+    throw new Error("没有可发送的内容（消息为空）。");
+  }
+  const model = target.model.trim();
+  if (!model) throw new Error("未配置模型名称。");
+  if (!target.baseUrl.trim()) throw new Error("未配置 API Base URL。");
+
+  const extractDelta = target.type === "anthropic" ? extractAnthropicDelta : extractOpenAiDelta;
+
+  if (target.useProxy) {
+    const { url, headers, body } = buildMessagesRequest(target, model, cleaned, true);
+    const response = await requestUrl({
+      url,
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+      throw: false,
+    });
+    throwIfAborted(signal);
+    if (response.status < 200 || response.status >= 300) {
+      throw new Error(`LLM 请求失败 (HTTP ${response.status})${response.text ? `: ${response.text}` : ""}`);
+    }
+    const text = response.text ?? "";
+    if (text.includes("data:")) {
+      let full = "";
+      const deltas = parseSseText(text, extractDelta);
+      for (const delta of deltas) {
+        throwIfAborted(signal);
+        full += delta;
+        onDelta(delta);
+      }
+      if (full) return full;
+    }
+    try {
+      const json = typeof response.json === "object" ? response.json : JSON.parse(text);
+      const full = target.type === "anthropic" ? extractAnthropicContent(json) : extractOpenAiContent(json);
+      throwIfAborted(signal);
+      if (full) onDelta(full);
+      return full;
+    } catch {
+      throwIfAborted(signal);
+      if (text) onDelta(text);
+      return text;
+    }
+  }
+
+  const { url, headers, body } = buildMessagesRequest(target, model, cleaned, true);
+  const response = await fetch(url, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(body),
+    signal,
+  });
+  if (!response.ok) throw new Error(await readError(response));
+
+  if (!response.body) {
+    const json = await response.json();
+    const full = target.type === "anthropic" ? extractAnthropicContent(json) : extractOpenAiContent(json);
+    if (full) onDelta(full);
+    return full;
+  }
+
+  return readEventStream(response.body, extractDelta, onDelta, signal);
+}
+
+/**
+ * Resolve the inline-completion feature's chosen provider + model into a
+ * concrete request target. Mirrors {@link resolveProvider} but reads the
+ * inline-completion settings (which share the same `llm.providers` list).
+ */
+export function resolveInlineProvider(
+  settings: LlmFeatureSettings,
+  inline: InlineCompletionSettings,
+): LlmRequestTarget {
+  if (!inline.providerId) {
+    throw new Error("行内补全尚未选择模型，请在设置中为其指定提供商与模型。");
+  }
+  const provider = settings.providers.find((p) => p.id === inline.providerId);
+  if (!provider) {
+    throw new Error("行内补全引用的提供商已不存在，请在设置中重新选择。");
+  }
+  if (!provider.baseUrl.trim()) {
+    throw new Error(`提供商「${provider.name}」未配置 API Base URL。`);
+  }
+  if (!inline.modelId) {
+    throw new Error("行内补全尚未选择模型。");
+  }
+  const model = provider.models.find((m) => m.id === inline.modelId);
+  if (!model) {
+    throw new Error("行内补全引用的模型已不存在，请在设置中重新选择。");
+  }
+  return {
+    type: provider.type,
+    baseUrl: provider.baseUrl,
+    apiKey: provider.apiKey,
+    model: model.name,
+    thinkingMode: inline.thinkingMode ?? "default",
+    thinkingCustom: inline.thinkingCustom,
+    useProxy: provider.useProxy === true,
+  };
 }
 
 /** Parse a Server-Sent-Events stream, invoking onDelta per text fragment. */

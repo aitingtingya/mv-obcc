@@ -1,11 +1,22 @@
 import { Menu, Notice, PluginSettingTab, Setting, type App } from "obsidian";
-import type MvObccIdePlugin from "../main";
+import type MvSenceAiIdePlugin from "../main";
+import {
+  DEFAULT_SETTINGS,
+  DEFAULT_INLINE_SYSTEM_PROMPT_BODY,
+  DEFAULT_INLINE_NO_COMPLETION_PROMPT,
+  DEFAULT_INLINE_REJECT_PROMPT,
+} from "./constants";
+import {
+  eventToCodeMirrorKey,
+  formatInlineHotkeyLabel,
+} from "./inline-completion/inline-hotkey-format";
 import type {
   LlmModelEntry,
   LlmPromptTemplate,
   LlmProviderConfig,
   LlmProviderType,
   LlmThinkingMode,
+  InlineCompletionKeymap,
   ToolToggles,
 } from "./types";
 
@@ -22,15 +33,15 @@ function addHeading(containerEl: HTMLElement, text: string): void {
   new Setting(containerEl).setName(text).setHeading();
 }
 
-export class MvObccIdeSettingTab extends PluginSettingTab {
-  constructor(app: App, private readonly plugin: MvObccIdePlugin) {
+export class MvSenceAiIdeSettingTab extends PluginSettingTab {
+  constructor(app: App, private readonly plugin: MvSenceAiIdePlugin) {
     super(app, plugin);
   }
 
   display(): void {
     const { containerEl } = this;
     containerEl.empty();
-    addHeading(containerEl, "MV OBCC IDE");
+    addHeading(containerEl, "mv-SenceAI IDE");
 
     new Setting(containerEl)
       .setName("桥接状态")
@@ -43,12 +54,12 @@ export class MvObccIdeSettingTab extends PluginSettingTab {
               : "未连接",
           )
           .setDisabled(true);
-        text.inputEl.addClass("mv-obcc-status");
+        text.inputEl.addClass("mv-senceai-status");
       });
 
     containerEl.createEl("div", {
       text: "🔌 IDE 桥接",
-      cls: "mv-obcc-section-title setting-item-name",
+      cls: "mv-senceai-section-title setting-item-name",
     });
     addHeading(containerEl, "功能与工具");
 
@@ -245,123 +256,6 @@ export class MvObccIdeSettingTab extends PluginSettingTab {
         );
     }
 
-    containerEl.createEl("div", {
-      text: "✍️ 划词助手（选词调用 LLM）",
-      cls: "mv-obcc-section-title setting-item-name",
-    });
-    addHeading(containerEl, "总开关");
-
-    new Setting(containerEl)
-      .setName("启用")
-      .setDesc(
-        "完全独立于 IDE 桥接。开启后，在 Markdown / PDF / Web Viewer 中划词，右键或快捷键即可用预设提示词调用 LLM。",
-      )
-      .addToggle((toggle) =>
-        toggle
-          .setValue(this.plugin.settings.llm.enabled)
-          .onChange(async (value) => {
-            this.plugin.settings.llm.enabled = value;
-            await this.plugin.saveData(this.plugin.settings);
-            this.plugin.refreshLlmFeature();
-            this.display();
-          }),
-      );
-
-    {
-      const tip = containerEl.createEl("p", {
-        text: "提示：PDF 视图的右键被 Obsidian / pdf++ 占用，无法注入 LLM 菜单，请用快捷键触发（在「快捷键设置」里给「LLM：xxx」命令绑键）。网页视图（Web Viewer）里，Obsidian 的快捷键因焦点隔离无法直接生效，插件会自动把你已绑定的「LLM：xxx」快捷键同步注入网页，所以网页里用同一个快捷键即可。",
-      });
-      tip.addClass("mv-obcc-llm-hint");
-    }
-
-    if (this.plugin.settings.llm.enabled) {
-      // ---- 提供商 ----
-      addHeading(containerEl, "API 提供商");
-      this.renderProviders(containerEl);
-
-      new Setting(containerEl)
-        .setName("网页视图注入右键菜单（实验性）")
-        .setDesc(
-          "因网页视图跨域隔离，Obsidian 读不到网页内的选区。开启后会向网页注入脚本，在网页内显示我们的右键菜单（会屏蔽网页原生右键，部分站点可能失效）。关闭时网页视图改用快捷键调用。",
-        )
-        .addToggle((toggle) =>
-          toggle
-            .setValue(this.plugin.settings.llm.webContextMenu)
-            .onChange(async (value) => {
-              this.plugin.settings.llm.webContextMenu = value;
-              await this.plugin.saveData(this.plugin.settings);
-              new Notice(
-                value
-                  ? "已开启网页右键菜单，将在网页内注入。"
-                  : "已关闭，网页视图请用快捷键调用。",
-                4000,
-              );
-            }),
-        );
-
-      // ---- 悬浮窗行为 + 划词自动触发 ----
-      addHeading(containerEl, "悬浮窗与自动触发");
-
-      // 自动触发模板：下拉列出所有「已启用」的模板 + 一个「（关闭）」选项。
-      // 仅当存在至少一个已启用模板时才显示，否则给一条提示。
-      const enabledTemplates = this.plugin.settings.llm.templates.filter(
-        (t) => t.enabled,
-      );
-      if (enabledTemplates.length === 0) {
-        new Setting(containerEl)
-          .setName("划词自动触发模板")
-          .setDesc("当前没有已启用的模板，无法设置自动触发。请先在下方启用至少一个模板。");
-      } else {
-        new Setting(containerEl)
-          .setName("划词自动触发模板")
-          .setDesc(
-            "选择一个模板后，左侧功能区会出现「划词自动触发」按钮（点亮后才生效，每次启动默认关闭）。点亮后划词会自动用所选模板调用助手；所选模板若被关闭或删除，按钮会自动消失。",
-          )
-          .addDropdown((dropdown) => {
-            dropdown.addOption("", "（关闭）");
-            for (const tpl of enabledTemplates) {
-              dropdown.addOption(tpl.id, tpl.label);
-            }
-            dropdown.setValue(
-              this.plugin.settings.llm.autoTriggerTemplateId ?? "",
-            );
-            dropdown.onChange(async (value) => {
-              this.plugin.settings.llm.autoTriggerTemplateId = value || null;
-              await this.plugin.saveData(this.plugin.settings);
-              this.plugin.refreshLlmFeature();
-            });
-          });
-      }
-
-      // ---- 提示词模板 ----
-      addHeading(containerEl, "提示词模板");
-      const hint = containerEl.createEl("div", {
-        text: "提示词中可用 {selection} 占位符表示划词内容；不含占位符时，划词会自动追加到末尾。每个模板可单独开关，并选择用哪个提供商的哪个模型。",
-      });
-      hint.addClass("mv-obcc-llm-hint");
-      this.renderTemplates(containerEl);
-
-      new Setting(containerEl).addButton((btn) =>
-        btn
-          .setButtonText("新增提示词模板")
-          .setCta()
-          .onClick(async () => {
-            const next: LlmPromptTemplate = {
-              id: `tpl-${Date.now()}`,
-              label: "新模板",
-              prompt: "{selection}",
-              enabled: true,
-              providerId: null,
-              modelId: null,
-              thinkingMode: "default",
-            };
-            this.plugin.settings.llm.templates.push(next);
-            await this.plugin.saveData(this.plugin.settings);
-            this.display();
-          }),
-      );
-    }
-
     addHeading(containerEl, "上游兼容");
     new Setting(containerEl)
       .setName("上游模式")
@@ -434,7 +328,7 @@ export class MvObccIdeSettingTab extends PluginSettingTab {
       .addButton((button) =>
         button.setButtonText("重启").onClick(async () => {
           await this.plugin.restartBridge();
-          new Notice("MV OBCC IDE 桥接已重启。");
+          new Notice("mv-SenceAI IDE 桥接已重启。");
           this.display();
         }),
       );
@@ -445,10 +339,555 @@ export class MvObccIdeSettingTab extends PluginSettingTab {
       .addButton((button) =>
         button.setButtonText("恢复").onClick(async () => {
           await this.plugin.restoreClaudeSettings();
-          new Notice("已恢复 MV OBCC IDE 管理的 Claude 设置。");
+          new Notice("已恢复 mv-SenceAI IDE 管理的 Claude 设置。");
           this.display();
         }),
       );
+
+    containerEl.createEl("div", {
+      text: "🤖 API 提供商（划词助手与行内补全共用）",
+      cls: "mv-senceai-section-title setting-item-name",
+    });
+    addHeading(containerEl, "API 提供商");
+    {
+      const tip = containerEl.createEl("p", {
+        text: "API Base URL 和模型必填；API Key 仅对需要鉴权的服务必填，本地无鉴权服务可留空。",
+      });
+      tip.addClass("mv-senceai-llm-hint");
+    }
+    this.renderProviders(containerEl);
+
+    containerEl.createEl("div", {
+      text: "⌨️ 行内补全（Markdown 续写）",
+      cls: "mv-senceai-section-title setting-item-name",
+    });
+    this.renderInlineCompletion(containerEl);
+
+    containerEl.createEl("div", {
+      text: "✍️ 划词助手（选词调用 LLM）",
+      cls: "mv-senceai-section-title setting-item-name",
+    });
+    addHeading(containerEl, "总开关");
+
+    new Setting(containerEl)
+      .setName("启用")
+      .setDesc(
+        "完全独立于 IDE 桥接。开启后，在 Markdown / PDF / Web Viewer 中划词，右键或快捷键即可用预设提示词调用 LLM。",
+      )
+      .addToggle((toggle) =>
+        toggle
+          .setValue(this.plugin.settings.llm.enabled)
+          .onChange(async (value) => {
+            this.plugin.settings.llm.enabled = value;
+            await this.plugin.saveData(this.plugin.settings);
+            this.plugin.refreshLlmFeature();
+            this.display();
+          }),
+      );
+
+    {
+      const tip = containerEl.createEl("p", {
+        text: "提示：PDF 视图的右键被 Obsidian / pdf++ 占用，无法注入 LLM 菜单，请用快捷键触发（在「快捷键设置」里给「LLM：xxx」命令绑键）。网页视图（Web Viewer）里，Obsidian 的快捷键因焦点隔离无法直接生效，插件会自动把你已绑定的「LLM：xxx」快捷键同步注入网页，所以网页里用同一个快捷键即可。",
+      });
+      tip.addClass("mv-senceai-llm-hint");
+    }
+
+    if (this.plugin.settings.llm.enabled) {
+      new Setting(containerEl)
+        .setName("网页视图注入右键菜单（实验性）")
+        .setDesc(
+          "因网页视图跨域隔离，Obsidian 读不到网页内的选区。开启后会向网页注入脚本，在网页内显示我们的右键菜单（会屏蔽网页原生右键，部分站点可能失效）。关闭时网页视图改用快捷键调用。",
+        )
+        .addToggle((toggle) =>
+          toggle
+            .setValue(this.plugin.settings.llm.webContextMenu)
+            .onChange(async (value) => {
+              this.plugin.settings.llm.webContextMenu = value;
+              await this.plugin.saveData(this.plugin.settings);
+              new Notice(
+                value
+                  ? "已开启网页右键菜单，将在网页内注入。"
+                  : "已关闭，网页视图请用快捷键调用。",
+                4000,
+              );
+            }),
+        );
+
+      // ---- 悬浮窗行为 + 划词自动触发 ----
+      addHeading(containerEl, "悬浮窗与自动触发");
+
+      // 自动触发模板：下拉列出所有「已启用」的模板 + 一个「（关闭）」选项。
+      // 仅当存在至少一个已启用模板时才显示，否则给一条提示。
+      const enabledTemplates = this.plugin.settings.llm.templates.filter(
+        (t) => t.enabled,
+      );
+      if (enabledTemplates.length === 0) {
+        new Setting(containerEl)
+          .setName("划词自动触发模板")
+          .setDesc("当前没有已启用的模板，无法设置自动触发。请先在下方启用至少一个模板。");
+      } else {
+        new Setting(containerEl)
+          .setName("划词自动触发模板")
+          .setDesc(
+            "选择一个模板后，左侧功能区会出现「划词自动触发」按钮（点亮后才生效，每次启动默认关闭）。点亮后划词会自动用所选模板调用助手；所选模板若被关闭或删除，按钮会自动消失。",
+          )
+          .addDropdown((dropdown) => {
+            dropdown.addOption("", "（关闭）");
+            for (const tpl of enabledTemplates) {
+              dropdown.addOption(tpl.id, tpl.label);
+            }
+            dropdown.setValue(
+              this.plugin.settings.llm.autoTriggerTemplateId ?? "",
+            );
+            dropdown.onChange(async (value) => {
+              this.plugin.settings.llm.autoTriggerTemplateId = value || null;
+              await this.plugin.saveData(this.plugin.settings);
+              this.plugin.refreshLlmFeature();
+            });
+          });
+      }
+
+      // ---- 提示词模板 ----
+      addHeading(containerEl, "提示词模板");
+      const hint = containerEl.createEl("div", {
+        text: "提示词中可用 {selection} 占位符表示划词内容；不含占位符时，划词会自动追加到末尾。每个模板可单独开关，并选择用哪个提供商的哪个模型。",
+      });
+      hint.addClass("mv-senceai-llm-hint");
+      this.renderTemplates(containerEl);
+
+      new Setting(containerEl).addButton((btn) =>
+        btn
+          .setButtonText("新增提示词模板")
+          .setCta()
+          .onClick(async () => {
+            const next: LlmPromptTemplate = {
+              id: `tpl-${Date.now()}`,
+              label: "新模板",
+              prompt: "{selection}",
+              enabled: true,
+              providerId: null,
+              modelId: null,
+              thinkingMode: "default",
+            };
+            this.plugin.settings.llm.templates.push(next);
+            await this.plugin.saveData(this.plugin.settings);
+            this.display();
+          }),
+      );
+    }
+  }
+
+  // ---- 行内补全：独立模块设置 ----
+
+  private async saveInlineCompletionSettings(): Promise<void> {
+    await this.plugin.saveData(this.plugin.settings);
+    this.plugin.refreshInlineCompletion();
+  }
+
+  private renderInlineCompletion(containerEl: HTMLElement): void {
+    const cfg = this.plugin.settings.inlineCompletion;
+
+    addHeading(containerEl, "总开关");
+    new Setting(containerEl)
+      .setName("启用行内补全")
+      .setDesc(
+        "开启后左侧功能区会出现「行内补全」按钮；按钮点亮时自动补全，未点亮时只响应手动请求按键。",
+      )
+      .addToggle((toggle) =>
+        toggle.setValue(cfg.enabled).onChange(async (value) => {
+          cfg.enabled = value;
+          if (!value) {
+            cfg.armed = false;
+          }
+          await this.saveInlineCompletionSettings();
+          this.display();
+        }),
+      );
+
+    addHeading(containerEl, "模型与上下文");
+    new Setting(containerEl)
+      .setName("补全模型")
+      .setDesc("选择行内补全使用的提供商和模型；这里复用上方 API 提供商配置。")
+      .addDropdown((dropdown) => {
+        dropdown.addOption("", "（未选择提供商）");
+        for (const provider of this.plugin.settings.llm.providers) {
+          dropdown.addOption(provider.id, provider.name || "（未命名提供商）");
+        }
+        dropdown.setValue(cfg.providerId ?? "");
+        dropdown.onChange(async (value) => {
+          cfg.providerId = value || null;
+          const provider = this.plugin.settings.llm.providers.find(
+            (p) => p.id === cfg.providerId,
+          );
+          if (!provider?.models.some((m) => m.id === cfg.modelId)) {
+            cfg.modelId = null;
+          }
+          await this.saveInlineCompletionSettings();
+          this.display();
+        });
+      })
+      .addDropdown((dropdown) => {
+        const provider = this.plugin.settings.llm.providers.find(
+          (p) => p.id === cfg.providerId,
+        );
+        if (!provider) {
+          dropdown.addOption("", "（先选择提供商）");
+          dropdown.setDisabled(true);
+        } else if (provider.models.length === 0) {
+          dropdown.addOption("", "（该提供商暂无模型）");
+          dropdown.setDisabled(true);
+        } else {
+          dropdown.addOption("", "（未选择模型）");
+          for (const model of provider.models) {
+            dropdown.addOption(model.id, model.name || "（未命名模型）");
+          }
+          dropdown.setValue(cfg.modelId ?? "");
+          dropdown.onChange(async (value) => {
+            cfg.modelId = value || null;
+            await this.saveInlineCompletionSettings();
+          });
+        }
+      });
+
+    new Setting(containerEl)
+      .setName("思考")
+      .setDesc(
+        "决定是否在行内补全请求中携带思考参数。默认 = 不发送任何思考参数；自定义 = 你填的 JSON。",
+      )
+      .addDropdown((dropdown) => {
+        dropdown
+          .addOption("default", "默认")
+          .addOption("on", "开")
+          .addOption("off", "关")
+          .addOption("custom", "自定义")
+          .setValue(cfg.thinkingMode ?? "default")
+          .onChange(async (value) => {
+            cfg.thinkingMode = value as LlmThinkingMode;
+            await this.saveInlineCompletionSettings();
+            this.display();
+          });
+      })
+      .addText((text) => {
+        const isCustom = (cfg.thinkingMode ?? "default") === "custom";
+        text.inputEl.toggleClass("mv-senceai-is-hidden", !isCustom);
+        text
+          .setPlaceholder('自定义 JSON，如 {"thinking":{"type":"enabled"}}')
+          .setValue(cfg.thinkingCustom ?? "")
+          .onChange(async (value) => {
+            cfg.thinkingCustom = value;
+            await this.saveInlineCompletionSettings();
+          });
+      });
+
+    // ---- 补全提示词 ----
+    addHeading(containerEl, "补全提示词");
+
+    new Setting(containerEl)
+      .setName("补全提示词主体")
+      .setDesc("发送给模型的系统消息主体部分（角色描述 + 补全规则）。留空或清空则使用内置默认值。")
+      .addTextArea((text) => {
+        text.inputEl.rows = 8;
+        text.inputEl.addClass("mv-senceai-inline-prompt-textarea");
+        text
+          .setPlaceholder("（使用默认提示词主体）")
+          .setValue(cfg.systemPromptBody)
+          .onChange(async (value) => {
+            cfg.systemPromptBody = value;
+            await this.saveInlineCompletionSettings();
+          });
+      })
+      .addButton((btn) =>
+        btn.setButtonText("恢复默认").onClick(async () => {
+          cfg.systemPromptBody = DEFAULT_INLINE_SYSTEM_PROMPT_BODY;
+          await this.saveInlineCompletionSettings();
+          this.display();
+        }),
+      );
+
+    {
+      const sentinelMatch = DEFAULT_INLINE_NO_COMPLETION_PROMPT.match(/<[^>]+NO_COMPLETION>/);
+      const sentinelToken = sentinelMatch ? sentinelMatch[0] : "<MV_SENCEAI_NO_COMPLETION>";
+      const hintEl = containerEl.createEl("div", {
+        text:
+          `下方「${sentinelToken}」是无需补全时的返回标记。` +
+          `如果修改或删除该标记，模型将无法正确抑制无效补全。`,
+      });
+      hintEl.addClass("mv-senceai-llm-hint");
+    }
+
+    new Setting(containerEl)
+      .setName("无需补全指令")
+      .setDesc("控制模型在无需补全时返回的 sentinel 标记指令。修改时请特别注意。")
+      .addTextArea((text) => {
+        text.inputEl.rows = 3;
+        text.inputEl.addClass("mv-senceai-inline-prompt-textarea");
+        text
+          .setPlaceholder("（使用默认无需补全指令）")
+          .setValue(cfg.noCompletionPrompt)
+          .onChange(async (value) => {
+            const defaultSentinel =
+              DEFAULT_INLINE_NO_COMPLETION_PROMPT.match(/<[^>]+NO_COMPLETION>/)?.[0] ?? "";
+            const userHasSentinel = defaultSentinel && value.includes(defaultSentinel);
+            if (value.trim() && defaultSentinel && !userHasSentinel) {
+              new Notice(
+                "⚠️ 无需补全标记已变更，如果模型不返回该标记，可能导致无法正确抑制无效补全。",
+                6000,
+              );
+            }
+            cfg.noCompletionPrompt = value;
+            await this.saveInlineCompletionSettings();
+          });
+      })
+      .addButton((btn) =>
+        btn.setButtonText("恢复默认").onClick(async () => {
+          cfg.noCompletionPrompt = DEFAULT_INLINE_NO_COMPLETION_PROMPT;
+          await this.saveInlineCompletionSettings();
+          this.display();
+        }),
+      );
+
+    new Setting(containerEl)
+      .setName("拒绝后重生成指令")
+      .setDesc(
+        "按拒绝键后发送给模型的用户消息。支持 {rejected} 占位符代表被拒绝的补全文本；留空则使用内置默认值。",
+      )
+      .addTextArea((text) => {
+        text.inputEl.rows = 7;
+        text.inputEl.addClass("mv-senceai-inline-prompt-textarea");
+        text
+          .setPlaceholder("（使用默认拒绝后重生成指令）")
+          .setValue(cfg.rejectPrompt)
+          .onChange(async (value) => {
+            cfg.rejectPrompt = value;
+            await this.saveInlineCompletionSettings();
+          });
+      })
+      .addButton((btn) =>
+        btn.setButtonText("恢复默认").onClick(async () => {
+          cfg.rejectPrompt = DEFAULT_INLINE_REJECT_PROMPT;
+          await this.saveInlineCompletionSettings();
+          this.display();
+        }),
+      );
+
+    const renderContextLimit = (
+      key: "contextBeforeChars" | "contextAfterChars",
+      name: string,
+      desc: string,
+    ) => {
+      new Setting(containerEl)
+        .setName(name)
+        .setDesc(desc)
+        .addText((text) => {
+          text.inputEl.type = "number";
+          text.inputEl.min = "100";
+          text.inputEl.step = "100";
+          text
+            .setPlaceholder(String(DEFAULT_SETTINGS.inlineCompletion[key]))
+            .setValue(String(cfg[key]))
+            .onChange(async (value) => {
+              const trimmed = value.trim();
+              if (!trimmed) {
+                cfg[key] = DEFAULT_SETTINGS.inlineCompletion[key];
+              } else {
+                const parsed = Number(trimmed);
+                if (!Number.isFinite(parsed) || parsed < 100) return;
+                cfg[key] = Math.floor(parsed);
+              }
+              await this.saveInlineCompletionSettings();
+            });
+        });
+    };
+
+    renderContextLimit(
+      "contextBeforeChars",
+      "光标前上下文长度",
+      "发送给模型的光标前最多多少个 Markdown 源文本字符。留空则使用默认值。",
+    );
+    renderContextLimit(
+      "contextAfterChars",
+      "光标后上下文长度",
+      "发送给模型的光标后最多多少个 Markdown 源文本字符。留空则使用默认值。",
+    );
+
+    new Setting(containerEl)
+      .setName("触发延迟")
+      .setDesc("停止输入后等待多少毫秒再请求补全。留空则使用默认值。")
+      .addText((text) => {
+        text.inputEl.type = "number";
+        text.inputEl.min = "50";
+        text.inputEl.step = "50";
+        text
+          .setPlaceholder(String(DEFAULT_SETTINGS.inlineCompletion.debounceMs))
+          .setValue(String(cfg.debounceMs))
+          .onChange(async (value) => {
+            const trimmed = value.trim();
+            if (!trimmed) {
+              cfg.debounceMs = DEFAULT_SETTINGS.inlineCompletion.debounceMs;
+            } else {
+              const parsed = Number(trimmed);
+              if (!Number.isFinite(parsed) || parsed < 50) return;
+              cfg.debounceMs = Math.floor(parsed);
+            }
+            await this.saveInlineCompletionSettings();
+          });
+      });
+
+    new Setting(containerEl)
+      .setName("最大补全字符数")
+      .setDesc("限制 ghost text 的最大字符数。留空则使用默认值。")
+      .addText((text) => {
+        text.inputEl.type = "number";
+        text.inputEl.min = "10";
+        text.inputEl.step = "10";
+        text
+          .setPlaceholder(String(DEFAULT_SETTINGS.inlineCompletion.maxChars))
+          .setValue(String(cfg.maxChars))
+          .onChange(async (value) => {
+            const trimmed = value.trim();
+            if (!trimmed) {
+              cfg.maxChars = DEFAULT_SETTINGS.inlineCompletion.maxChars;
+            } else {
+              const parsed = Number(trimmed);
+              if (!Number.isFinite(parsed) || parsed < 10) return;
+              cfg.maxChars = Math.floor(parsed);
+            }
+            await this.saveInlineCompletionSettings();
+          });
+      });
+
+    new Setting(containerEl)
+      .setName("最大补全行数")
+      .setDesc("限制 ghost text 的最大行数。留空则使用默认值。")
+      .addText((text) => {
+        text.inputEl.type = "number";
+        text.inputEl.min = "1";
+        text.inputEl.step = "1";
+        text
+          .setPlaceholder(String(DEFAULT_SETTINGS.inlineCompletion.maxLines))
+          .setValue(String(cfg.maxLines))
+          .onChange(async (value) => {
+            const trimmed = value.trim();
+            if (!trimmed) {
+              cfg.maxLines = DEFAULT_SETTINGS.inlineCompletion.maxLines;
+            } else {
+              const parsed = Number(trimmed);
+              if (!Number.isFinite(parsed) || parsed < 1) return;
+              cfg.maxLines = Math.floor(parsed);
+            }
+            await this.saveInlineCompletionSettings();
+          });
+      });
+
+    addHeading(containerEl, "快捷键");
+    this.renderInlineHotkeyRecorder(
+      containerEl,
+      "accept",
+      "接受按键",
+      "插入当前 ghost text。点击录制后按下想绑定的快捷键。",
+      DEFAULT_SETTINGS.inlineCompletion.keymap.accept,
+    );
+    this.renderInlineHotkeyRecorder(
+      containerEl,
+      "reject",
+      "拒绝按键",
+      "可清空不绑定。绑定后会把被拒绝的补全发回模型并请求另一版。",
+      "",
+    );
+    this.renderInlineHotkeyRecorder(
+      containerEl,
+      "cancel",
+      "取消按键",
+      "只清空当前 ghost text，不请求模型。点击录制后按下想绑定的快捷键。",
+      DEFAULT_SETTINGS.inlineCompletion.keymap.cancel,
+    );
+    this.renderInlineHotkeyRecorder(
+      containerEl,
+      "request",
+      "手动请求按键",
+      "左侧按钮未点亮时也可用它请求一次补全。可清空不绑定。",
+      "",
+    );
+  }
+
+  private renderInlineHotkeyRecorder(
+    containerEl: HTMLElement,
+    key: keyof InlineCompletionKeymap,
+    name: string,
+    description: string,
+    fallback: string,
+  ): void {
+    const setting = new Setting(containerEl)
+      .setName(name)
+      .setDesc(description)
+      .setClass("mv-senceai-inline-hotkey-setting");
+    const valueEl = setting.controlEl.createEl("span", {
+      cls: "mv-senceai-inline-hotkey-value",
+      text: formatInlineHotkeyLabel(
+        this.plugin.settings.inlineCompletion.keymap[key],
+      ),
+    });
+
+    let cleanupRecording: (() => void) | null = null;
+    const stopRecording = () => {
+      cleanupRecording?.();
+      cleanupRecording = null;
+      valueEl.removeClass("is-recording");
+      valueEl.setText(
+        formatInlineHotkeyLabel(
+          this.plugin.settings.inlineCompletion.keymap[key],
+        ),
+      );
+    };
+    const save = async (value: string) => {
+      this.plugin.settings.inlineCompletion.keymap[key] = value;
+      await this.saveInlineCompletionSettings();
+      stopRecording();
+    };
+
+    setting.addButton((button) =>
+      button.setButtonText("录制").onClick(() => {
+        cleanupRecording?.();
+        valueEl.addClass("is-recording");
+        valueEl.setText("请按下快捷键...");
+        let timeoutId: number | null = null;
+        const onKeyDown = (event: KeyboardEvent) => {
+          event.preventDefault();
+          event.stopPropagation();
+          const next = eventToCodeMirrorKey(
+            event,
+            activeWindow.navigator.platform.toLowerCase().includes("mac"),
+          );
+          if (!next) return;
+          void save(next);
+        };
+        cleanupRecording = () => {
+          activeWindow.removeEventListener("keydown", onKeyDown, true);
+          if (timeoutId !== null) {
+            activeWindow.clearTimeout(timeoutId);
+            timeoutId = null;
+          }
+        };
+        activeWindow.addEventListener("keydown", onKeyDown, true);
+        timeoutId = activeWindow.setTimeout(() => {
+          stopRecording();
+        }, 10_000);
+      }),
+    );
+
+    if (fallback) {
+      setting.addButton((button) =>
+        button.setButtonText("恢复默认").onClick(() => {
+          void save(fallback);
+        }),
+      );
+    } else {
+      setting.addButton((button) =>
+        button.setButtonText("清空").onClick(() => {
+          void save("");
+        }),
+      );
+    }
   }
 
   // ---- 划词助手：API 提供商编辑 ----
@@ -487,20 +926,20 @@ export class MvObccIdeSettingTab extends PluginSettingTab {
     idx: number,
     provider: LlmProviderConfig,
   ): void {
-    const wrap = containerEl.createDiv({ cls: "mv-obcc-llm-provider" });
+    const wrap = containerEl.createDiv({ cls: "mv-senceai-llm-provider" });
     const header = new Setting(wrap)
-      .setClass("mv-obcc-llm-provider-header")
+      .setClass("mv-senceai-llm-provider-header")
       .setHeading();
 
     // Provider name + type + delete, all in the header's control area.
     header.controlEl.empty();
-    header.controlEl.addClass("mv-obcc-llm-provider-head");
+    header.controlEl.addClass("mv-senceai-llm-provider-head");
 
     const nameInput = header.controlEl.createEl("input", {
       type: "text",
       attr: { placeholder: "提供商名称（如：白山）", value: provider.name },
     });
-    nameInput.addClass("mv-obcc-llm-provider-name");
+    nameInput.addClass("mv-senceai-llm-provider-name");
     nameInput.addEventListener("change", async () => {
       const target = this.plugin.settings.llm.providers[idx];
       if (!target) return;
@@ -535,8 +974,13 @@ export class MvObccIdeSettingTab extends PluginSettingTab {
               t.modelId = null;
             }
           }
+          if (this.plugin.settings.inlineCompletion.providerId === provider.id) {
+            this.plugin.settings.inlineCompletion.providerId = null;
+            this.plugin.settings.inlineCompletion.modelId = null;
+          }
           this.plugin.settings.llm.providers.splice(idx, 1);
           await this.plugin.saveData(this.plugin.settings);
+          this.plugin.refreshInlineCompletion();
           this.display();
         }),
     );
@@ -596,15 +1040,15 @@ export class MvObccIdeSettingTab extends PluginSettingTab {
     // Models list.
     const modelsHeading = wrap.createEl("div", {
       text: "模型",
-      cls: "mv-obcc-llm-models-label",
+      cls: "mv-senceai-llm-models-label",
     });
-    const modelsList = wrap.createDiv({ cls: "mv-obcc-llm-models" });
+    const modelsList = wrap.createDiv({ cls: "mv-senceai-llm-models" });
     const models = provider.models;
     for (let m = 0; m < models.length; m += 1) {
       const midx = m;
       const model = models[midx];
       if (!model) continue;
-      const row = modelsList.createDiv({ cls: "mv-obcc-llm-model-row" });
+      const row = modelsList.createDiv({ cls: "mv-senceai-llm-model-row" });
       const input = row.createEl("input", {
         type: "text",
         attr: {
@@ -612,7 +1056,7 @@ export class MvObccIdeSettingTab extends PluginSettingTab {
           value: model.name,
         },
       });
-      input.addClass("mv-obcc-llm-model-name");
+      input.addClass("mv-senceai-llm-model-name");
       input.addEventListener("change", async () => {
         const p = this.plugin.settings.llm.providers[idx];
         const target = p?.models[midx];
@@ -621,7 +1065,7 @@ export class MvObccIdeSettingTab extends PluginSettingTab {
         await this.plugin.saveData(this.plugin.settings);
       });
 
-      const delBtn = row.createEl("button", { text: "删除", cls: "mv-obcc-llm-model-del" });
+      const delBtn = row.createEl("button", { text: "删除", cls: "mv-senceai-llm-model-del" });
       delBtn.addEventListener("click", async () => {
         const p = this.plugin.settings.llm.providers[idx];
         if (!p) return;
@@ -634,15 +1078,22 @@ export class MvObccIdeSettingTab extends PluginSettingTab {
               t.modelId = null;
             }
           }
+          if (
+            this.plugin.settings.inlineCompletion.providerId === provider.id &&
+            this.plugin.settings.inlineCompletion.modelId === removed.id
+          ) {
+            this.plugin.settings.inlineCompletion.modelId = null;
+          }
         }
         await this.plugin.saveData(this.plugin.settings);
+        this.plugin.refreshInlineCompletion();
         this.display();
       });
     }
     void modelsHeading; // label rendered above
     const addModelBtn = modelsList.createEl("button", {
       text: "+ 添加模型",
-      cls: "mv-obcc-llm-model-add",
+      cls: "mv-senceai-llm-model-add",
     });
     addModelBtn.addEventListener("click", async () => {
       const p = this.plugin.settings.llm.providers[idx];
@@ -674,17 +1125,17 @@ export class MvObccIdeSettingTab extends PluginSettingTab {
     idx: number,
     tpl: LlmPromptTemplate,
   ): void {
-    const setting = new Setting(containerEl).setClass("mv-obcc-llm-tpl");
+    const setting = new Setting(containerEl).setClass("mv-senceai-llm-tpl");
     setting.infoEl.empty();
-    setting.infoEl.addClass("mv-obcc-llm-tpl-info");
+    setting.infoEl.addClass("mv-senceai-llm-tpl-info");
     setting.controlEl.empty();
-    setting.controlEl.addClass("mv-obcc-llm-tpl-control");
+    setting.controlEl.addClass("mv-senceai-llm-tpl-control");
 
     const labelInput = setting.infoEl.createEl("input", {
       type: "text",
       attr: { placeholder: "菜单显示名（如：翻译）", value: tpl.label },
     });
-    labelInput.addClass("mv-obcc-llm-tpl-label");
+    labelInput.addClass("mv-senceai-llm-tpl-label");
     labelInput.addEventListener("change", async () => {
       const target = this.plugin.settings.llm.templates[idx];
       if (!target) return;
@@ -696,7 +1147,7 @@ export class MvObccIdeSettingTab extends PluginSettingTab {
     promptArea.setAttr("rows", "3");
     promptArea.setAttr("placeholder", "提示词，可用 {selection} 占位符");
     promptArea.value = tpl.prompt;
-    promptArea.addClass("mv-obcc-llm-tpl-prompt");
+    promptArea.addClass("mv-senceai-llm-tpl-prompt");
     promptArea.addEventListener("change", async () => {
       const target = this.plugin.settings.llm.templates[idx];
       if (!target) return;
@@ -706,7 +1157,7 @@ export class MvObccIdeSettingTab extends PluginSettingTab {
 
     // Model selection button + current selection summary, plus enable toggle.
     const modelBtn = setting.controlEl.createEl("button", {
-      cls: "mv-obcc-llm-tpl-model",
+      cls: "mv-senceai-llm-tpl-model",
     });
     const refreshModelLabel = () => {
       const p = this.plugin.settings.llm.providers.find((x) => x.id === tpl.providerId);
@@ -753,11 +1204,11 @@ export class MvObccIdeSettingTab extends PluginSettingTab {
 
     // 思考下拉（默认/开/关/自定义），紧跟「选择模型」之后。选「自定义」展开 JSON 框。
     const thinkingRow = setting.controlEl.createDiv({
-      cls: "mv-obcc-llm-tpl-thinking-row",
+      cls: "mv-senceai-llm-tpl-thinking-row",
     });
     const thinkingLabel = thinkingRow.createEl("span", {
       text: "思考",
-      cls: "mv-obcc-llm-tpl-thinking-label",
+      cls: "mv-senceai-llm-tpl-thinking-label",
     });
     void thinkingLabel;
     const thinkingSelect = thinkingRow.createEl("select");
@@ -771,7 +1222,7 @@ export class MvObccIdeSettingTab extends PluginSettingTab {
       if ((tpl.thinkingMode ?? "default") === opt.value) o.selected = true;
     }
     const customBox = thinkingRow.createEl("input", { type: "text" });
-    customBox.addClass("mv-obcc-llm-tpl-thinking-custom");
+    customBox.addClass("mv-senceai-llm-tpl-thinking-custom");
     customBox.placeholder = '自定义 JSON，如 {"thinking":{"type":"enabled"}}';
     customBox.value = tpl.thinkingCustom ?? "";
     const refreshCustomVisibility = () => {
@@ -799,16 +1250,16 @@ export class MvObccIdeSettingTab extends PluginSettingTab {
         "开 = {\"thinking\":{\"type\":\"enabled\"}}、关 = {\"thinking\":{\"type\":\"disabled\"}}、" +
         "自定义 = 你填的 JSON。默认 = 不发送任何思考参数（安全）。" +
         "是否被模型实际采纳取决于模型与端点，不支持的模型可能报错或忽略。",
-      cls: "mv-obcc-llm-tpl-hint-thinking",
+      cls: "mv-senceai-llm-tpl-hint-thinking",
     });
     void thinkingHint;
 
     const enableRow = setting.controlEl.createDiv({
-      cls: "mv-obcc-llm-tpl-enable-row",
+      cls: "mv-senceai-llm-tpl-enable-row",
     });
     const enableToggle = enableRow.createEl("input", { type: "checkbox" });
     enableToggle.checked = tpl.enabled;
-    enableToggle.id = `mv-obcc-llm-tpl-enabled-${idx}`;
+    enableToggle.id = `mv-senceai-llm-tpl-enabled-${idx}`;
     const enableLabel = enableRow.createEl("label", { text: "启用" });
     enableLabel.setAttribute("for", enableToggle.id);
     enableToggle.addEventListener("change", async () => {

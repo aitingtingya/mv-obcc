@@ -11,8 +11,8 @@ import {
 } from "@codemirror/view";
 import type { App, View, WorkspaceLeaf } from "obsidian";
 
-const HIGHLIGHT_NAME = "mv-obcc-persistent-selection";
-const WEB_STATE_KEY = "__mvObccPersistentSelection";
+const HIGHLIGHT_NAME = "mv-senceai-persistent-selection";
+const WEB_STATE_KEY = "__mvSenceAiPersistentSelection";
 const WEB_SYNC_INTERVAL_MS = 1_000;
 
 interface StoredEditorRange {
@@ -143,7 +143,7 @@ export const persistentEditorSelectionField =
         if (!stored) return Decoration.none;
         return Decoration.set([
           Decoration.mark({
-            class: "mv-obcc-persistent-selection",
+            class: "mv-senceai-persistent-selection",
           }).range(stored.from, stored.to),
         ]);
       }),
@@ -189,7 +189,7 @@ export function webSelectionHighlightInstallScript(color: string): string {
         return { success: false, reason: "CSS Custom Highlight is unavailable" };
       }
       const style = document.createElement("style");
-      style.dataset.mvObccPersistentSelection = "true";
+      style.dataset.mvSenceAiPersistentSelection = "true";
       style.textContent = "::highlight(" + name + ") { background-color: " + color + "; }";
       (document.head || document.documentElement).appendChild(style);
       const capture = () => {
@@ -249,7 +249,7 @@ export function webSelectionHighlightCleanupScript(): string {
 function resolvedSelectionColor(document: Document): string {
   const parent = document.body ?? document.documentElement;
   const probe = document.createElement("span");
-  probe.addClass("mv-obcc-selection-color-probe");
+  probe.addClass("mv-senceai-selection-color-probe");
   parent.appendChild(probe);
   const color =
     document.defaultView?.getComputedStyle(probe).backgroundColor ?? "";

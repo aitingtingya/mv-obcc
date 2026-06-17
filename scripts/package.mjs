@@ -5,12 +5,13 @@ import archiver from "archiver";
 
 const root = path.resolve(import.meta.dirname, "..");
 const manifest = JSON.parse(fs.readFileSync(path.join(root, "manifest.json"), "utf8"));
-const releaseDirectory = path.join(root, "release", `mv-obcc-ide-${manifest.version}`);
+const releaseName = `${manifest.id}-${manifest.version}`;
+const releaseDirectory = path.join(root, "release", releaseName);
 const zipPath = `${releaseDirectory}.zip`;
 const sourceZipPath = path.join(
   root,
   "release",
-  `mv-obcc-ide-${manifest.version}-source.zip`,
+  `${releaseName}-source.zip`,
 );
 
 fs.rmSync(releaseDirectory, { recursive: true, force: true });
@@ -37,7 +38,7 @@ async function createArchive(target, addContents) {
 }
 
 await createArchive(zipPath, (archive) => {
-  archive.directory(releaseDirectory, "mv-obcc-ide");
+  archive.directory(releaseDirectory, manifest.id);
 });
 
 fs.rmSync(sourceZipPath, { force: true });
@@ -52,7 +53,7 @@ await createArchive(sourceZipPath, (archive) => {
       ".git/**",
     ],
   }, {
-    prefix: `mv-obcc-ide-${manifest.version}-source`,
+    prefix: `${releaseName}-source`,
   });
 });
 
