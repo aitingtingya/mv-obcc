@@ -22,7 +22,7 @@ function readJson(filePath: string): ClaudeSettingsFile {
 
 function writeJson(filePath: string, value: ClaudeSettingsFile): void {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  const temporary = `${filePath}.mv-obcc.tmp`;
+  const temporary = `${filePath}.mv-senceai.tmp`;
   fs.writeFileSync(temporary, `${JSON.stringify(value, null, 2)}\n`, "utf8");
   fs.renameSync(temporary, filePath);
 }

@@ -4,7 +4,7 @@ import { type App, TFile } from "obsidian";
  * Single reusable temp markdown file that backs the LLM result popover.
  *
  * `MarkdownView` requires a real `TFile`, so the embedded-editor popover opens
- * this file. We reuse one file per vault (`mv-obcc-llm-history/latest.md`) and
+ * this file. We reuse one file per vault (`mv-senceai-llm-history/latest.md`) and
  * overwrite its contents each invocation — zero garbage accumulation, no
  * cleanup needed.
  *
@@ -15,10 +15,10 @@ import { type App, TFile } from "obsidian";
  * search / quick switcher).
  */
 
-export const TEMP_DIR = "mv-obcc-llm-history";
+export const TEMP_DIR = "mv-senceai-llm-history";
 export const TEMP_FILE_PATH = `${TEMP_DIR}/latest.md`;
 /** Glob pattern for `userIgnoreFilters`. */
-export const TEMP_IGNORE_PATTERN = "mv-obcc-llm-history/**";
+export const TEMP_IGNORE_PATTERN = "mv-senceai-llm-history/**";
 
 /**
  * Ensure the temp file exists (creating folder + file if needed) and return it.

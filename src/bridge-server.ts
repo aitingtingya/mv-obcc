@@ -274,8 +274,8 @@ export class BridgeServer {
       response.end(
         JSON.stringify({
           error: {
-            type: "mv_obcc_proxy_error",
-            message: "MV OBCC IDE compatibility proxy failed.",
+            type: "mv_senceai_proxy_error",
+            message: "MV SenceAI IDE compatibility proxy failed.",
           },
         }),
       );
@@ -447,7 +447,7 @@ export class BridgeServer {
         return candidate;
       }
     }
-    throw new Error("No local port is available for MV OBCC IDE.");
+    throw new Error("No local port is available for MV SenceAI IDE.");
   }
 }
 

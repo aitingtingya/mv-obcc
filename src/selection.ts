@@ -6,7 +6,7 @@ import type { SelectionState } from "./types";
 export function getVaultRoot(app: App): string {
   const adapter = app.vault.adapter as { getBasePath?: () => string };
   if (!adapter.getBasePath) {
-    throw new Error("MV OBCC IDE requires a desktop file-system vault.");
+    throw new Error("MV SenceAI IDE requires a desktop file-system vault.");
   }
   return adapter.getBasePath();
 }

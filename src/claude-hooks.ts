@@ -32,7 +32,7 @@ function readJson(filePath: string): ClaudeSettingsDocument {
 
 function writeJson(filePath: string, value: ClaudeSettingsDocument): void {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  const temporary = `${filePath}.mv-obcc-hook.tmp`;
+  const temporary = `${filePath}.mv-senceai-hook.tmp`;
   fs.writeFileSync(temporary, `${JSON.stringify(value, null, 2)}\n`, "utf8");
   fs.renameSync(temporary, filePath);
 }
@@ -70,12 +70,12 @@ export function managedTerminalMarkerCommand(platform: NodeJS.Platform): string 
   if (platform === "win32") {
     return [
       "$s=$env:CLAUDE_CODE_SESSION_ID;",
-      "Write-Output ('{\"suppressOutput\":true,\"terminalSequence\":\"\\u001b]0;mv-obcc-ide:'+$s+'\\u0007\"}');",
+      "Write-Output ('{\"suppressOutput\":true,\"terminalSequence\":\"\\u001b]0;mv-senceai-ide:'+$s+'\\u0007\"}');",
       `# ${MANAGED_HOOK_MARKER}`,
     ].join(" ");
   }
   return [
-    `printf '{"suppressOutput":true,"terminalSequence":"\\\\u001b]0;mv-obcc-ide:%s\\\\u0007"}\\n' "$CLAUDE_CODE_SESSION_ID";`,
+    `printf '{"suppressOutput":true,"terminalSequence":"\\\\u001b]0;mv-senceai-ide:%s\\\\u0007"}\\n' "$CLAUDE_CODE_SESSION_ID";`,
     `: ${MANAGED_HOOK_MARKER}`,
   ].join(" ");
 }

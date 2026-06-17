@@ -4,7 +4,7 @@
  * Mirrors the structure of `llm-web-menu-script.ts` / `llm-web-hotkey-script.ts`
  * (idempotent window key + cleanup) but is driven by `mouseup` rather than
  * `contextmenu` / `keydown`: after the user finishes selecting text inside the
- * page, we stash `{ text, id }` into `window.__mvObccAutoTrigger.pending`. The
+ * page, we stash `{ text, id }` into `window.__mvSenceAiAutoTrigger.pending`. The
  * Obsidian side polls that field (see `LlmFeature.pollWebAutoTrigger`) and
  * dispatches the configured auto-trigger template.
  *
@@ -17,7 +17,7 @@ export interface LlmWebAutoTriggerPending {
   id: number;
 }
 
-export const WEB_AUTOTRIGGER_STATE_KEY = "__mvObccAutoTrigger";
+export const WEB_AUTOTRIGGER_STATE_KEY = "__mvSenceAiAutoTrigger";
 
 /**
  * Install script. The state is idempotent: re-injection is a no-op once the

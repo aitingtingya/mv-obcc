@@ -8,7 +8,7 @@ import {
   type View,
   type WorkspaceLeaf,
 } from "obsidian";
-import type MvObccIdePlugin from "../main";
+import type MvSenceAiIdePlugin from "../main";
 import { callLlmStream, resolveProvider } from "./llm-client";
 import { getCommandHotkeys } from "./llm-hotkey-reader";
 import { LlmResultSurface } from "./llm-result-surface";
@@ -194,7 +194,7 @@ export class LlmFeature {
   private readonly autoTriggerPollInFlight = new WeakSet<WorkspaceLeaf>();
   private autoTriggerPollTimer: number | null = null;
 
-  constructor(private readonly plugin: MvObccIdePlugin) {}
+  constructor(private readonly plugin: MvSenceAiIdePlugin) {}
 
   private get settings() {
     return this.plugin.settings.llm;
@@ -1057,7 +1057,7 @@ export class LlmFeature {
     } | null;
     return (
       typeof candidate?.closest === "function" &&
-      candidate.closest(".mv-obcc-llm-popover") !== null
+      candidate.closest(".mv-senceai-llm-popover") !== null
     );
   }
 

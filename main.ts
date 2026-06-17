@@ -33,13 +33,14 @@ import {
   writeLockFile,
 } from "./src/lock-file";
 import { migrateLlm } from "./src/llm-migrate";
+import { migrateInlineCompletion } from "./src/inline-completion/inline-completion-migrate";
 import {
   atMentionedParams,
   currentSelection,
   getVaultRoot,
   selectionChangedParams,
 } from "./src/selection";
-import { MvObccIdeSettingTab } from "./src/settings-tab";
+import { MvSenceAiIdeSettingTab } from "./src/settings-tab";
 import {
   ToolRegistry,
 } from "./src/tool-registry";
@@ -63,6 +64,7 @@ import {
 import { SelectionHighlightController } from "./src/selection-highlights";
 import { TerminalSessionTracker } from "./src/terminal-session-tracker";
 import { LlmFeature } from "./src/llm-feature";
+import { InlineCompletionFeature } from "./src/inline-completion/inline-completion-feature";
 import type {
   BridgeClientContext,
   BridgeSettings,
@@ -72,7 +74,7 @@ import type {
   SelectionState,
 } from "./src/types";
 
-export default class MvObccIdePlugin extends Plugin {
+export default class MvSenceAiIdePlugin extends Plugin {
   settings: BridgeSettings = { ...DEFAULT_SETTINGS };
   port = 0;
   mcpStatus = "尚未检查";
@@ -87,6 +89,7 @@ export default class MvObccIdePlugin extends Plugin {
   private terminalTracker: TerminalSessionTracker | null = null;
   private selectionHighlighter: SelectionHighlightController | null = null;
   private llmFeature: LlmFeature | null = null;
+  private inlineCompletion: InlineCompletionFeature | null = null;
 
   async onload(): Promise<void> {
     const loaded = (await this.loadData()) as Partial<BridgeSettings> | null;
@@ -106,6 +109,7 @@ export default class MvObccIdePlugin extends Plugin {
         ...(loaded?.toolContextLimits ?? {}),
       },
       llm: migrateLlm(loaded?.llm),
+      inlineCompletion: migrateInlineCompletion(loaded?.inlineCompletion),
     };
     if (
       process.platform === "win32" &&
@@ -121,12 +125,13 @@ export default class MvObccIdePlugin extends Plugin {
     }
     this.settings = migrateManualUpstream(getVaultRoot(this.app), this.settings);
     this.registerView(DIFF_VIEW_TYPE, (leaf) => new ObsidianDiffView(leaf));
-    this.addSettingTab(new MvObccIdeSettingTab(this.app, this));
+    this.addSettingTab(new MvSenceAiIdeSettingTab(this.app, this));
     this.terminalTracker = new TerminalSessionTracker(this.app);
     this.selectionHighlighter = new SelectionHighlightController(
       this.app,
       this.settings.preserveSelectionHighlights,
     );
+    this.inlineCompletion = new InlineCompletionFeature(this);
     this.toolRegistry = new ToolRegistry(
       this.app,
       (context) => this.latestSelectionFor(context),
@@ -163,6 +168,7 @@ export default class MvObccIdePlugin extends Plugin {
         this.terminalTracker?.scan();
         this.selectionHighlighter?.sync();
         this.llmFeature?.tick();
+        this.inlineCompletion?.tick();
         if (
           this.settings.activityTracking.supportAllActivePages ||
           this.app.workspace.activeLeaf?.view.getViewType() === "webviewer"
@@ -173,6 +179,9 @@ export default class MvObccIdePlugin extends Plugin {
     );
     this.registerEditorExtension(
       this.selectionHighlighter.markdownExtension(),
+    );
+    this.registerEditorExtension(
+      this.inlineCompletion.markdownExtension(),
     );
     this.registerEditorExtension(
       EditorView.updateListener.of((update) => {
@@ -214,6 +223,8 @@ export default class MvObccIdePlugin extends Plugin {
     this.selectionHighlighter = null;
     this.llmFeature?.dispose();
     this.llmFeature = null;
+    this.inlineCompletion?.dispose();
+    this.inlineCompletion = null;
     void this.finishUnload();
   }
 
@@ -225,6 +236,10 @@ export default class MvObccIdePlugin extends Plugin {
 
   refreshLlmFeature(): void {
     this.llmFeature?.settingsChanged();
+  }
+
+  refreshInlineCompletion(): void {
+    this.inlineCompletion?.settingsChanged();
   }
 
   async setSelectionHighlightsEnabled(enabled: boolean): Promise<void> {
@@ -253,7 +268,7 @@ export default class MvObccIdePlugin extends Plugin {
       await this.closeDiffs();
       await this.stopBridge();
     } catch (error) {
-      console.error("[mv-obcc-ide] unload cleanup failed", error);
+      console.error("[mv-senceai-ide] unload cleanup failed", error);
     }
   }
 
@@ -294,14 +309,14 @@ export default class MvObccIdePlugin extends Plugin {
         this.terminalTracker?.scan();
         this.scheduleBroadcast();
       },
-      onLog: (message) => console.error("[mv-obcc-ide]", message),
+      onLog: (message) => console.error("[mv-senceai-ide]", message),
     });
     this.port = await this.server.start();
     writeLockFile(this.port, vaultRoot, authToken);
     await this.applyClaudeSettings();
     await this.syncMcpRegistration();
     await this.saveData(this.settings);
-    console.log(`[mv-obcc-ide] listening on 127.0.0.1:${this.port}`);
+    console.log(`[mv-senceai-ide] listening on 127.0.0.1:${this.port}`);
   }
 
   private async stopBridge(): Promise<void> {
@@ -353,7 +368,7 @@ export default class MvObccIdePlugin extends Plugin {
               (request.params?.protocolVersion as string | undefined) ?? "2025-03-26",
             capabilities: { tools: {} },
             serverInfo: {
-              name: channel === "mcp" ? "mv-obcc-ide-tools" : "mv-obcc-ide",
+              name: channel === "mcp" ? "mv-senceai-ide-tools" : "mv-senceai-ide",
               version: this.manifest.version,
             },
           },

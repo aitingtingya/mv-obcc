@@ -60,11 +60,11 @@ export class ObsidianDiffView extends ItemView {
     this.mergeView?.destroy();
     this.mergeView = null;
     this.contentEl.empty();
-    this.contentEl.addClass("mv-obcc-diff-view");
+    this.contentEl.addClass("mv-senceai-diff-view");
 
-    const header = this.contentEl.createDiv({ cls: "mv-obcc-diff-header" });
-    header.createSpan({ cls: "mv-obcc-diff-title", text: this.payload.tabName });
-    const actions = header.createDiv({ cls: "mv-obcc-diff-actions" });
+    const header = this.contentEl.createDiv({ cls: "mv-senceai-diff-header" });
+    header.createSpan({ cls: "mv-senceai-diff-title", text: this.payload.tabName });
+    const actions = header.createDiv({ cls: "mv-senceai-diff-actions" });
     this.rejectButton = actions.createEl("button", {
       text: "拒绝",
       cls: "mod-warning",
@@ -74,10 +74,10 @@ export class ObsidianDiffView extends ItemView {
       cls: "mod-cta",
     });
     this.conflictElement = this.contentEl.createDiv({
-      cls: "mv-obcc-diff-conflict",
+      cls: "mv-senceai-diff-conflict",
       text: "打开差异后源文件发生了变化。请重新执行编辑后再接受。",
     });
-    const host = this.contentEl.createDiv({ cls: "mv-obcc-merge-host" });
+    const host = this.contentEl.createDiv({ cls: "mv-senceai-merge-host" });
 
     this.rejectButton.addEventListener("click", () => void this.finish("reject"));
     this.acceptButton.addEventListener("click", () => void this.finish("accept"));
@@ -117,7 +117,7 @@ export class ObsidianDiffView extends ItemView {
 
     if (decision === "accept" && !(await this.payload.validateOriginal())) {
       this.conflictElement?.addClass("is-visible");
-      new Notice("MV OBCC IDE：源文件已变化，本次差异未被接受。");
+      new Notice("mv-SenceAI IDE：源文件已变化，本次差异未被接受。");
       return;
     }
 

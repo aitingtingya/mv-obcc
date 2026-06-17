@@ -70,7 +70,7 @@ function lookupOne(
  *  - `defaultKeys` and `builtinKeys` are retained as defensive fallbacks.
  *
  * Obsidian stores command ids with the plugin id prefixed (e.g. it stores
- * `mv-obcc-ide:llm-translate`, not `llm-translate`), so when `pluginId` is
+ * `mv-senceai-ide:llm-translate`, not `llm-translate`), so when `pluginId` is
  * provided we look up both the prefixed and the bare form.
  */
 export function getCommandHotkeys(
