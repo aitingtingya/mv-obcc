@@ -3,7 +3,7 @@
 **mv-SenceAI** 是一款专为 Obsidian 打造的 AI 笔记、科研插件。它能够在您的本地代码环境与 Obsidian 知识库之间建立无缝的数据通道。
 
 本插件包含三个相对独立的核心能力：
-1. **IDE 桥接 (IDE Bridge)**：为 Claude Code 提供 Obsidian 当前的上下文信息（如当前标签、选区内容），并支持通过标准 MCP 协议调用特定工具以及审核代码差异（Diff）。
+1. **IDE 桥接 (IDE Bridge)**：为 Claude Code 与 Codex CLI 提供 Obsidian 当前的上下文信息（如当前标签、选区内容）。Claude Code 侧支持标准 MCP 主动工具和差异审核（Diff）；Codex CLI 侧支持 `/ide` 上下文读取，并通过标准 MCP 使用 Obsidian 工具。
 2. **划词助手 (LLM Assistant)**：完全独立于 IDE 桥接的内置功能。允许您在 Obsidian 的各种视图（Markdown、PDF、Web Viewer）中选中文本后，通过自定义提示词直接流式调用 OpenAI 或 Anthropic 兼容的语言模型 API。
 3. **行内补全 (Inline Completion)**：在 Markdown 编辑器中显示 ghost text 续写建议，可通过左侧功能区按钮按需点亮，并支持接受、取消、拒绝后重新生成。
 
@@ -16,7 +16,7 @@
 ### 方法一：插件已经上架obsidian官方插件社区，搜索mv-SenceAI 即可找到并安装
 ### 方法二：手动从 Release 安装
 
-1. 前往 GitHub 仓库的 [Releases](https://github.com/aitingtingya/mv-senceai/releases) 页面，下载最新版本（如 `0.4.0`）的以下三个资产文件：
+1. 前往 GitHub 仓库的 [Releases](https://github.com/aitingtingya/mv-senceai/releases) 页面，下载最新版本（如 `0.4.5`）的以下三个资产文件：
    - `main.js`
    - `manifest.json`
    - `styles.css`
@@ -51,6 +51,13 @@
    - 在 Claude Code 终端输入 `/ide`，应提示已连接到 Obsidian。
    - 输入 `claude mcp list`，应当能看到 `mv-senceai-ide`（或其提供的工具）已连接。
 
+### 4. Codex CLI 侧配置
+1. 确保本机已安装并登录 Codex CLI。
+2. 在插件设置底部启用 `启用 Codex IDE 功能`。
+3. 在与该 Obsidian Vault 对应的本地目录中启动 Codex CLI。
+4. 在 Codex CLI 中输入 `/ide`，应提示已连接，并在后续消息中自动带入当前 Obsidian 标签、选区和打开标签上下文。
+5. 输入 `/mcp`，应能看到本插件的 MCP 工具；这些工具包括读取最近选区、列出打开标签、打开文件和读取 Web Viewer 页面。
+
 ---
 
 ## 使用指南
@@ -59,12 +66,13 @@
 
 - **被动状态感知**：开启后，您可以选择让插件追踪 Markdown、PDF 或是 Web Viewer。插件会将当前的标签页和选区状态被动同步给 Claude Code。
   - *多实例支持*：开启“支持所有活动页面”后，插件会精确绑定 Claude PID 和会话。当同时运行多个 Claude 时，每个会话只会隐藏自己的终端，依然可以读取其他终端的信息。
-- **主动工具 (MCP)**：Claude Code 可以通过 HTTP MCP 协议主动调用插件提供的工具，例如：
+- **主动工具 (MCP)**：Claude Code 与 Codex CLI 可以通过 HTTP MCP 协议主动调用插件提供的工具，例如：
   - `getLatestSelection`：读取最后一次非空选区。
   - `getOpenEditors`：获取所有已打开的标签列表。
   - `openFile`：在 Obsidian 中定位并打开特定的 Vault 文件。
   - `readCurrentWebPage`：无需刷新或跳转，直接将 Obsidian Web Viewer 中正在浏览的网页读取为 Markdown 格式。
 - **差异可视化审核 (Diff)**：当 Claude 提议修改文件时，如果是需要授权的操作，插件会在 Obsidian 侧弹出基于 CodeMirror MergeView 的差异比对界面。您可以在界面内进行编辑和最终确认，确认后的内容会由 Claude 写入硬盘。
+- **Codex CLI 支持**：Codex 集成使用 CLI `/ide` 的本地 IPC 上下文协议，并把插件的 MCP HTTP 服务写入 Codex 配置。连接或配置失败不会阻塞插件启动，也不会影响 Claude、划词助手或行内补全。
 
 ### ✍️ 划词助手功能 
 
@@ -118,9 +126,9 @@
 - **视觉隔离策略**：
   “切换标签时保留选区高亮”功能仅为视觉辅助，在您切换到终端等标签时，原页面的选词高亮依然保留。这不影响内部发送给 Claude 的实际内容。
 - **配置的隔离性**：
-  划词助手的网络错误、API Key 暴露或调用失败，均只影响划词助手自身，**绝对不会**波及或影响 Claude Code 桥接通道的稳定性。
+  划词助手的网络错误、API Key 暴露或调用失败，均只影响划词助手自身，**绝对不会**波及或影响 Claude Code / Codex CLI 桥接通道的稳定性。
 - **桌面权限说明**：
-  插件会读取和更新 Claude Code 的项目配置、会话信息与 IDE lock 文件，以建立和恢复桥接连接。进程识别与 MCP 注册仅通过 Node.js `execFile` 调用明确的可执行文件和参数，不拼接或执行任意 shell 命令。
+  Claude Code 集成会读取和更新 Claude Code 的项目配置、会话信息与 IDE lock 文件，以建立和恢复桥接连接。Codex CLI 集成会创建本地 `/ide` IPC socket/pipe，并在 `~/.codex/config.toml` 中维护一个指向本插件 `/mcp` 服务的受管理配置块；不会启动 `codex app-server` 子进程。
 
 ## 鸣谢
 
@@ -130,10 +138,10 @@
 
 # mv-SenceAI (English Documentation)
 
-**mv-SenceAI** is a desktop bridge connecting your local vaults to Claude Code. It runs passively in the background to streamline your developer workflow in Obsidian.
+**mv-SenceAI** is a desktop bridge connecting your local vaults to Claude Code and Codex CLI. It runs passively in the background to streamline your developer workflow in Obsidian.
 
 This plugin provides three key capabilities:
-1. **IDE Bridge**: Feeds contextual information (active tab, selections) from your vault to Claude Code, supports MCP tools, and enables visual diff reviews (via CodeMirror MergeView).
+1. **IDE Bridge**: Feeds contextual information (active tab, selections) from your vault to Claude Code and Codex CLI. Claude Code uses the existing IDE/MCP bridge; Codex CLI uses `/ide` context IPC plus standard MCP tools.
 2. **LLM Assistant (Selection Reader)**: A completely independent feature to call OpenAI or Anthropic compatible APIs directly from Obsidian views (Markdown, PDF, Web Viewer) using custom prompt templates, streaming responses into a floating output window.
 3. **Inline Completion**: A separate Markdown-only ghost-text completion module with a ribbon toggle and configurable accept, cancel, and reject/regenerate keys.
 
@@ -182,8 +190,15 @@ If you prefer to clone and compile the source code yourself:
 >
 > - **Web Reader Limits**: Standard iframe and canvas reading limits apply.
 > - **PDF Reading**: Scanned PDF pages without text layers cannot be read.
-> - **Config Isolation**: Errors or issues with the LLM selection assistant will not affect the main Claude Code IDE bridge.
-> - **Desktop Permissions**: The plugin reads and updates Claude Code project settings, session metadata, and IDE lock files to manage the bridge. Process detection and MCP registration use Node.js `execFile` with explicit executables and arguments; the plugin does not construct or execute arbitrary shell commands.
+> - **Config Isolation**: Errors or issues with the LLM selection assistant will not affect the Claude Code or Codex CLI IDE bridges.
+> - **Desktop Permissions**: The Claude Code bridge reads and updates Claude Code project settings, session metadata, and IDE lock files. The Codex bridge creates a local `/ide` IPC socket/pipe and maintains a managed MCP server block in `~/.codex/config.toml`; it does not start `codex app-server`.
+
+### Codex CLI Bridge
+
+- Enable **Codex IDE** at the bottom of the plugin settings.
+- Start Codex CLI in the matching vault directory and run `/ide`; Codex should connect to Obsidian context.
+- Run `/mcp` in Codex CLI to confirm the mv-SenceAI MCP tools are visible.
+- Codex receives active file, selection, cursor, and open-tab context through `/ide`; it uses Obsidian actions through standard MCP.
 
 ### LLM Assistant Interaction
 

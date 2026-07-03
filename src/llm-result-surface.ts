@@ -133,7 +133,6 @@ export class LlmResultSurface implements LlmResultSink {
   private errorMessage = "";
   private fallbackReason = "";
   private rootEl: HTMLElement | null = null;
-  private titleEl: HTMLElement | null = null;
   private statusEl: HTMLElement | null = null;
   private hostEl: HTMLElement | null = null;
   private toolbarEl: HTMLElement | null = null;
@@ -273,7 +272,6 @@ export class LlmResultSurface implements LlmResultSink {
     }
     this.rootEl?.remove();
     this.rootEl = null;
-    this.titleEl = null;
     this.statusEl = null;
     this.hostEl = null;
     this.toolbarEl = null;
@@ -407,7 +405,6 @@ export class LlmResultSurface implements LlmResultSink {
     this.doc.body.appendChild(root);
 
     this.rootEl = root;
-    this.titleEl = title;
     this.statusEl = status;
     this.hostEl = host;
     this.toolbarEl = toolbar;

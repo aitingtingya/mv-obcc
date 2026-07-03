@@ -35,22 +35,6 @@ export type NormalizedKey =
   | { kind: "code"; code: string }
   | { kind: "key"; key: string };
 
-const KEY_NORMALIZED: ReadonlySet<string> = new Set([
-  "Escape",
-  "Enter",
-  "Tab",
-  "Backspace",
-  "Space",
-  "Home",
-  "End",
-  "PageUp",
-  "PageDown",
-  "ArrowUp",
-  "ArrowDown",
-  "ArrowLeft",
-  "ArrowRight",
-]);
-
 /**
  * Normalize a stored key into a match strategy.
  * - Single ASCII letter → match `event.code` as `KeyX` (mac Option-safe).

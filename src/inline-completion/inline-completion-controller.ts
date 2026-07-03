@@ -28,6 +28,8 @@ export interface InlineCompletionControllerDeps {
   handlers: KeymapHandlers;
   /** Called on every view update; feature code classifies trigger/cancel/ignore. */
   onViewUpdate?: (update: ViewUpdate) => void;
+  /** Called when a CodeMirror editor view is destroyed. */
+  onViewDestroy?: (view: EditorView) => void;
 }
 
 export class InlineCompletionController {
@@ -57,6 +59,7 @@ export class InlineCompletionController {
         return {
           destroy() {
             controller.views.delete(view);
+            controller.deps.onViewDestroy?.(view);
           },
         };
       }),

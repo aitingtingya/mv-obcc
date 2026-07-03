@@ -68,6 +68,12 @@ export const DEFAULT_SETTINGS = {
   toolContextLimits: {
     readCurrentWebPage: null,
   },
+  ideIntegrations: {
+    claudeCode: true,
+    codex: false,
+    syncClaudeRules: true,
+    syncCodexRules: true,
+  },
   llm: {
     enabled: false,
     providers: [
@@ -140,6 +146,7 @@ export const DEFAULT_SETTINGS = {
   mcpEnabled: true,
   mcpAuthToken: "",
   claudeExecutable: "",
+  codexExecutable: "codex",
   registeredMcpUrl: null,
   windowsMcpRegistrationVersion: 0,
 };

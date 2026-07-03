@@ -1,8 +1,4 @@
-import {
-  DEFAULT_SETTINGS,
-  DEFAULT_INLINE_SYSTEM_PROMPT_BODY,
-  DEFAULT_INLINE_NO_COMPLETION_PROMPT,
-} from "../constants";
+import { DEFAULT_SETTINGS } from "../constants";
 import type {
   InlineCompletionKeymap,
   InlineCompletionSettings,
