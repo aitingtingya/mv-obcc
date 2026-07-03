@@ -1,14 +1,16 @@
 {
   "name": "mv-obcc",
-  "version": "0.4.2",
-  "description": "A focused Claude Code IDE bridge for Obsidian.",
+  "version": "0.5.0",
+  "description": "A focused Claude Code and Codex CLI IDE bridge for Obsidian.",
   "main": "main.js",
   "type": "module",
   "scripts": {
     "build": "node esbuild.config.mjs production",
     "dev": "node esbuild.config.mjs",
+    "lint": "eslint main.ts src",
     "typecheck": "tsc --noEmit",
-    "verify": "npm run typecheck && npm run build",
+    "verify": "npm run lint && npm run typecheck && npm run build",
+    "deploy:local": "npm run build && node scripts/deploy-local.mjs",
     "package": "node scripts/package.mjs"
   },
   "dependencies": {
@@ -21,8 +23,11 @@
     "@types/archiver": "^6.0.3",
     "@types/node": "^22.18.0",
     "@types/ws": "^8.18.1",
+    "@typescript-eslint/parser": "^8.61.0",
     "archiver": "^7.0.1",
     "esbuild": "^0.28.1",
+    "eslint": "^9.39.4",
+    "eslint-plugin-obsidianmd": "^0.3.0",
     "obsidian": "^1.8.7",
     "typescript": "^5.9.2"
   }

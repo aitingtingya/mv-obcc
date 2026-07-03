@@ -19,6 +19,17 @@ export interface ToolContextLimits {
   readCurrentWebPage: number | null;
 }
 
+export interface IdeIntegrationSettings {
+  /** Claude Code IDE bridge. Fresh installs keep the original behavior enabled. */
+  claudeCode: boolean;
+  /** Codex CLI /ide context provider and managed MCP config. Fresh installs default off. */
+  codex: boolean;
+  /** Whether to sync markdown coding rules to CLAUDE.md */
+  syncClaudeRules: boolean;
+  /** Whether to sync markdown coding rules to AGENTS.md */
+  syncCodexRules: boolean;
+}
+
 export type LlmProviderType = "openai" | "anthropic";
 
 /** How a model wants "thinking" params applied (gated by the template toggle). */
@@ -163,11 +174,13 @@ export interface BridgeSettings {
   preserveSelectionHighlights: boolean;
   toolToggles: ToolToggles;
   toolContextLimits: ToolContextLimits;
+  ideIntegrations: IdeIntegrationSettings;
   llm: LlmFeatureSettings;
   inlineCompletion: InlineCompletionSettings;
   mcpEnabled: boolean;
   mcpAuthToken: string;
   claudeExecutable: string;
+  codexExecutable: string;
   registeredMcpUrl: string | null;
   windowsMcpRegistrationVersion: number;
 }

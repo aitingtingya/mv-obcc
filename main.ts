@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
+import path from "node:path";
 import {
-  MarkdownView,
   Notice,
   Plugin,
   type WorkspaceLeaf,
@@ -60,11 +60,23 @@ import {
 import {
   activeWorkspaceLeaf,
   currentWorkspaceContext,
+  getOpenWorkspaceTabs,
 } from "./src/workspace-context";
 import { SelectionHighlightController } from "./src/selection-highlights";
 import { TerminalSessionTracker } from "./src/terminal-session-tracker";
 import { LlmFeature } from "./src/llm-feature";
 import { InlineCompletionFeature } from "./src/inline-completion/inline-completion-feature";
+import {
+  CodexIdeProvider,
+  type CodexIdeContextSnapshot,
+} from "./src/codex-ide-provider";
+import {
+  ensureCodexMcpRegistration,
+  removeCodexMcpRegistration,
+  ensureCodexShellAlias,
+  removeCodexShellAlias,
+} from "./src/codex-mcp-registration";
+import { syncAgentRulesInWorkspace } from "./src/agent-rules-manager";
 import type {
   BridgeClientContext,
   BridgeSettings,
@@ -78,7 +90,12 @@ export default class MvSenceAiIdePlugin extends Plugin {
   settings: BridgeSettings = { ...DEFAULT_SETTINGS };
   port = 0;
   mcpStatus = "尚未检查";
+  codexMcpStatus = "Codex MCP 未启用";
+  claudeIdeError: string | null = null;
+  codexIdeError: string | null = null;
   private server: BridgeServer | null = null;
+  private bridgeAuthToken: string | null = null;
+  private bridgeHasClaudeLock = false;
   private readonly latestSelections = new Map<string, SelectionState>();
   private latestWebLeaf: WorkspaceLeaf | null = null;
   private readonly lastContexts = new Map<string, SelectionState>();
@@ -90,30 +107,40 @@ export default class MvSenceAiIdePlugin extends Plugin {
   private selectionHighlighter: SelectionHighlightController | null = null;
   private llmFeature: LlmFeature | null = null;
   private inlineCompletion: InlineCompletionFeature | null = null;
+  private codexIdeProvider: CodexIdeProvider | null = null;
   private mcpRegistrationTimer: number | null = null;
   private mcpRegistrationInFlight: Promise<void> | null = null;
+  private codexMcpRegistrationTimer: number | null = null;
+  private codexMcpRegistrationInFlight: Promise<void> | null = null;
   private unloaded = false;
 
   async onload(): Promise<void> {
     this.unloaded = false;
-    const loaded = (await this.loadData()) as Partial<BridgeSettings> | null;
+    const rawLoaded = (await this.loadData()) as
+      | (Partial<BridgeSettings> & { codex?: unknown })
+      | null;
+    const { codex: _legacyCodex, ...loaded } = rawLoaded ?? {};
     this.settings = {
       ...DEFAULT_SETTINGS,
-      ...(loaded ?? {}),
+      ...loaded,
       activityTracking: {
         ...DEFAULT_SETTINGS.activityTracking,
-        ...(loaded?.activityTracking ?? {}),
+        ...(loaded.activityTracking ?? {}),
       },
       toolToggles: {
         ...DEFAULT_SETTINGS.toolToggles,
-        ...(loaded?.toolToggles ?? {}),
+        ...(loaded.toolToggles ?? {}),
       },
       toolContextLimits: {
         ...DEFAULT_SETTINGS.toolContextLimits,
-        ...(loaded?.toolContextLimits ?? {}),
+        ...(loaded.toolContextLimits ?? {}),
       },
-      llm: migrateLlm(loaded?.llm),
-      inlineCompletion: migrateInlineCompletion(loaded?.inlineCompletion),
+      ideIntegrations: {
+        ...DEFAULT_SETTINGS.ideIntegrations,
+        ...(loaded.ideIntegrations ?? {}),
+      },
+      llm: migrateLlm(loaded.llm),
+      inlineCompletion: migrateInlineCompletion(loaded.inlineCompletion),
     };
     if (
       process.platform === "win32" &&
@@ -142,6 +169,25 @@ export default class MvSenceAiIdePlugin extends Plugin {
       () => this.latestWebLeaf,
       () => this.settings.toolContextLimits.readCurrentWebPage,
     );
+
+    const pluginDir = path.join(
+      getVaultRoot(this.app),
+      this.app.vault.configDir,
+      "plugins",
+      this.manifest.id,
+    );
+    const customTmpDir = path.join(pluginDir, "tmp");
+    const socketPath = path.join(
+      customTmpDir,
+      "codex-ipc",
+      `ipc-${typeof process.getuid === "function" ? process.getuid() : 0}.sock`,
+    );
+
+    this.codexIdeProvider = new CodexIdeProvider({
+      getSnapshot: () => this.codexIdeContextSnapshot(),
+      socketPath,
+      onLog: (message) => console.error("[mv-senceai-ide]", message),
+    });
 
     this.registerEvent(
       this.app.workspace.on("active-leaf-change", () => {
@@ -211,7 +257,13 @@ export default class MvSenceAiIdePlugin extends Plugin {
     this.llmFeature.registerCommands();
     this.llmFeature.registerMenus();
 
-    await this.startBridge();
+    await this.syncLocalServices();
+    void this.syncCodexIdeProvider();
+    void syncAgentRulesInWorkspace(
+      getVaultRoot(this.app),
+      this.settings.ideIntegrations.syncClaudeRules,
+      this.settings.ideIntegrations.syncCodexRules,
+    );
     this.terminalTracker.scan();
     this.selectionHighlighter.sync(true);
     this.scheduleBroadcast();
@@ -224,19 +276,26 @@ export default class MvSenceAiIdePlugin extends Plugin {
     }
     this.unloaded = true;
     this.clearScheduledMcpRegistration();
+    this.clearScheduledCodexMcpRegistration();
     this.selectionHighlighter?.destroy();
     this.selectionHighlighter = null;
     this.llmFeature?.dispose();
     this.llmFeature = null;
     this.inlineCompletion?.dispose();
     this.inlineCompletion = null;
+    void removeCodexShellAlias();
     void this.finishUnload();
   }
 
   async saveAndApplySettings(): Promise<void> {
-    await this.applyClaudeSettingsBestEffort(true);
     await this.saveData(this.settings);
-    this.scheduleMcpRegistration(true);
+    await this.syncLocalServices(true);
+    void this.syncCodexIdeProvider();
+    void syncAgentRulesInWorkspace(
+      getVaultRoot(this.app),
+      this.settings.ideIntegrations.syncClaudeRules,
+      this.settings.ideIntegrations.syncCodexRules,
+    );
   }
 
   refreshLlmFeature(): void {
@@ -255,7 +314,7 @@ export default class MvSenceAiIdePlugin extends Plugin {
 
   async restartBridge(): Promise<void> {
     await this.stopBridge();
-    await this.startBridge();
+    await this.syncLocalServices(true);
     this.previousBroadcasts.clear();
     this.scheduleBroadcast();
   }
@@ -269,6 +328,7 @@ export default class MvSenceAiIdePlugin extends Plugin {
 
   private async finishUnload(): Promise<void> {
     try {
+      await this.codexIdeProvider?.stop();
       await this.restoreClaudeSettings();
       await this.closeDiffs();
       await this.stopBridge();
@@ -296,10 +356,60 @@ export default class MvSenceAiIdePlugin extends Plugin {
     await this.saveData(this.settings);
   }
 
-  private async startBridge(): Promise<void> {
+  private shouldRunLocalServer(): boolean {
+    return (
+      this.settings.ideIntegrations.claudeCode ||
+      (this.settings.ideIntegrations.codex && this.settings.mcpEnabled)
+    );
+  }
+
+  private async syncLocalServices(notifyClaude = false): Promise<void> {
+    this.claudeIdeError = null;
+    if (this.shouldRunLocalServer() && !this.server) {
+      try {
+        await this.startBridge();
+      } catch (error) {
+        this.claudeIdeError = error instanceof Error ? error.message : String(error);
+        console.error("[mv-senceai-ide] Claude IDE bridge start failed", error);
+      }
+    } else if (!this.shouldRunLocalServer() && this.server) {
+      await this.stopBridge();
+    }
+
+    await this.syncClaudeIntegration(notifyClaude);
+    this.scheduleCodexMcpRegistration();
+  }
+
+  private async syncClaudeIntegration(notify = false): Promise<void> {
+    if (!this.settings.ideIntegrations.claudeCode || !this.server || !this.port) {
+      this.clearScheduledMcpRegistration();
+      if (this.bridgeHasClaudeLock && this.port) removeLockFile(this.port);
+      this.bridgeHasClaudeLock = false;
+      if (!this.settings.ideIntegrations.claudeCode) {
+        this.mcpStatus = "Claude Code IDE 已关闭";
+        await this.restoreClaudeSettings();
+      }
+      return;
+    }
+
     cleanStaleObsidianLocks();
+    if (!this.bridgeHasClaudeLock) {
+      writeLockFile(
+        this.port,
+        getVaultRoot(this.app),
+        this.bridgeAuthToken ?? randomUUID(),
+      );
+      this.bridgeHasClaudeLock = true;
+    }
+    await this.applyClaudeSettingsBestEffort(notify);
+    if (!this.unloaded) await this.saveData(this.settings);
+    this.scheduleMcpRegistration();
+  }
+
+  private async startBridge(): Promise<void> {
     const vaultRoot = getVaultRoot(this.app);
     const authToken = randomUUID();
+    this.bridgeAuthToken = authToken;
     this.server = new BridgeServer({
       authToken,
       mcpAuthToken: this.settings.mcpAuthToken,
@@ -317,19 +427,17 @@ export default class MvSenceAiIdePlugin extends Plugin {
       onLog: (message) => console.error("[mv-senceai-ide]", message),
     });
     this.port = await this.server.start();
-    writeLockFile(this.port, vaultRoot, authToken);
-    await this.applyClaudeSettingsBestEffort();
-    await this.saveData(this.settings);
-    this.scheduleMcpRegistration();
     console.log(`[mv-senceai-ide] listening on 127.0.0.1:${this.port}`);
   }
 
   private async stopBridge(): Promise<void> {
     const port = this.port;
     this.port = 0;
+    this.bridgeAuthToken = null;
     await this.server?.stop();
     this.server = null;
-    if (port) removeLockFile(port);
+    if (port && this.bridgeHasClaudeLock) removeLockFile(port);
+    this.bridgeHasClaudeLock = false;
   }
 
   private async applyClaudeSettings(): Promise<void> {
@@ -449,6 +557,12 @@ export default class MvSenceAiIdePlugin extends Plugin {
     this.mcpRegistrationTimer = null;
   }
 
+  private clearScheduledCodexMcpRegistration(): void {
+    if (this.codexMcpRegistrationTimer === null) return;
+    activeWindow.clearTimeout(this.codexMcpRegistrationTimer);
+    this.codexMcpRegistrationTimer = null;
+  }
+
   private scheduleMcpRegistration(force = false): void {
     this.clearScheduledMcpRegistration();
     if (!this.port) return;
@@ -505,8 +619,86 @@ export default class MvSenceAiIdePlugin extends Plugin {
     }
   }
 
+  private scheduleCodexMcpRegistration(): void {
+    this.clearScheduledCodexMcpRegistration();
+    this.codexMcpStatus =
+      this.settings.ideIntegrations.codex && this.settings.mcpEnabled
+        ? "Codex MCP 后台检查中"
+        : "Codex MCP 未启用";
+    this.codexMcpRegistrationTimer = activeWindow.setTimeout(() => {
+      this.codexMcpRegistrationTimer = null;
+      void this.runCodexMcpRegistration();
+    }, 0);
+  }
+
+  private async runCodexMcpRegistration(): Promise<void> {
+    if (this.codexMcpRegistrationInFlight) {
+      await this.codexMcpRegistrationInFlight;
+      return;
+    }
+
+    const task = this.syncCodexMcpRegistration();
+    this.codexMcpRegistrationInFlight = task;
+    try {
+      await task;
+    } finally {
+      if (this.codexMcpRegistrationInFlight === task) {
+        this.codexMcpRegistrationInFlight = null;
+      }
+    }
+  }
+
+  private async syncCodexMcpRegistration(): Promise<void> {
+    if (!this.settings.ideIntegrations.codex || !this.settings.mcpEnabled) {
+      const result = await removeCodexMcpRegistration();
+      this.codexMcpStatus = result.ok
+        ? "Codex MCP 未启用"
+        : `Codex MCP 清理失败：${result.message}`;
+      return;
+    }
+
+    const url = this.currentMcpUrl();
+    if (!url) {
+      this.codexMcpStatus = "Codex MCP 等待本地服务";
+      return;
+    }
+
+    const result = await ensureCodexMcpRegistration(
+      url,
+      this.settings.mcpAuthToken,
+    );
+    this.codexMcpStatus = result.ok
+      ? result.message
+      : `Codex MCP 配置失败：${result.message}`;
+  }
+
   private currentMcpUrl(): string | null {
     return this.port ? `http://127.0.0.1:${this.port}/mcp` : null;
+  }
+
+  private async syncCodexIdeProvider(): Promise<void> {
+    if (!this.codexIdeProvider) return;
+    this.codexIdeError = null;
+    if (!this.settings.ideIntegrations.codex) {
+      await this.codexIdeProvider.stop();
+      await removeCodexShellAlias();
+      return;
+    }
+    try {
+      await this.codexIdeProvider.start();
+      const pluginDir = path.join(
+        getVaultRoot(this.app),
+        this.app.vault.configDir,
+        "plugins",
+        this.manifest.id,
+      );
+      const customTmpDir = path.join(pluginDir, "tmp");
+      await ensureCodexShellAlias(customTmpDir, this.settings.codexExecutable || "codex");
+    } catch (error) {
+      this.codexIdeError = error instanceof Error ? error.message : String(error);
+      console.error("[mv-senceai-ide] Codex IDE provider failed", error);
+      await removeCodexShellAlias();
+    }
   }
 
   private async broadcastSelection(): Promise<void> {
@@ -583,6 +775,20 @@ export default class MvSenceAiIdePlugin extends Plugin {
     return latestSelectionForContext(this.latestSelections, context);
   }
 
+  private async codexIdeContextSnapshot(): Promise<CodexIdeContextSnapshot> {
+    const leaf = activeWorkspaceLeaf(this.app);
+    const activeState =
+      (await currentWorkspaceContext(this.app, leaf)) ??
+      currentSelection(this.app);
+    const current = this.resolveTrackedState(undefined, leaf, activeState);
+    if (current) this.rememberState("global", current);
+    return {
+      vaultRoot: getVaultRoot(this.app),
+      current,
+      openEditors: getOpenWorkspaceTabs(this.app).tabs,
+    };
+  }
+
   private resolveTrackedState(
     context: BridgeClientContext | undefined,
     leaf: WorkspaceLeaf | null,
@@ -608,6 +814,10 @@ export default class MvSenceAiIdePlugin extends Plugin {
   }
 
   private async syncMcpRegistration(force = false): Promise<void> {
+    if (!this.settings.ideIntegrations.claudeCode) {
+      this.mcpStatus = "Claude Code IDE 已关闭";
+      return;
+    }
     if (!this.port) return;
     if (!this.settings.mcpEnabled) {
       if (force || this.settings.registeredMcpUrl) {

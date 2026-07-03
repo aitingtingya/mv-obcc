@@ -43,27 +43,70 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
     containerEl.empty();
     addHeading(containerEl, "mv-SenceAI IDE");
 
-    new Setting(containerEl)
-      .setName("桥接状态")
-      .setDesc("插件启用后被动运行。建议先启动 Obsidian，再启动 Claude Code。")
-      .addText((text) => {
-        text
-          .setValue(
-            this.plugin.port
-              ? `已连接：127.0.0.1:${this.plugin.port}`
-              : "未连接",
-          )
-          .setDisabled(true);
-        text.inputEl.addClass("mv-senceai-status");
-      });
-
     containerEl.createEl("div", {
       text: "🔌 IDE 桥接",
       cls: "mv-senceai-section-title setting-item-name",
     });
+
+    const claudeSetting = new Setting(containerEl)
+      .setName("启用 Claude Code IDE 功能")
+      .setDesc("默认开启。关闭后不写 Claude IDE lock、不注册 Claude MCP、不接管 Claude 设置。")
+      .addToggle((toggle) =>
+        toggle
+          .setValue(this.plugin.settings.ideIntegrations.claudeCode)
+          .onChange(async (value) => {
+            this.plugin.settings.ideIntegrations.claudeCode = value;
+            await this.plugin.saveAndApplySettings();
+            this.display();
+          }),
+      );
+
+    const claudeStatusEl = claudeSetting.settingEl.createEl("span", {
+      cls: "mv-senceai-status-indicator",
+    });
+    if (!this.plugin.settings.ideIntegrations.claudeCode) {
+      claudeStatusEl.setText("状态：已禁用");
+      claudeStatusEl.addClass("mv-senceai-status-muted");
+    } else if (this.plugin.claudeIdeError) {
+      claudeStatusEl.setText(`● 启动失败: ${this.plugin.claudeIdeError}`);
+      claudeStatusEl.addClass("mv-senceai-status-error");
+    } else {
+      claudeStatusEl.setText("● 运行中");
+      claudeStatusEl.addClass("mv-senceai-status-success");
+    }
+
+    const codexSetting = new Setting(containerEl)
+      .setName("启用 Codex IDE 功能")
+      .setDesc("默认关闭。开启后支持 Codex CLI /ide，并把本插件 MCP 工具写入 Codex 配置。")
+      .addToggle((toggle) =>
+        toggle
+          .setValue(this.plugin.settings.ideIntegrations.codex)
+          .onChange(async (value) => {
+            this.plugin.settings.ideIntegrations.codex = value;
+            await this.plugin.saveAndApplySettings();
+            this.display();
+          }),
+      );
+
+    const codexStatusEl = codexSetting.settingEl.createEl("span", {
+      cls: "mv-senceai-status-indicator",
+    });
+    if (!this.plugin.settings.ideIntegrations.codex) {
+      codexStatusEl.setText("状态：已禁用");
+      codexStatusEl.addClass("mv-senceai-status-muted");
+    } else if (this.plugin.codexIdeError) {
+      codexStatusEl.setText(`● 启动失败: ${this.plugin.codexIdeError}`);
+      codexStatusEl.addClass("mv-senceai-status-error");
+    } else {
+      codexStatusEl.setText("● 运行中");
+      codexStatusEl.addClass("mv-senceai-status-success");
+    }
+
     addHeading(containerEl, "功能与工具");
 
-    addHeading(containerEl, "被动：状态感知");
+    addHeading(containerEl, "被动");
+
+    addHeading(containerEl, "状态感知");
     new Setting(containerEl)
       .setName("支持所有活动页面")
       .setDesc(
@@ -121,6 +164,34 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
         );
     }
 
+    addHeading(containerEl, "非 MD 源码编写");
+
+    new Setting(containerEl)
+      .setName("同步 Claude Code (CLAUDE.md) 规则")
+      .setDesc("启用后自动在 CLAUDE.md 中注入中文规约，指导 AI 使用 md 代码文件（文件名-后缀.md）保存非 Markdown 代码。注意：开启本项会直接创建或修改此规则文件。")
+      .addToggle((toggle) =>
+        toggle
+          .setValue(this.plugin.settings.ideIntegrations.syncClaudeRules)
+          .onChange(async (value) => {
+            this.plugin.settings.ideIntegrations.syncClaudeRules = value;
+            await this.plugin.saveAndApplySettings();
+            this.display();
+          }),
+      );
+
+    new Setting(containerEl)
+      .setName("同步 Codex (AGENTS.md) 规则")
+      .setDesc("启用后自动在 AGENTS.md 中注入中文规约，指导 AI 使用 md 代码文件（文件名-后缀.md）保存非 Markdown 代码。注意：开启本项会直接创建或修改此规则文件。")
+      .addToggle((toggle) =>
+        toggle
+          .setValue(this.plugin.settings.ideIntegrations.syncCodexRules)
+          .onChange(async (value) => {
+            this.plugin.settings.ideIntegrations.syncCodexRules = value;
+            await this.plugin.saveAndApplySettings();
+            this.display();
+          }),
+      );
+
     addHeading(containerEl, "视觉辅助");
     new Setting(containerEl)
       .setName("切换标签时保留选区高亮")
@@ -139,7 +210,7 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
     new Setting(containerEl)
       .setName("启用 MCP 主动工具")
       .setDesc(
-        "Claude Code 会过滤普通 IDE 工具，因此主动工具通过标准 MCP 提供。改变后请重新启动 Claude Code。",
+        "主动工具通过标准 MCP 提供给 Claude Code 和 Codex CLI。改变后请重启对应客户端或重新执行 /mcp。",
       )
       .addToggle((toggle) =>
         toggle
@@ -254,6 +325,19 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
               await this.plugin.saveData(this.plugin.settings);
             }),
         );
+
+      new Setting(containerEl)
+        .setName("Codex 可执行文件")
+        .setDesc("通常自动检测为 codex。自定义安装位置可在此填写完整路径。")
+        .addText((text) =>
+          text
+            .setPlaceholder("codex")
+            .setValue(this.plugin.settings.codexExecutable)
+            .onChange(async (value) => {
+              this.plugin.settings.codexExecutable = value.trim();
+              await this.plugin.saveData(this.plugin.settings);
+            }),
+        );
     }
 
     addHeading(containerEl, "上游兼容");
@@ -343,6 +427,8 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
           this.display();
         }),
       );
+
+
 
     containerEl.createEl("div", {
       text: "🤖 API 提供商（划词助手与行内补全共用）",

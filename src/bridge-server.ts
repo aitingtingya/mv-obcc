@@ -75,8 +75,8 @@ export class BridgeServer {
   private websocketServer: WebSocketServer | null = null;
   private clients = new Map<WebSocket, BridgeClientContext>();
   private mcpSessions = new Map<string, BridgeClientContext>();
-  private readonly identityByRemotePort = new Map<
-    number,
+  private readonly identityBySocket = new WeakMap<
+    net.Socket,
     Promise<Pick<BridgeClientContext, "processId" | "sessionId">>
   >();
   private heartbeat: NodeJS.Timeout | null = null;
@@ -122,7 +122,6 @@ export class BridgeServer {
     this.websocketServer?.close();
     this.websocketServer = null;
     this.mcpSessions.clear();
-    this.identityByRemotePort.clear();
     await new Promise<void>((resolve) => {
       if (!this.server) return resolve();
       this.server.close(() => resolve());
@@ -160,7 +159,7 @@ export class BridgeServer {
     this.options.onClientContextChanged?.({ ...context });
     const remotePort = request.socket.remotePort;
     if (remotePort) {
-      void this.resolveContextIdentity(context, remotePort).then(() => {
+      void this.resolveContextIdentity(context, request.socket, remotePort).then(() => {
         this.options.onClientContextChanged?.({ ...context });
       });
     }
@@ -368,7 +367,9 @@ export class BridgeServer {
           channel: "mcp",
         };
         const remotePort = request.socket.remotePort;
-        if (remotePort) await this.resolveContextIdentity(context, remotePort);
+        if (remotePort) {
+          await this.resolveContextIdentity(context, request.socket, remotePort);
+        }
       }
       const rpcResponse = await this.options.onMcpMessage(rpcRequest, {
         ...context,
@@ -405,9 +406,10 @@ export class BridgeServer {
 
   private async resolveContextIdentity(
     context: BridgeClientContext,
+    socket: net.Socket,
     remotePort: number,
   ): Promise<void> {
-    let pending = this.identityByRemotePort.get(remotePort);
+    let pending = this.identityBySocket.get(socket);
     if (!pending) {
       const resolver =
         this.options.resolveClientIdentity ?? resolveClaudeClientIdentity;
@@ -421,7 +423,7 @@ export class BridgeServer {
             : {},
         )
         .catch(() => ({}));
-      this.identityByRemotePort.set(remotePort, pending);
+      this.identityBySocket.set(socket, pending);
     }
     Object.assign(context, await pending);
   }

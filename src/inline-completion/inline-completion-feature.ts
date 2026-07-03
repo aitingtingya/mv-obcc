@@ -21,7 +21,6 @@ import {
 import {
   displayableCompletionStreamText,
   finalCompletionText,
-  NO_COMPLETION_SENTINEL,
 } from "./inline-completion-protocol";
 import { buildRejectUserMessage } from "./inline-reject-prompt";
 import { readSuggestion } from "./inline-suggestion-state";
@@ -87,6 +86,7 @@ export class InlineCompletionFeature {
         onRequest: (view) => this.handleManualRequest(view),
       },
       onViewUpdate: (update) => this.handleViewUpdate(update),
+      onViewDestroy: (view) => this.handleViewDestroy(view),
     });
   }
 
@@ -488,6 +488,12 @@ export class InlineCompletionFeature {
     if (clearVisible) this.controller.clearSuggestion(view);
   }
 
+  private handleViewDestroy(view: EditorView): void {
+    this.cancelView(view, false);
+    this.conversations.delete(view);
+    this.activeRequestIds.delete(view);
+  }
+
   /** Cancel all timers/requests and clear all visible suggestions. */
   private cancelAll(): void {
     for (const timer of this.debounceTimers.values()) {
@@ -496,6 +502,8 @@ export class InlineCompletionFeature {
     this.debounceTimers.clear();
     for (const ac of this.abortControllers.values()) ac.abort();
     this.abortControllers.clear();
+    this.conversations.clear();
+    this.activeRequestIds.clear();
     this.controller.clearAll();
   }
 }
