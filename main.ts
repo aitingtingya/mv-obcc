@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import fs from "node:fs";
 import path from "node:path";
 import {
   Notice,
@@ -58,6 +59,10 @@ import {
   resolveAnthropicBaseUrl,
 } from "./src/upstream-resolver";
 import {
+  schedulePostLayoutStartup,
+  type PostLayoutStartupHandle,
+} from "./src/post-layout-startup";
+import {
   activeWorkspaceLeaf,
   currentWorkspaceContext,
   getOpenWorkspaceTabs,
@@ -112,6 +117,7 @@ export default class MvSenceAiIdePlugin extends Plugin {
   private mcpRegistrationInFlight: Promise<void> | null = null;
   private codexMcpRegistrationTimer: number | null = null;
   private codexMcpRegistrationInFlight: Promise<void> | null = null;
+  private postLayoutStartup: PostLayoutStartupHandle | null = null;
   private unloaded = false;
 
   async onload(): Promise<void> {
@@ -170,15 +176,8 @@ export default class MvSenceAiIdePlugin extends Plugin {
       () => this.settings.toolContextLimits.readCurrentWebPage,
     );
 
-    const pluginDir = path.join(
-      getVaultRoot(this.app),
-      this.app.vault.configDir,
-      "plugins",
-      this.manifest.id,
-    );
-    const customTmpDir = path.join(pluginDir, "tmp");
     const socketPath = path.join(
-      customTmpDir,
+      this.codexRuntimeDir(),
       "codex-ipc",
       `ipc-${typeof process.getuid === "function" ? process.getuid() : 0}.sock`,
     );
@@ -257,13 +256,8 @@ export default class MvSenceAiIdePlugin extends Plugin {
     this.llmFeature.registerCommands();
     this.llmFeature.registerMenus();
 
-    await this.syncLocalServices();
-    void this.syncCodexIdeProvider();
-    void syncAgentRulesInWorkspace(
-      getVaultRoot(this.app),
-      this.settings.ideIntegrations.syncClaudeRules,
-      this.settings.ideIntegrations.syncCodexRules,
-    );
+    await this.syncLocalServices(false, false);
+    this.schedulePostLayoutStartup();
     this.terminalTracker.scan();
     this.selectionHighlighter.sync(true);
     this.scheduleBroadcast();
@@ -275,6 +269,8 @@ export default class MvSenceAiIdePlugin extends Plugin {
       this.broadcastTimer = null;
     }
     this.unloaded = true;
+    this.postLayoutStartup?.cancel();
+    this.postLayoutStartup = null;
     this.clearScheduledMcpRegistration();
     this.clearScheduledCodexMcpRegistration();
     this.selectionHighlighter?.destroy();
@@ -289,13 +285,10 @@ export default class MvSenceAiIdePlugin extends Plugin {
 
   async saveAndApplySettings(): Promise<void> {
     await this.saveData(this.settings);
-    await this.syncLocalServices(true);
-    void this.syncCodexIdeProvider();
-    void syncAgentRulesInWorkspace(
-      getVaultRoot(this.app),
-      this.settings.ideIntegrations.syncClaudeRules,
-      this.settings.ideIntegrations.syncCodexRules,
-    );
+    await this.syncLocalServices(true, false);
+    await this.syncCodexIdeProvider();
+    this.scheduleCodexMcpRegistrationIfReady();
+    void this.syncAgentRulesBestEffort();
   }
 
   refreshLlmFeature(): void {
@@ -363,7 +356,10 @@ export default class MvSenceAiIdePlugin extends Plugin {
     );
   }
 
-  private async syncLocalServices(notifyClaude = false): Promise<void> {
+  private async syncLocalServices(
+    notifyClaude = false,
+    scheduleCodexMcp = true,
+  ): Promise<void> {
     this.claudeIdeError = null;
     if (this.shouldRunLocalServer() && !this.server) {
       try {
@@ -377,7 +373,14 @@ export default class MvSenceAiIdePlugin extends Plugin {
     }
 
     await this.syncClaudeIntegration(notifyClaude);
-    this.scheduleCodexMcpRegistration();
+    if (scheduleCodexMcp) {
+      this.scheduleCodexMcpRegistration();
+    } else {
+      this.codexMcpStatus =
+        this.settings.ideIntegrations.codex && this.settings.mcpEnabled
+          ? "Codex MCP 等待启动后初始化"
+          : "Codex MCP 未启用";
+    }
   }
 
   private async syncClaudeIntegration(notify = false): Promise<void> {
@@ -676,6 +679,71 @@ export default class MvSenceAiIdePlugin extends Plugin {
     return this.port ? `http://127.0.0.1:${this.port}/mcp` : null;
   }
 
+  private codexRuntimeDir(): string {
+    return path.join(
+      getVaultRoot(this.app),
+      this.app.vault.configDir,
+      "plugins",
+      this.manifest.id,
+      "tmp",
+    );
+  }
+
+  private schedulePostLayoutStartup(): void {
+    this.postLayoutStartup?.cancel();
+    this.postLayoutStartup = schedulePostLayoutStartup({
+      onLayoutReady: (callback) => this.app.workspace.onLayoutReady(callback),
+      setTimeout: (callback, delayMs) => activeWindow.setTimeout(callback, delayMs),
+      clearTimeout: (timerId) => activeWindow.clearTimeout(timerId),
+      delayMs: 2000,
+      isUnloaded: () => this.unloaded,
+      run: () => this.runPostLayoutStartup(),
+      onError: (error) => {
+        console.error("[mv-senceai-ide] post-layout startup failed", error);
+      },
+    });
+  }
+
+  private async runPostLayoutStartup(): Promise<void> {
+    if (this.unloaded) return;
+    this.cleanupCodexRuntimeCacheBestEffort();
+    await this.syncCodexIdeProvider();
+    if (this.unloaded) return;
+    this.scheduleCodexMcpRegistrationIfReady();
+    await this.syncAgentRulesBestEffort();
+  }
+
+  private scheduleCodexMcpRegistrationIfReady(): void {
+    if (this.settings.ideIntegrations.codex && this.codexIdeError) {
+      this.codexMcpStatus = "Codex MCP 等待启动后初始化";
+      return;
+    }
+    this.scheduleCodexMcpRegistration();
+  }
+
+  private async syncAgentRulesBestEffort(): Promise<void> {
+    try {
+      await syncAgentRulesInWorkspace(
+        getVaultRoot(this.app),
+        this.settings.ideIntegrations.syncClaudeRules,
+        this.settings.ideIntegrations.syncCodexRules,
+      );
+    } catch (error) {
+      console.warn("[mv-senceai-ide] agent rules sync failed", error);
+    }
+  }
+
+  private cleanupCodexRuntimeCacheBestEffort(): void {
+    try {
+      fs.rmSync(path.join(this.codexRuntimeDir(), "node-compile-cache"), {
+        recursive: true,
+        force: true,
+      });
+    } catch (error) {
+      console.warn("[mv-senceai-ide] Codex runtime cache cleanup failed", error);
+    }
+  }
+
   private async syncCodexIdeProvider(): Promise<void> {
     if (!this.codexIdeProvider) return;
     this.codexIdeError = null;
@@ -686,14 +754,10 @@ export default class MvSenceAiIdePlugin extends Plugin {
     }
     try {
       await this.codexIdeProvider.start();
-      const pluginDir = path.join(
-        getVaultRoot(this.app),
-        this.app.vault.configDir,
-        "plugins",
-        this.manifest.id,
+      await ensureCodexShellAlias(
+        this.codexRuntimeDir(),
+        this.settings.codexExecutable || "codex",
       );
-      const customTmpDir = path.join(pluginDir, "tmp");
-      await ensureCodexShellAlias(customTmpDir, this.settings.codexExecutable || "codex");
     } catch (error) {
       this.codexIdeError = error instanceof Error ? error.message : String(error);
       console.error("[mv-senceai-ide] Codex IDE provider failed", error);
