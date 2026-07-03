@@ -183,6 +183,14 @@ export interface BridgeSettings {
   codexExecutable: string;
   registeredMcpUrl: string | null;
   windowsMcpRegistrationVersion: number;
+  terminalMacShellPath: string;
+  terminalMacShellArgs: string;
+  terminalWinShellPath: string;
+  terminalWinShellArgs: string;
+  terminalPythonPath: string;
+  terminalFontFamily: string;
+  terminalFontSize: string;
+  terminalOpenPosition: string;
 }
 
 export interface BridgeClientContext {

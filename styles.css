@@ -519,3 +519,231 @@
 .mv-senceai-is-hidden {
   display: none;
 }
+
+/* xterm.js base styles. Without these, internal measurement/accessibility nodes
+   can become visible inside the Obsidian view. */
+.vault-terminal-host .xterm {
+	cursor: text;
+	position: relative;
+	user-select: none;
+	-ms-user-select: none;
+	-webkit-user-select: none;
+}
+
+.vault-terminal-host .xterm.focus,
+.vault-terminal-host .xterm:focus {
+	outline: none;
+}
+
+.vault-terminal-host .xterm .xterm-helpers {
+	position: absolute;
+	top: 0;
+	z-index: 5;
+}
+
+.vault-terminal-host .xterm .xterm-helper-textarea {
+	border: 0;
+	height: 0;
+	left: -9999em;
+	margin: 0;
+	opacity: 0;
+	overflow: hidden;
+	padding: 0;
+	position: absolute;
+	resize: none;
+	top: 0;
+	white-space: nowrap;
+	width: 0;
+	z-index: -5;
+}
+
+.vault-terminal-host .xterm .composition-view {
+	background: #000;
+	color: #fff;
+	display: none;
+	position: absolute;
+	white-space: nowrap;
+	z-index: 1;
+}
+
+.vault-terminal-host .xterm .composition-view.active {
+	display: block;
+}
+
+.vault-terminal-host .xterm .xterm-viewport {
+	cursor: default;
+	position: absolute;
+	right: 0;
+	left: 0;
+	top: 0;
+	bottom: 0;
+}
+
+.vault-terminal-host .xterm .xterm-screen {
+	position: relative;
+}
+
+.vault-terminal-host .xterm .xterm-screen canvas {
+	position: absolute;
+	left: 0;
+	top: 0;
+}
+
+.vault-terminal-host .xterm .xterm-scroll-area {
+	visibility: hidden;
+}
+
+.vault-terminal-host .xterm-char-measure-element {
+	display: inline-block;
+	left: -9999em;
+	line-height: normal;
+	position: absolute;
+	top: 0;
+	visibility: hidden;
+}
+
+.vault-terminal-host .xterm.enable-mouse-events {
+	cursor: default;
+}
+
+.vault-terminal-host .xterm.xterm-cursor-pointer,
+.vault-terminal-host .xterm .xterm-cursor-pointer {
+	cursor: pointer;
+}
+
+.vault-terminal-host .xterm.column-select.focus {
+	cursor: crosshair;
+}
+
+.vault-terminal-host .xterm .xterm-accessibility,
+.vault-terminal-host .xterm .xterm-message {
+	position: absolute;
+	left: 0;
+	top: 0;
+	bottom: 0;
+	right: 0;
+	z-index: 10;
+	color: transparent;
+	pointer-events: none;
+}
+
+.vault-terminal-host .xterm .xterm-accessibility-tree {
+	user-select: text;
+	white-space: pre;
+}
+
+.vault-terminal-host .xterm .xterm-accessibility-tree *::selection {
+	color: transparent;
+}
+
+.vault-terminal-host .xterm .live-region {
+	height: 1px;
+	left: -9999px;
+	overflow: hidden;
+	position: absolute;
+	width: 1px;
+}
+
+.vault-terminal-host .xterm-dim {
+	opacity: 0.5;
+}
+
+.vault-terminal-host .xterm-underline-1 {
+	text-decoration: underline;
+}
+
+.vault-terminal-host .xterm-underline-2 {
+	text-decoration: double underline;
+}
+
+.vault-terminal-host .xterm-underline-3 {
+	text-decoration: wavy underline;
+}
+
+.vault-terminal-host .xterm-underline-4 {
+	text-decoration: dotted underline;
+}
+
+.vault-terminal-host .xterm-underline-5 {
+	text-decoration: dashed underline;
+}
+
+.vault-terminal-host .xterm-overline {
+	text-decoration: overline;
+}
+
+.vault-terminal-host .xterm-overline.xterm-underline-1 {
+	text-decoration: overline underline;
+}
+
+.vault-terminal-host .xterm-overline.xterm-underline-2 {
+	text-decoration: overline double underline;
+}
+
+.vault-terminal-host .xterm-overline.xterm-underline-3 {
+	text-decoration: overline wavy underline;
+}
+
+.vault-terminal-host .xterm-overline.xterm-underline-4 {
+	text-decoration: overline dotted underline;
+}
+
+.vault-terminal-host .xterm-overline.xterm-underline-5 {
+	text-decoration: overline dashed underline;
+}
+
+.vault-terminal-host .xterm-strikethrough {
+	text-decoration: line-through;
+}
+
+/* 💻 终端设置与样式 */
+.workspace-leaf-content[data-type="mv-terminal-view"] .view-content {
+	overflow: clip;
+	display: flex;
+	flex-direction: column;
+}
+
+.vault-terminal {
+	height: 100%;
+	min-height: 0;
+	display: flex;
+	flex-direction: column;
+	padding: 8px 12px;
+	padding-bottom: calc(8px + var(--status-bar-height, 0px) + env(safe-area-inset-bottom, 0px));
+	box-sizing: border-box;
+	background-color: var(--background-secondary);
+	overflow: hidden;
+}
+
+.vault-terminal-host {
+	flex: 1;
+	min-height: 0;
+	overflow: hidden;
+	position: relative;
+	background-color: var(--background-secondary);
+	overscroll-behavior: contain;
+}
+
+.vault-terminal-host .xterm {
+	height: 100%;
+	background-color: var(--background-secondary);
+}
+
+.vault-terminal-host .xterm .xterm-screen {
+	background-color: var(--background-secondary);
+}
+
+.vault-terminal-host .xterm-viewport {
+	overflow-y: auto !important;
+	background-color: var(--background-secondary) !important;
+	overscroll-behavior: contain;
+	scrollbar-gutter: stable;
+}
+
+.vault-terminal-host .xterm .xterm-helper-textarea {
+	opacity: 0;
+	border: 0;
+	padding: 0;
+	outline: none;
+	pointer-events: none;
+}

@@ -1,4 +1,5 @@
 export const DIFF_VIEW_TYPE = "mv-senceai-ide-diff";
+export const TERMINAL_VIEW_TYPE = "mv-terminal-view";
 export const PLUGIN_ID = "mv-senceai-ide";
 export const IDE_NAME = "Obsidian";
 export const SERVER_HOST = "127.0.0.1";
@@ -149,4 +150,12 @@ export const DEFAULT_SETTINGS = {
   codexExecutable: "codex",
   registeredMcpUrl: null,
   windowsMcpRegistrationVersion: 0,
+  terminalMacShellPath: "",
+  terminalMacShellArgs: "",
+  terminalWinShellPath: "",
+  terminalWinShellArgs: "",
+  terminalPythonPath: "",
+  terminalFontFamily: "",
+  terminalFontSize: "",
+  terminalOpenPosition: "right",
 };

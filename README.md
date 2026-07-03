@@ -215,6 +215,16 @@ If you prefer to clone and compile the source code yourself:
 - If the surrounding Markdown is already complete or the model has no confident continuation, the plugin asks the model to return a no-completion signal and shows no ghost text.
 - Inline prompt settings can customize the main completion prompt, the no-completion instruction, and the reject-regenerate instruction. The reject prompt supports `{rejected}` for the rejected candidate.
 
+### System Terminal
+
+- Click the terminal Ribbon icon or use the command palette `Open System Terminal` to launch a local system terminal.
+- Supports customizable macOS/Linux and Windows shell configurations (shell binary path and command-line arguments).
+- Automatically matches Obsidian's active theme colors (background, foreground, cursor, selection).
+- Double-click or Ctrl+click vault-relative file paths in the terminal output to open corresponding notes in Obsidian.
+- Windows users can click "更新依赖" in settings to automatically install/update the required `pywinpty` Python library.
+
 ## Acknowledgements
 
-The CodeMirror ghost-text architecture for Inline Completion was informed by plugin [obsidian-github-copilot](https://github.com/Pierrad/obsidian-github-copilot). mv-SenceAI does not bundle or depend on that plugin at runtime.
+- The CodeMirror ghost-text architecture for Inline Completion was informed by plugin [obsidian-github-copilot](https://github.com/Pierrad/obsidian-github-copilot). mv-SenceAI does not bundle or depend on that plugin at runtime.
+- The local terminal architecture and PTY Python bridge were informed by plugin [obsidian-claude-sidebar](https://github.com/michaellatman/obsidian-claude-sidebar). mv-SenceAI does not bundle or depend on that plugin at runtime.
+
