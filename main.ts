@@ -21,6 +21,7 @@ import {
 import {
   DEFAULT_SETTINGS,
   DIFF_VIEW_TYPE,
+  TERMINAL_VIEW_TYPE,
   WINDOWS_MCP_REGISTRATION_VERSION,
 } from "./src/constants";
 import {
@@ -28,6 +29,7 @@ import {
   rememberLatestSelection,
 } from "./src/context-cache";
 import { ObsidianDiffView } from "./src/diff-view";
+import { TerminalView } from "./src/terminal/terminal-view";
 import {
   cleanStaleObsidianLocks,
   removeLockFile,
@@ -162,6 +164,7 @@ export default class MvSenceAiIdePlugin extends Plugin {
     }
     this.settings = migrateManualUpstream(getVaultRoot(this.app), this.settings);
     this.registerView(DIFF_VIEW_TYPE, (leaf) => new ObsidianDiffView(leaf));
+    this.registerView(TERMINAL_VIEW_TYPE, (leaf) => new TerminalView(leaf, this));
     this.addSettingTab(new MvSenceAiIdeSettingTab(this.app, this));
     this.terminalTracker = new TerminalSessionTracker(this.app);
     this.selectionHighlighter = new SelectionHighlightController(
@@ -252,6 +255,16 @@ export default class MvSenceAiIdePlugin extends Plugin {
       },
     });
 
+    this.addRibbonIcon("terminal", "打开系统终端", () => {
+      this.activateTerminalView();
+    });
+
+    this.addCommand({
+      id: "open-system-terminal",
+      name: "Open System Terminal (打开系统终端)",
+      callback: () => this.activateTerminalView(),
+    });
+
     this.llmFeature = new LlmFeature(this);
     this.llmFeature.registerCommands();
     this.llmFeature.registerMenus();
@@ -279,8 +292,70 @@ export default class MvSenceAiIdePlugin extends Plugin {
     this.llmFeature = null;
     this.inlineCompletion?.dispose();
     this.inlineCompletion = null;
+
+    const leaves = this.app.workspace.getLeavesOfType(TERMINAL_VIEW_TYPE);
+    for (const leaf of leaves) {
+      const view = leaf.view;
+      if (view instanceof TerminalView) {
+        try {
+          (view as any).stopShell();
+        } catch (_) {}
+      }
+    }
+
     void removeCodexShellAlias();
     void this.finishUnload();
+  }
+
+  async activateTerminalView() {
+    const { workspace } = this.app;
+    const position = this.settings.terminalOpenPosition || "right";
+    let leaf: any;
+
+    if (position === "left") {
+      const hasExisting = workspace.getLeavesOfType(TERMINAL_VIEW_TYPE).length > 0;
+      leaf = workspace.getLeftLeaf(hasExisting);
+    } else if (position === "right") {
+      const hasExisting = workspace.getLeavesOfType(TERMINAL_VIEW_TYPE).length > 0;
+      leaf = workspace.getRightLeaf(hasExisting);
+    } else if (position === "bottom") {
+      const mainAreaLeaves = workspace.getLeavesOfType(TERMINAL_VIEW_TYPE).filter(l => l.getRoot() === workspace.rootSplit);
+      const targetLeaf = mainAreaLeaves[0];
+      if (targetLeaf) {
+        workspace.setActiveLeaf(targetLeaf, { focus: true });
+        leaf = workspace.getLeaf("tab");
+      } else {
+        leaf = workspace.getLeaf("split", "horizontal");
+        setTimeout(() => {
+          try {
+            const parent = leaf.parent as any;
+            if (parent && parent.children && parent.children.length === 2) {
+              parent.children[0].dimension = 75;
+              parent.children[1].dimension = 25;
+              workspace.requestSaveLayout();
+            }
+          } catch (e) {
+            console.error("Failed to adjust terminal split ratio:", e);
+          }
+        }, 100);
+      }
+    } else {
+      leaf = workspace.getLeaf(true);
+    }
+
+    if (leaf) {
+      await leaf.setViewState({
+        type: TERMINAL_VIEW_TYPE,
+        active: true,
+      });
+      workspace.revealLeaf(leaf);
+      setTimeout(() => {
+        const view = leaf.view;
+        if (view instanceof TerminalView) {
+          view.focusTerminal();
+        }
+      }, 100);
+    }
   }
 
   async saveAndApplySettings(): Promise<void> {

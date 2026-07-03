@@ -1,5 +1,6 @@
 import { Menu, Notice, PluginSettingTab, Setting, type App } from "obsidian";
 import type MvSenceAiIdePlugin from "../main";
+import * as child_process from "child_process";
 import {
   DEFAULT_SETTINGS,
   DEFAULT_INLINE_SYSTEM_PROMPT_BODY,
@@ -561,6 +562,184 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
           }),
       );
     }
+
+    // ---- 💻 终端设置 ----
+    containerEl.createEl("div", {
+      text: "💻 终端设置",
+      cls: "mv-senceai-section-title setting-item-name",
+    });
+
+    addHeading(containerEl, "Shell 配置");
+
+    new Setting(containerEl)
+      .setName("终端打开位置")
+      .setDesc("选择新终端视图默认打开的面板区域。")
+      .addDropdown((dropdown) =>
+        dropdown
+          .addOption("tab", "中间主栏 (Middle Main Split / Tabs)")
+          .addOption("left", "左侧边栏 (Left Sidebar)")
+          .addOption("right", "右侧边栏 (Right Sidebar)")
+          .addOption("bottom", "底部拆分栏 (Bottom Split Pane)")
+          .setValue(this.plugin.settings.terminalOpenPosition || "right")
+          .onChange(async (value) => {
+            this.plugin.settings.terminalOpenPosition = value as any;
+            await this.plugin.saveData(this.plugin.settings);
+          })
+      );
+
+    new Setting(containerEl)
+      .setName("macOS/Linux Shell 路径")
+      .setDesc("自定义 macOS/Linux 系统下的终端 Shell。留空则默认为 $SHELL 或 /bin/zsh。")
+      .addText((text) =>
+        text
+          .setPlaceholder("/bin/zsh")
+          .setValue(this.plugin.settings.terminalMacShellPath)
+          .onChange(async (value) => {
+            this.plugin.settings.terminalMacShellPath = value.trim();
+            await this.plugin.saveData(this.plugin.settings);
+          })
+      );
+
+    new Setting(containerEl)
+      .setName("macOS/Linux Shell 参数")
+      .setDesc("启动 macOS/Linux Shell 时的命令行参数（以空格分隔）。默认为 -l。")
+      .addText((text) =>
+        text
+          .setPlaceholder("-l")
+          .setValue(this.plugin.settings.terminalMacShellArgs)
+          .onChange(async (value) => {
+            this.plugin.settings.terminalMacShellArgs = value.trim();
+            await this.plugin.saveData(this.plugin.settings);
+          })
+      );
+
+    new Setting(containerEl)
+      .setName("Windows Shell 路径")
+      .setDesc("自定义 Windows 系统下的终端 Shell。留空则默认为 cmd.exe。")
+      .addText((text) =>
+        text
+          .setPlaceholder("powershell.exe")
+          .setValue(this.plugin.settings.terminalWinShellPath)
+          .onChange(async (value) => {
+            this.plugin.settings.terminalWinShellPath = value.trim();
+            await this.plugin.saveData(this.plugin.settings);
+          })
+      );
+
+    new Setting(containerEl)
+      .setName("Windows Shell 参数")
+      .setDesc("启动 Windows Shell 时的命令行参数（以空格分隔）。留空则不传参数。")
+      .addText((text) =>
+        text
+          .setPlaceholder("")
+          .setValue(this.plugin.settings.terminalWinShellArgs)
+          .onChange(async (value) => {
+            this.plugin.settings.terminalWinShellArgs = value.trim();
+            await this.plugin.saveData(this.plugin.settings);
+          })
+      );
+
+    addHeading(containerEl, "字体与字号");
+
+    new Setting(containerEl)
+      .setName("自定义终端字体 (Font Family)")
+      .setDesc("填写您在终端中使用的等宽字体（例如 'MesloLGS NF' 或 'Fira Code' 等 Nerd Font），以完美展示各类图标。留空默认使用 Menlo, Monaco, monospace。")
+      .addText((text) =>
+        text
+          .setPlaceholder("Menlo, Monaco, monospace")
+          .setValue(this.plugin.settings.terminalFontFamily || "")
+          .onChange(async (value) => {
+            this.plugin.settings.terminalFontFamily = value.trim();
+            await this.plugin.saveData(this.plugin.settings);
+          })
+      );
+
+    new Setting(containerEl)
+      .setName("终端字号 (Font Size)")
+      .setDesc("设置终端内字体大小。留空则默认为 13px。")
+      .addText((text) =>
+        text
+          .setPlaceholder("13")
+          .setValue(this.plugin.settings.terminalFontSize || "")
+          .onChange(async (value) => {
+            this.plugin.settings.terminalFontSize = value.trim();
+            await this.plugin.saveData(this.plugin.settings);
+          })
+      );
+
+    addHeading(containerEl, "Python 与依赖");
+
+    new Setting(containerEl)
+      .setName("Python 可执行文件路径")
+      .setDesc("用于运行 PTY 封装脚本的 Python 3 路径。留空则在系统 PATH 中自动寻找。")
+      .addText((text) =>
+        text
+          .setPlaceholder("python3 或 py")
+          .setValue(this.plugin.settings.terminalPythonPath)
+          .onChange(async (value) => {
+            this.plugin.settings.terminalPythonPath = value.trim();
+            await this.plugin.saveData(this.plugin.settings);
+          })
+      );
+
+    const getPythonCmd = () => {
+      const isWindows = process.platform === "win32";
+      const settings = this.plugin.settings;
+      let pythonCmd = settings.terminalPythonPath || (isWindows ? "py" : "python3");
+      if (isWindows && !settings.terminalPythonPath) {
+        try {
+          child_process.execSync("py --version", { stdio: "ignore", timeout: 1000 });
+          pythonCmd = "py";
+        } catch (e) {
+          try {
+            const whereOutput = child_process.execSync("where.exe python", { encoding: "utf8", timeout: 1000 });
+            const pythonPaths = whereOutput.split(/\r?\n/).map(p => p.trim()).filter(p => p && !p.includes("WindowsApps"));
+            const batShim = pythonPaths.find(p => p.toLowerCase().endsWith(".bat"));
+            pythonCmd = batShim || pythonPaths[0] || "python";
+          } catch (e2) {
+            pythonCmd = "python";
+          }
+        }
+      }
+      return pythonCmd;
+    };
+
+    new Setting(containerEl)
+      .setName("Windows 依赖管理 (pywinpty)")
+      .setDesc("Windows 用户运行终端必须安装 winpty 依赖。点击右侧按钮进行检测或一键更新。")
+      .addButton((button) =>
+        button
+          .setButtonText("检测依赖")
+          .onClick(async () => {
+            new Notice("正在检测 Windows 依赖 (winpty)...");
+            const pythonCmd = getPythonCmd();
+            child_process.exec(`"${pythonCmd}" -c "import winpty"`, (error) => {
+              if (error) {
+                new Notice("❌ Windows 依赖检测失败：未检测到 winpty 库，请点击右侧按钮安装。");
+              } else {
+                new Notice("✅ Windows 依赖检测成功：已检测到 winpty 库，终端可以正常运行。");
+              }
+            });
+          })
+      )
+      .addButton((button) =>
+        button
+          .setButtonText("更新依赖")
+          .onClick(async () => {
+            new Notice("正在后台更新 Windows 依赖 (pywinpty)...");
+            const pythonCmd = getPythonCmd();
+            const installCmd = `"${pythonCmd}" -m pip install -U pywinpty`;
+            new Notice(`运行命令: ${installCmd}`);
+            child_process.exec(installCmd, (error) => {
+              if (error) {
+                new Notice(`❌ Windows 依赖更新失败:\n${error.message}`);
+                console.error(error);
+              } else {
+                new Notice("✅ Windows 依赖 (pywinpty) 更新成功！");
+              }
+            });
+          })
+      );
   }
 
   // ---- 行内补全：独立模块设置 ----
