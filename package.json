@@ -1,7 +1,7 @@
 {
   "name": "mv-obcc",
-  "version": "0.5.1",
-  "description": "A focused Claude Code and Codex CLI IDE bridge for Obsidian.",
+  "version": "0.5.2",
+  "description": "A focused Claude Code and Codex CLI IDE bridge for local vaults.",
   "main": "main.js",
   "type": "module",
   "scripts": {
