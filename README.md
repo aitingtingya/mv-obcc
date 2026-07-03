@@ -1,111 +1,119 @@
 # mv-SenceAI
 
-**mv-SenceAI** 是一款专为 Obsidian 打造的 AI 笔记、科研插件。它能够在您的本地代码环境与 Obsidian 知识库之间建立无缝的数据通道。
+**mv-SenceAI** 是一款专为 Obsidian 打造的 AI 笔记、科研、与终端桥接插件。它能够在您的本地代码环境、命令行工具与 Obsidian 知识库之间建立无缝的数据通道与操作体验。
 
-本插件包含三个相对独立的核心能力：
+本插件包含四个相对独立的核心能力：
 1. **IDE 桥接 (IDE Bridge)**：为 Claude Code 与 Codex CLI 提供 Obsidian 当前的上下文信息（如当前标签、选区内容）。Claude Code 侧支持标准 MCP 主动工具和差异审核（Diff）；Codex CLI 侧支持 `/ide` 上下文读取，并通过标准 MCP 使用 Obsidian 工具。
 2. **划词助手 (LLM Assistant)**：完全独立于 IDE 桥接的内置功能。允许您在 Obsidian 的各种视图（Markdown、PDF、Web Viewer）中选中文本后，通过自定义提示词直接流式调用 OpenAI 或 Anthropic 兼容的语言模型 API。
-3. **行内补全 (Inline Completion)**：在 Markdown 编辑器中显示 ghost text 续写建议，可通过左侧功能区按钮按需点亮，并支持接受、取消、拒绝后重新生成。
+3. **行内补全 (Inline Completion)**：在 Markdown 编辑器中显示 ghost text 续写建议，支持接受、取消、拒绝后重新生成，并可在左侧功能区一键启用/停用。
+4. **系统终端 (System Terminal)**：在 Obsidian 内部拉起全功能的本地系统终端（支持 macOS/Linux Shell 与 Windows ConPTY），支持与 Obsidian 双向联动，双击或 Ctrl+点击终端内文件路径可直接在编辑器中定位笔记。
 
 ---
 
 ## 安装指南
 
-安装本插件有两种方式：**手动安装（最快最方便，无需编译）** 或 **从源码自行构建**。
+安装本插件有三种方式：**官方社区安装**、**手动从 Releases 安装** 或 **从源码自行构建**。
 
-### 方法一：插件已经上架obsidian官方插件社区，搜索mv-SenceAI 即可找到并安装
-### 方法二：手动从 Release 安装
+### 方法一：从 Obsidian 官方插件社区安装（推荐）
+1. 在 Obsidian 中进入 **设置 -> 第三方插件 -> 社区插件 -> 浏览**。
+2. 搜索 `mv-SenceAI` 并点击安装。
+3. 启用该插件。
 
-1. 前往 GitHub 仓库的 [Releases](https://github.com/aitingtingya/mv-senceai/releases) 页面，下载最新版本（如 `0.4.5`）的以下三个资产文件：
+### 方法二：手动从 Releases 安装
+1. 前往 GitHub 仓库的 [Releases](https://github.com/aitingtingya/mv-obcc/releases) 页面，下载最新版本（例如 `0.6.0`）的以下三个资产文件：
    - `main.js`
    - `manifest.json`
    - `styles.css`
 2. 在您的 Obsidian Vault 插件目录下新建文件夹，路径为：`<vault>/.obsidian/plugins/mv-obcc/`
 3. 将下载的这三个文件复制到该文件夹中。
-4. 重启或刷新 Obsidian，进入**设置 -> 第三方插件**，找到 `mv-SenceAI` 并启用它。
-   *(注意：请确保关闭同 Vault 下的其他 Claude Code IDE 桥接插件以避免冲突)*
+4. 进入 Obsidian **设置 -> 第三方插件**，找到 `mv-SenceAI` 并启用它。
 
-### 方法三：从源码构建安装
-
-如果您通过克隆或下载了本仓库的源码，请执行以下命令来构建产物：
-
-1. 在项目根目录下执行编译构建：
+### 方法三：从源码自行构建安装
+1. 克隆或下载本仓库 of 源码，并在项目根目录下执行编译构建：
    ```bash
-   # 安装所需依赖项
+   # 安装开发依赖项
    npm ci
-
    # 编译并构建项目
    npm run build
    ```
-2. 在您的 Obsidian Vault 的插件目录下新建文件夹，路径为：`<vault>/.obsidian/plugins/mv-obcc/`
+2. 在您的 Obsidian Vault 的插件目录下新建文件夹：`<vault>/.obsidian/plugins/mv-obcc/`
 3. 将构建生成的以下三个文件复制到该文件夹中：
    - `dist/main.js` (复制到目标文件夹后，需要确保文件名为 `main.js`)
    - `manifest.json`
    - `styles.css`
-4. 重启或刷新 Obsidian，在**第三方插件**中启用它。
+4. 刷新或重启 Obsidian，在**第三方插件**中启用它。
 
-### 3. Claude Code 侧配置
+---
+
+## 第三方集成配置
+
+### 1. Claude Code 侧配置
 1. 确保 Obsidian 已启动且 `mv-SenceAI` 插件处于启用状态。
 2. 在与该 Obsidian Vault 对应的本地目录中启动 Claude Code。
 3. 验证连接状态：
    - 在 Claude Code 终端输入 `/ide`，应提示已连接到 Obsidian。
-   - 输入 `claude mcp list`，应当能看到 `mv-senceai-ide`（或其提供的工具）已连接。
+   - 输入 `claude mcp list`，应当能看到 `mv-senceai-ide` 已连接。
 
-### 4. Codex CLI 侧配置
+### 2. Codex CLI 侧配置
 1. 确保本机已安装并登录 Codex CLI。
 2. 在插件设置底部启用 `启用 Codex IDE 功能`。
 3. 在与该 Obsidian Vault 对应的本地目录中启动 Codex CLI。
-4. 在 Codex CLI 中输入 `/ide`，应提示已连接，并在后续消息中自动带入当前 Obsidian 标签、选区和打开标签上下文。
-5. 输入 `/mcp`，应能看到本插件的 MCP 工具；这些工具包括读取最近选区、列出打开标签、打开文件和读取 Web Viewer 页面。
+4. 在 Codex CLI 中输入 `/ide`，应提示已连接，并在后续消息中自动带入当前 Obsidian 标签和选区上下文。
 
 ---
 
 ## 使用指南
 
-### IDE 桥接功能
+### 1. IDE 桥接功能
+- **被动状态感知**：开启后，插件会将当前的标签页和选区状态被动同步给 Claude Code。支持“所有活动页面”追踪（Markdown、PDF 或是 Web Viewer）。
+- **主动工具 (MCP)**：Claude Code 与 Codex CLI 可以通过 HTTP MCP 协议主动调用插件提供的工具，例如 `getLatestSelection`（读取选区）、`getOpenEditors`（获取打开的标签）、`openFile`（定位并打开 Vault 文件）、`readCurrentWebPage`（读取 Web Viewer 页面为 Markdown）。
+- **差异可视化审核 (Diff)**：当 Claude 提议修改文件时，插件会在 Obsidian 侧弹出基于 CodeMirror MergeView 的差异比对界面。您可以在界面内直接编辑、核对并确认，确认后的内容会写入硬盘。
 
-- **被动状态感知**：开启后，您可以选择让插件追踪 Markdown、PDF 或是 Web Viewer。插件会将当前的标签页和选区状态被动同步给 Claude Code。
-  - *多实例支持*：开启“支持所有活动页面”后，插件会精确绑定 Claude PID 和会话。当同时运行多个 Claude 时，每个会话只会隐藏自己的终端，依然可以读取其他终端的信息。
-- **主动工具 (MCP)**：Claude Code 与 Codex CLI 可以通过 HTTP MCP 协议主动调用插件提供的工具，例如：
-  - `getLatestSelection`：读取最后一次非空选区。
-  - `getOpenEditors`：获取所有已打开的标签列表。
-  - `openFile`：在 Obsidian 中定位并打开特定的 Vault 文件。
-  - `readCurrentWebPage`：无需刷新或跳转，直接将 Obsidian Web Viewer 中正在浏览的网页读取为 Markdown 格式。
-- **差异可视化审核 (Diff)**：当 Claude 提议修改文件时，如果是需要授权的操作，插件会在 Obsidian 侧弹出基于 CodeMirror MergeView 的差异比对界面。您可以在界面内进行编辑和最终确认，确认后的内容会由 Claude 写入硬盘。
-- **Codex CLI 支持**：Codex 集成使用 CLI `/ide` 的本地 IPC 上下文协议，并把插件的 MCP HTTP 服务写入 Codex 配置。连接或配置失败不会阻塞插件启动，也不会影响 Claude、划词助手或行内补全。
+### 2. ✍️ 划词助手功能
+1. **配置 API**：在设置中的“API 提供商”区域配置模型 Base URL、模型名称和 API Key。
+2. **配置提示词**：支持配置多个自定义提示词模板，支持使用 `{selection}` 占位符。
+3. **触发方式**：选中文本后，可以通过右键菜单选择 `LLM -> {您的模板}`。自动触发点亮时，仅在产生新选区时自动调用指定模板。
+4. **结果输出 (悬浮窗)**：触发后流式输出回答，且：
+   - **支持拖拽与缩放**：通过拖动标题栏移动位置，拖拽右下角调整大小。
+   - **支持固定 (Pin)**：固定后，后续调用会复用当前悬浮窗，插入或替换内容后也不会自动关闭。
+   - **Markdown 原生预览与就地编辑**：悬浮窗内嵌了 Obsidian 原生的 Markdown 编辑器，允许直接在此排版、修改。
 
-### ✍️ 划词助手功能 
+### 3. ⌨️ 行内补全功能
+1. **配置 API 提供商**：指定行内补全的 Base URL、模型，并可配置思考模式（Thinking Mode）和上下文长度参数。
+2. **快捷键录制**：在设置页直接按下想要绑定的快捷键（如 Accept、Cancel、Reject 重生成）。
+3. **按需控制**：点亮左侧功能区的“行内补全”图标时自动触发；关闭时不会自动打扰，但仍可通过手动请求快捷键触发一次。
 
-划词助手完全独立于 IDE 桥接，不依赖 Claude Code 即可使用。
+### 4. 💻 系统终端功能
+- **启动与快捷键**：点击左侧功能区终端 Ribbon 图标，或使用命令面板运行 `Open System Terminal`。默认系统快捷键为 **`Cmd/Ctrl + Shift + T`**。
+- **外观自适应**：终端文字、背景、前景色和光标会自动提取当前 Obsidian 主题颜色并完美同步。
+- **自定义 Shell 与路径**：可在设置中指定 macOS/Linux 和 Windows 的 Shell 可执行文件路径及启动参数。
+- **打开位置自定义**：在“💻 终端设置”中选择“终端打开位置”：
+  - **右侧边栏 (Right Sidebar)**（默认）：在右边侧栏打开，多开时自动合并为侧栏标签页（Tabs）。
+  - **左侧边栏 (Left Sidebar)**：在左边侧栏打开，多开时合并为标签页。
+  - **中间主栏 (Middle Main Split / Tabs)**：在中间编辑器区域以新标签页（Tab）方式打开。
+  - **底部拆分栏 (Bottom Split Pane)**：从当前编辑器窗口的下方以水平分割线拆分出一个底部终端面板。
+- **底部分栏 3:1 占比与多标签复用**：
+  - 选择“底部拆分栏”时，首次打开将自动将上方编辑区与下方终端区域的高度比例设置为 **`75:25`（即底部 1/4 占比）**。
+  - 若已存在底部终端，再次打开时**不会重复向下拆分，而是自动在新终端中直接作为标签页（Tab 2, Tab 3）并入当前底部分栏**，保持界面整洁。
+- **自定义字体支持**：支持在终端设置中填写 `Nerd Fonts` 字体（如 `MesloLGS NF` 等）及字号，彻底解决因默认字体 Menlo 缺字导致的 Zsh/Powerlevel10k 复杂主题图标或分隔线乱码重影（显示为 `WWWW...`）的问题。
 
-1. **配置 API**：在插件设置中的“API 提供商”区域添加模型提供商（如 OpenAI 兼容端点或 Anthropic）。API Base URL 和模型名称必填；API Key 仅在服务需要鉴权时必填，Ollama、LM Studio 等本地无鉴权服务可留空。
-2. **配置提示词**：您可以配置多个提示词模板。支持 `{selection}` 占位符；若不包含，则划词内容会自动附加在末尾。
-3. **触发方式**：
-   - **Markdown / Web Viewer 视图**：划词后，可以通过右键菜单选择 `LLM -> {您的模板}`，或者通过 Obsidian 的快捷键系统绑定相应的命令触发。
-   - PDF视图：由于 PDF 视图右键菜单被 Obsidian 占用，默认只能使用快捷键触发。
-   - **自动触发**：可以在设置中指定一个已启用的提示词模板。指定后左侧功能区会出现“划词自动触发”按钮；每次启动默认关闭，点亮后仅在产生新选区时自动调用。
-4. **结果输出**：触发后会立即在窗口上方弹出**悬浮窗**，流式输出回答，并具有以下优化体验：
-   - **不干扰操作**：生成回答时，您依然可以自由编辑或浏览原页面。
-   - **支持拖拽与缩放**：可以通过拖拽标题栏移动悬浮窗位置，并能拖动边缘自由调整大小；位置和尺寸会被记住。
-   - **按需固定**：点击标题栏固定按钮后，后续调用会复用当前悬浮窗，插入或替换内容后也不会自动关闭；取消固定即可恢复默认行为。
-   - **Markdown 原生预览与就地编辑**：悬浮窗内嵌了 Obsidian 原生的 Markdown 编辑器（后台使用单例临时文件支撑，该临时文件夹已自动在文件树和全局搜索中隐藏），为您提供原生的排版显示与直接编辑修改能力。
-   - **便捷写入**：生成完毕后支持一键在原编辑器中“插入到光标处”或“替换选区”。
+---
 
-### ⌨️ 行内补全功能
+## Windows 系统 PTY 依赖手动安装指南
 
-行内补全只在 Markdown 编辑器中生效，不依赖 Claude Code。
+在 Windows 下运行 PTY 本地终端需要依赖 Python 环境和 `pywinpty` 第三方库。若在插件设置中点击“更新依赖”失败，可按照以下步骤进行手动安装：
 
-1. **配置 API 提供商**：在设置中的“API 提供商”区域添加 Base URL、模型和可选 API Key。API Base URL 和模型必填；API Key 仅在服务需要鉴权时必填，本地无鉴权服务可留空。
-2. **选择补全模型与思考参数**：在“行内补全”区域开启功能，并选择补全使用的提供商、模型和思考模式。思考模式支持默认、开、关和自定义 JSON。
-3. **调整上下文长度**：可分别设置发送给模型的光标前、光标后 Markdown 源文本字符数；留空时使用默认值。插件不会解析 Markdown 或 LaTeX，公式、代码和表格都会作为纯文本忠实发送。
-4. **点亮功能区按钮**：开启设置后，左侧功能区会出现“行内补全”按钮。按钮点亮时自动触发补全；未点亮时不会自动触发，但仍可通过“手动请求按键”请求一次。
-5. **录制快捷键**：在设置页点击“录制”，直接按下想绑定的快捷键即可；接受和取消可恢复默认，拒绝和手动请求可清空不绑定。
-   - 接受按键：插入当前 ghost text。
-   - 取消按键：清空当前 ghost text，不请求模型。
-   - 拒绝按键：可清空；绑定后，按下会把被拒绝的建议作为“需要避开的候选”发回模型，并请求一版替代补全。
-   - 手动请求按键：可清空；绑定后，未点亮左侧按钮时也能按需请求一次补全。
-6. **允许模型不补全**：当上下文已经完整或模型没有高置信建议时，插件会让模型返回“无补全”信号，并且不会显示 ghost text。
-7. **自定义补全提示词**：设置页可以分别修改补全主体、无需补全指令和拒绝后重生成指令。拒绝后重生成指令支持 `{rejected}` 占位符，用来引用被拒绝的候选文本。
+1. **安装 Python**：确保您的 Windows 系统上已安装 Python（推荐 3.10 及以上版本），并在安装时勾选了 `Add Python to PATH`。
+2. **手动安装依赖包**：
+   打开 Windows 的命令提示符（CMD）或 PowerShell，运行以下命令：
+   ```cmd
+   pip install pywinpty
+   ```
+   *注意：如果您在系统中有多个 Python 环境，或者在插件设置中指定了自定义 Python 路径（例如 `D:\Env\python.exe`），请确保使用对应的 python 路径进行安装：*
+   ```cmd
+   D:\Env\python.exe -m pip install pywinpty
+   ```
+3. **在插件中配置**：在 Obsidian **设置 -> mv-SenceAI -> 💻 终端设置** 中，点击“检测依赖”以确认 `pywinpty` 已被成功检测到。若检测通过，即可正常拉起终端。
 
 ---
 
@@ -113,118 +121,154 @@
 
 > [!WARNING]
 > 请务必了解以下插件的限制与工作边界。
-
-- **Web Viewer 读取限制**：
-  无论是 MCP 提取网页全文，还是划词助手，只能提取当前已加载渲染为可见 DOM 文本的内容。以下类型的内容**无法保证被提取或划词**：
-  - 跨域 iframe (Cross-origin iframes)
-  - 封闭的 Shadow DOM
-  - 纯 Canvas 渲染的页面
-  - 图片内嵌的文字（无 OCR）
-  - 尚未触发加载的无限滚动内容或 `display: none` 的隐藏数据。
-- **PDF 视图限制**：
-  依赖 Obsidian 内置的 PDF.js 文本层。扫描版 PDF 如果没有进行过 OCR 生成底层文本，将无法划词或读取。另外由于 PDF 视图右键菜单被 Obsidian 占用，请使用快捷键触发划词调用。
-- **视觉隔离策略**：
-  “切换标签时保留选区高亮”功能仅为视觉辅助，在您切换到终端等标签时，原页面的选词高亮依然保留。这不影响内部发送给 Claude 的实际内容。
-- **配置的隔离性**：
-  划词助手的网络错误、API Key 暴露或调用失败，均只影响划词助手自身，**绝对不会**波及或影响 Claude Code / Codex CLI 桥接通道的稳定性。
-- **桌面权限说明**：
-  Claude Code 集成会读取和更新 Claude Code 的项目配置、会话信息与 IDE lock 文件，以建立和恢复桥接连接。Codex CLI 集成会创建本地 `/ide` IPC socket/pipe，并在 `~/.codex/config.toml` 中维护一个指向本插件 `/mcp` 服务的受管理配置块；不会启动 `codex app-server` 子进程。
-
-## 鸣谢
-
-行内补全的 CodeMirror ghost-text 架构设计参考了插件 [obsidian-github-copilot](https://github.com/Pierrad/obsidian-github-copilot)。
+>
+> - **网页读取限制**：Web Viewer 仅能读取当前已成功加载渲染的 DOM 文本。Shadow DOM、 Canvas、跨域 iframe 和图片中的未 OCR 文字无法提取。
+> - **PDF 视图限制**：PDF 需带有底层文本层方可划词或读取。因 PDF 视图右键菜单被 Obsidian 占用，请使用快捷键触发划词调用。
+> - **配置的隔离性**：划词助手、行内补全或系统终端的 API 调用/配置错误，**绝对不会**波及或影响 Claude Code / Codex CLI 桥接通道的稳定性。
+> - **桌面权限说明**：Claude Code 集成会读取和更新 Claude 项目配置与 IDE lock 文件；Codex 集成会创建本地 IPC socket，并在 `~/.codex/config.toml` 中维护本插件的 MCP 服务地址，均不会启动外部进程后台守护服务。
 
 ---
 
-# mv-SenceAI (English Documentation)
+## 鸣谢
 
-**mv-SenceAI** is a desktop bridge connecting your local vaults to Claude Code and Codex CLI. It runs passively in the background to streamline your developer workflow in Obsidian.
+- 行内补全的 CodeMirror ghost-text 架构设计参考了插件 [obsidian-github-copilot](https://github.com/Pierrad/obsidian-github-copilot)。mv-SenceAI 在运行时不绑定或依赖该插件。
+- 本地系统终端的 PTY 进程桥接架构与基本实现参考了插件 [obsidian-claude-sidebar](https://github.com/derek-larson14/obsidian-claude-sidebar)。mv-SenceAI 在运行时不绑定或依赖该插件。
 
-This plugin provides three key capabilities:
+---
+---
+
+# mv-SenceAI (English)
+
+**mv-SenceAI** is a desktop bridge and system terminal plugin connecting your local vaults, CLI tools, and development environment to Obsidian.
+
+This plugin provides four key capabilities:
 1. **IDE Bridge**: Feeds contextual information (active tab, selections) from your vault to Claude Code and Codex CLI. Claude Code uses the existing IDE/MCP bridge; Codex CLI uses `/ide` context IPC plus standard MCP tools.
 2. **LLM Assistant (Selection Reader)**: A completely independent feature to call OpenAI or Anthropic compatible APIs directly from Obsidian views (Markdown, PDF, Web Viewer) using custom prompt templates, streaming responses into a floating output window.
-3. **Inline Completion**: A separate Markdown-only ghost-text completion module with a ribbon toggle and configurable accept, cancel, and reject/regenerate keys.
+3. **Inline Completion**: A separate Markdown-only ghost-text completion module with accept, cancel, and reject/regenerate shortcuts, controllable via a ribbon toggle button.
+4. **System Terminal**: Spawns fully functional local system terminals (macOS/Linux Shell & Windows ConPTY) inside Obsidian, supporting automatic dark/light theme sync, customized fonts, and file path click-to-open integration.
 
 ---
 
 ## Installation Guide
 
-You can install this plugin either **manually (simplest, no compilation needed)** or by **building from source**.
+You can install this plugin either **via the Community Plugin Store**, **manually from Releases**, or **by building from source**.
 
-### Method 1: Manual Installation (Recommended)
+### Method 1: Installing via Obsidian Community Plugins (Recommended)
+1. In Obsidian, go to **Settings -> Community Plugins -> Browse**.
+2. Search for `mv-SenceAI` and click Install.
+3. Enable the plugin.
 
-1. Go to the [Releases](https://github.com/aitingtingya/mv-senceai/releases) page of this repository and download the latest release files:
+### Method 2: Manual Installation from Releases
+1. Go to the [Releases](https://github.com/aitingtingya/mv-obcc/releases) page of this repository and download the latest release files (e.g. `0.6.0`):
    - `main.js`
    - `manifest.json`
    - `styles.css`
 2. Create a new folder named `mv-obcc` under your vault's plugins directory: `<vault>/.obsidian/plugins/mv-obcc/`
 3. Copy the three downloaded files into this folder.
-4. Restart or reload Obsidian, navigate to **Settings -> Community Plugins**, locate `mv-SenceAI`, and enable it.
-   *(Note: Ensure you disable any other Claude Code bridge plugins in the same vault to prevent conflicts).*
+4. Enable the plugin under **Settings -> Community Plugins**.
 
-### Method 2: Build From Source
-
-If you prefer to clone and compile the source code yourself:
-
-1. Clone this repository to your local machine.
-2. In the project root directory, run:
+### Method 3: Build From Source
+1. Clone this repository and compile the source code in the project root:
    ```bash
    # Install dependencies
    npm ci
    # Compile and build the plugin
    npm run build
    ```
-3. Create a folder named `mv-obcc` in your vault's plugins directory: `<vault>/.obsidian/plugins/mv-obcc/`
-4. Copy the compiled files into the new directory:
+2. Create a folder named `mv-obcc` under your vault's plugins directory: `<vault>/.obsidian/plugins/mv-obcc/`
+3. Copy the compiled files into the new directory:
    - `dist/main.js` (Rename this file to `main.js` in the destination folder)
    - `manifest.json`
    - `styles.css`
-5. Enable the plugin in Obsidian settings.
+4. Enable the plugin in Obsidian settings.
 
 ---
 
-## Feature Scope & Notes
+## Third-Party Integration Configuration
+
+### 1. Claude Code Configuration
+1. Make sure Obsidian is running and `mv-SenceAI` is enabled.
+2. Start Claude Code in the local directory corresponding to the active Obsidian Vault.
+3. Verify connection:
+   - Run `/ide` in Claude Code; it should confirm the connection to Obsidian.
+   - Run `claude mcp list` and ensure `mv-senceai-ide` tools are listed.
+
+### 2. Codex CLI Configuration
+1. Ensure Codex CLI is installed and you are logged in.
+2. Enable `Enable Codex IDE` at the bottom of the plugin settings.
+3. Start Codex CLI in the matching vault directory.
+4. Run `/ide` in Codex CLI to establish the active tab/selection context connection.
+
+---
+
+## Usage Guide
+
+### 1. IDE Bridge Feature
+- **Passive Context Sync**: Once enabled, active tab and selection state are passively synced to Claude Code. Supports tracking Markdown, PDF, and Web Viewer.
+- **Active Tools (MCP)**: Claude Code and Codex CLI call plugin tools via standard HTTP MCP. Available tools: `getLatestSelection`, `getOpenEditors`, `openFile`, and `readCurrentWebPage`.
+- **Diff View & Review**: When Claude proposes file modifications, the plugin displays a CodeMirror MergeView diff interface. You can review and edit changes directly before confirming execution.
+
+### 2. ✍️ LLM Assistant Feature
+1. **API Setup**: Set Base URL, model name, and API Key under the "API Provider" section.
+2. **Prompt Templates**: Create templates utilizing the `{selection}` placeholder.
+3. **Trigger**: Select text and trigger via the right-click menu `LLM -> {Your Template}`. If the ribbon auto-trigger is active, text selection automatically fires the template.
+4. **Floating Window**: Outputs response stream into a movable/resizable window:
+   - **Drag and Resize**: Drag title bar to move, drag bottom-right corner to resize.
+   - **Pin Window**: Pinning reuses the current window and keeps it open after inserting/replacing text.
+   - **Native Editor**: Houses a native Obsidian Markdown editor inside for editing/formatting.
+
+### 3. ⌨️ Inline Completion Feature
+1. **Configure Provider**: Select Base URL, model, thinking parameters, and raw Markdown context bounds.
+2. **Keyboard Bindings**: Record shortcuts for Accept, Cancel, and Reject-Regenerate.
+3. **Control Toggle**: Ribbons toggle handles auto-completion; when turned off, completions are only requested via manual shortcut.
+
+### 4. 💻 System Terminal Feature
+- **Spawning**: Spawn via the ribbon terminal icon or by running `Open System Terminal` in the command palette. Default shortcut is **`Cmd/Ctrl + Shift + T`**.
+- **Visual Theme Sync**: Terminal background, foreground, selection, and cursor adapt to match Obsidian's active theme.
+- **Custom executable path**: Define executable shell path and arguments for macOS/Linux and Windows.
+- **Customizable Open Position**: Configure "Terminal Open Position" in settings:
+  - **Right Sidebar (Default)**: Opens in the right panel; subsequent terminals merge into tabs.
+  - **Left Sidebar**: Opens in the left panel; subsequent terminals merge into tabs.
+  - **Middle Main Split**: Opens in the editor pane as standard tabs.
+  - **Bottom Split Pane**: Opens as a horizontal split below the active pane.
+- **Bottom Split 3:1 Height & Tab Reuse**:
+  - Horizontal split automatically sets height ratio to **`75:25` (bottom 1/4 layout)**.
+  - Subsequent terminal spawns **automatically merge as tabs (Tab 2, Tab 3) in the existing bottom panel** instead of stacking vertically.
+- **Custom Font Support**: Specify customizable `Nerd Fonts` (e.g. `MesloLGS NF`) and font size in settings, solving characters or dividers formatting glitch (`WWWW...`) caused by Menlo default font.
+
+---
+
+## Windows Manual PTY Dependency Installation Guide
+
+Spawning terminals on Windows relies on Python and the `pywinpty` package. If the "Update Dependencies" button fails, perform the manual installation:
+
+1. **Install Python**: Verify Python (3.10+ recommended) is installed on Windows, with `Add Python to PATH` checked during setup.
+2. **Install pywinpty Package**:
+   Open CMD or PowerShell and execute:
+   ```cmd
+   pip install pywinpty
+   ```
+   *Note: If you have multiple Python environments or designated a custom path (e.g., `D:\Env\python.exe`), run pip via the target interpreter:*
+   ```cmd
+   D:\Env\python.exe -m pip install pywinpty
+   ```
+3. **Verify Settings**: Go to **Settings -> mv-SenceAI -> 💻 Terminal Settings**, and click "Verify Dependencies" to ensure `pywinpty` is detected.
+
+---
+
+## Limitations & Boundary Conditions
 
 > [!WARNING]
 > Please review the limitations of the web reader and PDF highlights.
 >
-> - **Web Reader Limits**: Standard iframe and canvas reading limits apply.
-> - **PDF Reading**: Scanned PDF pages without text layers cannot be read.
-> - **Config Isolation**: Errors or issues with the LLM selection assistant will not affect the Claude Code or Codex CLI IDE bridges.
-> - **Desktop Permissions**: The Claude Code bridge reads and updates Claude Code project settings, session metadata, and IDE lock files. The Codex bridge creates a local `/ide` IPC socket/pipe and maintains a managed MCP server block in `~/.codex/config.toml`; it does not start `codex app-server`.
+> - **Web Reader Limits**: Standard iframe, Canvas, shadow DOM, and scanned PDF OCR limitations apply.
+> - **PDF Interface**: Scanned PDFs without text layers cannot be read. Use shortcuts to trigger the LLM Assistant as the PDF right-click menu is locked by Obsidian.
+> - **Config Isolation**: LLM Assistant, Inline Completion, and System Terminal configurations are fully isolated and **will not** interfere with Claude Code or Codex CLI IDE bridges.
+> - **Permissions**: Integrated Claude Code and Codex CLI bridges manage project lock files, settings, and local Unix domain socket IPC; they do not start persistent background daemon processes.
 
-### Codex CLI Bridge
-
-- Enable **Codex IDE** at the bottom of the plugin settings.
-- Start Codex CLI in the matching vault directory and run `/ide`; Codex should connect to Obsidian context.
-- Run `/mcp` in Codex CLI to confirm the mv-SenceAI MCP tools are visible.
-- Codex receives active file, selection, cursor, and open-tab context through `/ide`; it uses Obsidian actions through standard MCP.
-
-### LLM Assistant Interaction
-
-- Configure an API Base URL and model name for each provider. An API key is only required when the endpoint uses authentication; it may be left empty for unauthenticated local services such as Ollama or LM Studio.
-- Choose an enabled prompt template in settings to expose the **Selection auto-trigger** ribbon button. It starts disabled after every Obsidian launch and only fires when a new selection gesture is completed.
-- The floating result window remembers its position and size. Pin it from the title bar to reuse the same window for later requests and keep it open after insert or replace actions.
-
-### Inline Completion
-
-- Enable Inline Completion in settings, choose a provider/model, configure thinking mode, and set separate raw Markdown context lengths before and after the cursor. Leaving either context length empty restores its default.
-- Markdown and LaTeX are sent as source text. The plugin does not parse or skip formulas; the model decides the completion content.
-- When enabled, the ribbon shows an Inline Completion button. While active, it triggers automatically; while inactive, automatic triggering is off but the manual request key can still request one completion.
-- Click Record in settings, press the desired shortcut, and the plugin saves the CodeMirror-compatible binding automatically. Accept inserts the current ghost text, cancel clears it, reject asks for a replacement suggestion while treating the rejected text as a candidate to avoid, and manual request can be left unbound.
-- If the surrounding Markdown is already complete or the model has no confident continuation, the plugin asks the model to return a no-completion signal and shows no ghost text.
-- Inline prompt settings can customize the main completion prompt, the no-completion instruction, and the reject-regenerate instruction. The reject prompt supports `{rejected}` for the rejected candidate.
-
-### System Terminal
-
-- Click the terminal Ribbon icon or use the command palette `Open System Terminal` to launch a local system terminal.
-- Supports customizable macOS/Linux and Windows shell configurations (shell binary path and command-line arguments).
-- Automatically matches Obsidian's active theme colors (background, foreground, cursor, selection).
-- Double-click or Ctrl+click vault-relative file paths in the terminal output to open corresponding notes in Obsidian.
-- Windows users can click "更新依赖" in settings to automatically install/update the required `pywinpty` Python library.
+---
 
 ## Acknowledgements
 
-- The CodeMirror ghost-text architecture for Inline Completion was informed by plugin [obsidian-github-copilot](https://github.com/Pierrad/obsidian-github-copilot). mv-SenceAI does not bundle or depend on that plugin at runtime.
-- The local terminal architecture and PTY Python bridge were informed by plugin [obsidian-claude-sidebar](https://github.com/michaellatman/obsidian-claude-sidebar). mv-SenceAI does not bundle or depend on that plugin at runtime.
-
+- The CodeMirror ghost-text architecture for Inline Completion was informed by [obsidian-github-copilot](https://github.com/Pierrad/obsidian-github-copilot). mv-SenceAI has no runtime dependency on that plugin.
+- The PTY process bridge architecture for the local terminal was informed by [obsidian-claude-sidebar](https://github.com/derek-larson14/obsidian-claude-sidebar). mv-SenceAI has no runtime dependency on that plugin.
