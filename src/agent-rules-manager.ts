@@ -95,16 +95,20 @@ async function updateFileRule(filePath: string, enabled: boolean): Promise<void>
     }
 
     // Strip existing rule block if present
+    let hadManagedBlock = false;
     const start = content.indexOf(TAG_BEGIN);
     if (start >= 0) {
       const end = content.indexOf(TAG_END, start);
       if (end >= 0) {
+        hadManagedBlock = true;
         content =
           content.slice(0, start).trimEnd() +
           "\n\n" +
           content.slice(end + TAG_END.length).trimStart();
       }
     }
+
+    if (!enabled && !hadManagedBlock) return;
 
     if (enabled) {
       content = content.trimEnd() + "\n\n" + RULE_CONTENT + "\n";
@@ -120,11 +124,21 @@ async function updateFileRule(filePath: string, enabled: boolean): Promise<void>
         fs.unlinkSync(filePath);
       }
     } else {
+      if (content === readExisting(filePath)) return;
       const dir = path.dirname(filePath);
       fs.mkdirSync(dir, { recursive: true });
       fs.writeFileSync(filePath, content, "utf8");
     }
   } catch (e) {
     console.error(`[mv-obcc] Failed to update rule file ${filePath}`, e);
+  }
+}
+
+function readExisting(filePath: string): string | null {
+  try {
+    return fs.readFileSync(filePath, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
   }
 }
