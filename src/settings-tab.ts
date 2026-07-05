@@ -1,4 +1,5 @@
-import { Menu, Notice, PluginSettingTab, Setting, type App } from "obsidian";
+import { Menu, Modal, Notice, PluginSettingTab, Setting, type App } from "obsidian";
+import type { EditorView } from "@codemirror/view";
 import type MvSenceAiIdePlugin from "../main";
 import * as child_process from "child_process";
 import {
@@ -18,8 +19,23 @@ import type {
   LlmProviderType,
   LlmThinkingMode,
   InlineCompletionKeymap,
+  SourceAssistProfile,
   ToolToggles,
 } from "./types";
+import {
+  createSourceAssistProfile,
+  normalizeSourceAssistExtension,
+} from "./source-assist/source-assist-settings";
+import { getDefaultSourceAssistSnippetVariables } from "./source-assist/default-snippet-variables";
+import { createSourceAssistSnippetsEditor } from "./source-assist/snippets-editor";
+import { parseSnippets } from "./vendor/latex-suite/src/snippets/parse";
+
+type MainSettingsSectionId =
+  | "ide"
+  | "llm"
+  | "inline-completion"
+  | "terminal"
+  | "source-assist";
 
 const SOURCE_LABELS = {
   manual: "手动覆盖",
@@ -30,24 +46,424 @@ const SOURCE_LABELS = {
   none: "未找到",
 } as const;
 
+class SourceAssistExtensionModal extends Modal {
+  private inputEl!: HTMLInputElement;
+
+  constructor(
+    app: App,
+    private readonly onSubmit: (extension: string) => void,
+  ) {
+    super(app);
+  }
+
+  onOpen(): void {
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.createEl("h3", { text: "添加新源码类型" });
+    contentEl.createEl("p", {
+      text: "只输入文件后缀，不需要点号。例如 tex、bib、m。",
+      cls: "setting-item-description",
+    });
+    this.inputEl = contentEl.createEl("input", {
+      type: "text",
+      attr: { placeholder: "tex" },
+    });
+    this.inputEl.addClass("mv-senceai-source-assist-extension-input");
+    this.inputEl.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        this.submit();
+      }
+    });
+    const buttonRow = contentEl.createDiv({ cls: "mv-senceai-modal-button-row" });
+    const submitButton = buttonRow.createEl("button", { text: "添加" });
+    submitButton.addClass("mod-cta");
+    submitButton.addEventListener("click", () => this.submit());
+    const cancelButton = buttonRow.createEl("button", { text: "取消" });
+    cancelButton.addEventListener("click", () => this.close());
+    this.inputEl.focus();
+  }
+
+  private submit(): void {
+    const extension = normalizeSourceAssistExtension(this.inputEl.value);
+    if (!extension) {
+      new Notice("请输入合法后缀：只能包含字母、数字、+、_、-，且不能以点开头。");
+      return;
+    }
+    this.onSubmit(extension);
+    this.close();
+  }
+}
+
+export interface MarkdownExtensionRegistry {
+  getTypeByExtension?: (extension: string) => string | undefined;
+  isExtensionRegistered?: (extension: string) => boolean;
+  registerExtensions?: (extensions: string[], viewType: string) => void;
+  unregisterExtensions?: (extensions: string[]) => void;
+}
+
+export interface CustomMarkdownExtensionRegistryState {
+  active: string[];
+  owned: string[];
+}
+
+export function normalizeCustomMarkdownExtensions(raw: string): string[] {
+  const seen = new Set<string>();
+  const extensions: string[] = [];
+  for (const part of raw.split(/[\s,;]+/)) {
+    const extension = part.trim().replace(/^\.+/, "").toLowerCase();
+    if (
+      !extension ||
+      extension === "md" ||
+      seen.has(extension) ||
+      !/^[a-z0-9][a-z0-9+_-]*$/.test(extension)
+    ) {
+      continue;
+    }
+    seen.add(extension);
+    extensions.push(extension);
+  }
+  return extensions;
+}
+
+export interface CustomMarkdownFileCommandDefinition {
+  extension: string;
+  id: string;
+  name: string;
+}
+
+export function customMarkdownFileCommandId(extension: string): string {
+  const encoded = Array.from(extension, (char) =>
+    char.charCodeAt(0).toString(16).padStart(2, "0"),
+  ).join("");
+  return `new-custom-markdown-${encoded}`;
+}
+
+export function customMarkdownFileCommandDefinitions(
+  extensions: Iterable<string>,
+): CustomMarkdownFileCommandDefinition[] {
+  return Array.from(extensions, (extension) => ({
+    extension,
+    id: customMarkdownFileCommandId(extension),
+    name: `新建 .${extension} 文件`,
+  }));
+}
+
+export function availableCustomMarkdownFilePath(
+  folderPath: string,
+  extension: string,
+  exists: (path: string) => boolean,
+): string {
+  const prefix =
+    !folderPath || folderPath === "/"
+      ? ""
+      : `${folderPath.replace(/\/+$/, "")}/`;
+  for (let index = 0; index < 10_000; index += 1) {
+    const basename = index === 0 ? "Untitled" : `Untitled ${index}`;
+    const filePath = `${prefix}${basename}.${extension}`;
+    if (!exists(filePath)) return filePath;
+  }
+  throw new Error(`Unable to find an available .${extension} file path.`);
+}
+
+export type PrismTokenContent =
+  | string
+  | PrismTokenLike
+  | Array<string | PrismTokenLike>;
+
+export interface PrismTokenLike {
+  type: string;
+  content: PrismTokenContent;
+  alias?: string | string[];
+}
+
+export interface PrismLike {
+  languages?: Record<string, unknown>;
+  tokenize?: (
+    source: string,
+    grammar: unknown,
+  ) => Array<string | PrismTokenLike>;
+}
+
+export interface CustomMarkdownHighlightRange {
+  from: number;
+  to: number;
+  classes: string;
+}
+
+const CUSTOM_MARKDOWN_PRISM_LANGUAGE_ALIASES: Record<string, string> = {
+  cjs: "javascript",
+  csx: "csharp",
+  f: "fortran",
+  f03: "fortran",
+  f08: "fortran",
+  f90: "fortran",
+  f95: "fortran",
+  "for": "fortran",
+  fs: "fsharp",
+  fsproj: "fsharp",
+  fsx: "fsharp",
+  htm: "html",
+  jl: "julia",
+  jsonc: "json",
+  m: "matlab",
+  mjs: "javascript",
+  ml: "ocaml",
+  mli: "ocaml",
+  pl: "perl",
+  pm: "perl",
+  ps1: "powershell",
+  wls: "wolfram",
+};
+
+export function resolveCustomMarkdownPrismLanguage(
+  rawExtension: string | null | undefined,
+  prism: PrismLike | null | undefined,
+): string | null {
+  const extension = rawExtension?.trim().replace(/^\.+/, "").toLowerCase();
+  if (!extension) return null;
+  if (prism?.languages?.[extension]) return extension;
+
+  const aliasedLanguage = CUSTOM_MARKDOWN_PRISM_LANGUAGE_ALIASES[extension];
+  return aliasedLanguage && prism?.languages?.[aliasedLanguage]
+    ? aliasedLanguage
+    : null;
+}
+
+export function customMarkdownHighlightLanguage(
+  registeredExtensions: Iterable<string>,
+  rawExtension: string | null | undefined,
+  prism: PrismLike | null | undefined,
+): string | null {
+  const extension = rawExtension?.trim().replace(/^\.+/, "").toLowerCase();
+  if (!extension || !new Set(registeredExtensions).has(extension)) {
+    return null;
+  }
+  return resolveCustomMarkdownPrismLanguage(extension, prism);
+}
+
+export function prismTokensToHighlightRanges(
+  tokens: Array<string | PrismTokenLike>,
+): CustomMarkdownHighlightRange[] {
+  const ranges: CustomMarkdownHighlightRange[] = [];
+  let position = 0;
+
+  for (const token of tokens) {
+    position = appendPrismTokenRanges(token, position, ranges);
+  }
+
+  return ranges;
+}
+
+export function customMarkdownHighlightRangesForSource(
+  prism: PrismLike | null | undefined,
+  registeredExtensions: Iterable<string>,
+  rawExtension: string | null | undefined,
+  source: string,
+  warn: (message: string, error?: unknown) => void = console.warn,
+): CustomMarkdownHighlightRange[] {
+  const language = customMarkdownHighlightLanguage(
+    registeredExtensions,
+    rawExtension,
+    prism,
+  );
+  const grammar = language ? prism?.languages?.[language] : null;
+  if (!language || !grammar || typeof prism?.tokenize !== "function") {
+    return [];
+  }
+
+  try {
+    return prismTokensToHighlightRanges(prism.tokenize(source, grammar));
+  } catch (error) {
+    warn(`Failed to highlight custom Markdown extension ".${language}".`, error);
+    return [];
+  }
+}
+
+export function syncCustomMarkdownExtensionRegistry(
+  registry: MarkdownExtensionRegistry | null | undefined,
+  currentOwnedExtensions: Iterable<string>,
+  requestedRaw: string,
+  warn: (message: string, error?: unknown) => void = console.warn,
+): CustomMarkdownExtensionRegistryState {
+  const requested = normalizeCustomMarkdownExtensions(requestedRaw);
+  const active = new Set<string>();
+  const owned = new Set(currentOwnedExtensions);
+
+  if (!registry?.registerExtensions || !registry.unregisterExtensions) {
+    if (requested.length > 0) {
+      warn("Obsidian viewRegistry does not expose extension registration APIs.");
+    }
+    return { active: [], owned: Array.from(owned) };
+  }
+
+  const requestedSet = new Set(requested);
+  const toRemove = Array.from(owned).filter((extension) => !requestedSet.has(extension));
+  if (toRemove.length > 0) {
+    try {
+      registry.unregisterExtensions(toRemove);
+      for (const extension of toRemove) owned.delete(extension);
+    } catch (error) {
+      warn("Failed to unregister custom Markdown extensions.", error);
+    }
+  }
+
+  for (const extension of requested) {
+    const existingType = registry.getTypeByExtension?.(extension);
+    if (existingType === "markdown") {
+      active.add(extension);
+      continue;
+    }
+
+    if (existingType && existingType !== "markdown") {
+      warn(
+        `Extension ".${extension}" is registered for view "${existingType}"; re-registering it as Markdown.`,
+      );
+      try {
+        registry.unregisterExtensions([extension]);
+        owned.delete(extension);
+      } catch (error) {
+        warn(`Failed to unregister existing ".${extension}" view registration.`, error);
+        continue;
+      }
+    } else if (registry.isExtensionRegistered?.(extension)) {
+      warn(
+        `Extension ".${extension}" is registered without a view type; re-registering it as Markdown.`,
+      );
+      try {
+        registry.unregisterExtensions([extension]);
+        owned.delete(extension);
+      } catch (error) {
+        warn(`Failed to unregister existing ".${extension}" extension registration.`, error);
+        continue;
+      }
+    }
+
+    try {
+      registry.registerExtensions([extension], "markdown");
+      owned.add(extension);
+      if (registry.getTypeByExtension?.(extension) === "markdown" || !registry.getTypeByExtension) {
+        active.add(extension);
+      } else {
+        warn(`Extension ".${extension}" did not resolve to Markdown after registration.`);
+      }
+    } catch (error) {
+      warn(`Failed to register ".${extension}" as a Markdown extension.`, error);
+    }
+  }
+
+  return { active: Array.from(active), owned: Array.from(owned) };
+}
+
+function appendPrismTokenRanges(
+  token: string | PrismTokenLike,
+  position: number,
+  ranges: CustomMarkdownHighlightRange[],
+): number {
+  if (typeof token === "string") return position + token.length;
+
+  const from = position;
+  const to = from + prismTokenContentLength(token.content);
+  const classes = prismTokenClasses(token);
+  if (from < to && classes) {
+    ranges.push({ from, to, classes });
+  }
+  appendPrismContentRanges(token.content, from, ranges);
+  return to;
+}
+
+function appendPrismContentRanges(
+  content: PrismTokenContent,
+  position: number,
+  ranges: CustomMarkdownHighlightRange[],
+): number {
+  if (typeof content === "string") return position + content.length;
+  if (!Array.isArray(content)) {
+    return appendPrismTokenRanges(content, position, ranges);
+  }
+
+  let nextPosition = position;
+  for (const child of content) {
+    nextPosition = appendPrismTokenRanges(child, nextPosition, ranges);
+  }
+  return nextPosition;
+}
+
+function prismTokenContentLength(content: PrismTokenContent): number {
+  if (typeof content === "string") return content.length;
+  if (Array.isArray(content)) {
+    return content.reduce((sum, child) => sum + prismTokenContentLength(child), 0);
+  }
+  return prismTokenContentLength(content.content);
+}
+
+function prismTokenClasses(token: PrismTokenLike): string {
+  const classParts = ["mv-senceai-source-token", "token", token.type];
+  if (typeof token.alias === "string") {
+    classParts.push(token.alias);
+  } else if (Array.isArray(token.alias)) {
+    classParts.push(...token.alias);
+  }
+  return classParts
+    .flatMap((part) => part.split(/\s+/))
+    .filter((part) => /^[a-zA-Z0-9_-]+$/.test(part))
+    .join(" ");
+}
+
 function addHeading(containerEl: HTMLElement, text: string): void {
   new Setting(containerEl).setName(text).setHeading();
 }
 
+function createCollapsibleSettingsSection(
+  containerEl: HTMLElement,
+  id: MainSettingsSectionId,
+  title: string,
+  open: boolean,
+  onToggle: (id: MainSettingsSectionId, open: boolean) => void,
+): HTMLElement {
+  const details = containerEl.createEl("details", {
+    cls: "mv-senceai-settings-section",
+  });
+  details.dataset.sectionId = id;
+  details.open = open;
+  details.addEventListener("toggle", () => onToggle(id, details.open));
+  details.createEl("summary", {
+    text: title,
+    cls: "mv-senceai-settings-section-summary setting-item-name",
+  });
+  return details.createDiv({ cls: "mv-senceai-settings-section-body" });
+}
+
 export class MvSenceAiIdeSettingTab extends PluginSettingTab {
+  private readonly openSettingsSections = new Set<MainSettingsSectionId>();
+  private readonly sourceAssistSnippetEditors: EditorView[] = [];
+  private forceOpenSection: MainSettingsSectionId | null = null;
+
   constructor(app: App, private readonly plugin: MvSenceAiIdePlugin) {
     super(app, plugin);
   }
 
   display(): void {
-    const { containerEl } = this;
-    containerEl.empty();
-    addHeading(containerEl, "mv-SenceAI IDE");
+    const rootEl = this.containerEl;
+    const previousScrollTop = this.captureSettingsUiState(rootEl);
+    this.destroySourceAssistSnippetEditors();
+    rootEl.empty();
+    addHeading(rootEl, "mv-SenceAI IDE");
 
-    containerEl.createEl("div", {
-      text: "🔌 IDE 桥接",
-      cls: "mv-senceai-section-title setting-item-name",
-    });
+    const ideEl = this.createSettingsSection(rootEl, "ide", "IDE桥接");
+    const llmEl = this.createSettingsSection(rootEl, "llm", "划词助手");
+    const inlineCompletionEl = this.createSettingsSection(
+      rootEl,
+      "inline-completion",
+      "行内补全",
+    );
+    const terminalEl = this.createSettingsSection(rootEl, "terminal", "终端");
+    const sourceAssistEl = this.createSettingsSection(
+      rootEl,
+      "source-assist",
+      "源码编写辅助",
+    );
+    let containerEl = ideEl;
 
     const claudeSetting = new Setting(containerEl)
       .setName("启用 Claude Code IDE 功能")
@@ -58,7 +474,7 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
           .onChange(async (value) => {
             this.plugin.settings.ideIntegrations.claudeCode = value;
             await this.plugin.saveAndApplySettings();
-            this.display();
+            this.rerenderSettings("ide");
           }),
       );
 
@@ -85,7 +501,7 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
           .onChange(async (value) => {
             this.plugin.settings.ideIntegrations.codex = value;
             await this.plugin.saveAndApplySettings();
-            this.display();
+            this.rerenderSettings("ide");
           }),
       );
 
@@ -119,7 +535,7 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
           .onChange(async (value) => {
             this.plugin.settings.activityTracking.supportAllActivePages = value;
             await this.plugin.saveAndApplySettings();
-            this.display();
+            this.rerenderSettings("ide");
           }),
       );
 
@@ -165,34 +581,10 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
         );
     }
 
-    addHeading(containerEl, "非 MD 源码编写");
+    containerEl = sourceAssistEl;
+    this.renderSourceAssistSettings(containerEl);
 
-    new Setting(containerEl)
-      .setName("同步 Claude Code (CLAUDE.md) 规则")
-      .setDesc("启用后自动在 CLAUDE.md 中注入中文规约，指导 AI 使用 md 代码文件（文件名-后缀.md）保存非 Markdown 代码。注意：开启本项会直接创建或修改此规则文件。")
-      .addToggle((toggle) =>
-        toggle
-          .setValue(this.plugin.settings.ideIntegrations.syncClaudeRules)
-          .onChange(async (value) => {
-            this.plugin.settings.ideIntegrations.syncClaudeRules = value;
-            await this.plugin.saveAndApplySettings();
-            this.display();
-          }),
-      );
-
-    new Setting(containerEl)
-      .setName("同步 Codex (AGENTS.md) 规则")
-      .setDesc("启用后自动在 AGENTS.md 中注入中文规约，指导 AI 使用 md 代码文件（文件名-后缀.md）保存非 Markdown 代码。注意：开启本项会直接创建或修改此规则文件。")
-      .addToggle((toggle) =>
-        toggle
-          .setValue(this.plugin.settings.ideIntegrations.syncCodexRules)
-          .onChange(async (value) => {
-            this.plugin.settings.ideIntegrations.syncCodexRules = value;
-            await this.plugin.saveAndApplySettings();
-            this.display();
-          }),
-      );
-
+    containerEl = ideEl;
     addHeading(containerEl, "视觉辅助");
     new Setting(containerEl)
       .setName("切换标签时保留选区高亮")
@@ -219,7 +611,7 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
           .onChange(async (value) => {
             this.plugin.settings.mcpEnabled = value;
             await this.plugin.saveAndApplySettings();
-            this.display();
+            this.rerenderSettings("ide");
           }),
       );
 
@@ -303,14 +695,14 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
           button.setButtonText("重新注册").onClick(async () => {
             await this.plugin.retryMcpRegistration();
             new Notice(this.plugin.mcpStatus);
-            this.display();
+            this.rerenderSettings("ide");
           }),
         )
         .addButton((button) =>
           button.setButtonText("清理注册").onClick(async () => {
             await this.plugin.cleanMcpRegistration();
             new Notice(this.plugin.mcpStatus);
-            this.display();
+            this.rerenderSettings("ide");
           }),
         );
 
@@ -356,7 +748,7 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
             this.plugin.settings.upstreamMode =
               value === "compatibility" ? "compatibility" : "native";
             await this.plugin.saveAndApplySettings();
-            this.display();
+            this.rerenderSettings("ide");
           }),
       );
 
@@ -395,7 +787,7 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
             .onChange(async (value) => {
               this.plugin.settings.autoManageClaudeSettings = value;
               await this.plugin.saveAndApplySettings();
-              this.display();
+              this.rerenderSettings("ide");
             }),
         );
     }
@@ -414,7 +806,7 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
         button.setButtonText("重启").onClick(async () => {
           await this.plugin.restartBridge();
           new Notice("mv-SenceAI IDE 桥接已重启。");
-          this.display();
+          this.rerenderSettings("ide");
         }),
       );
 
@@ -425,12 +817,13 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
         button.setButtonText("恢复").onClick(async () => {
           await this.plugin.restoreClaudeSettings();
           new Notice("已恢复 mv-SenceAI IDE 管理的 Claude 设置。");
-          this.display();
+          this.rerenderSettings("ide");
         }),
       );
 
 
 
+    containerEl = llmEl;
     containerEl.createEl("div", {
       text: "🤖 API 提供商（划词助手与行内补全共用）",
       cls: "mv-senceai-section-title setting-item-name",
@@ -444,12 +837,14 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
     }
     this.renderProviders(containerEl);
 
+    containerEl = inlineCompletionEl;
     containerEl.createEl("div", {
       text: "⌨️ 行内补全（Markdown 续写）",
       cls: "mv-senceai-section-title setting-item-name",
     });
     this.renderInlineCompletion(containerEl);
 
+    containerEl = llmEl;
     containerEl.createEl("div", {
       text: "✍️ 划词助手（选词调用 LLM）",
       cls: "mv-senceai-section-title setting-item-name",
@@ -468,7 +863,7 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
             this.plugin.settings.llm.enabled = value;
             await this.plugin.saveData(this.plugin.settings);
             this.plugin.refreshLlmFeature();
-            this.display();
+            this.rerenderSettings("llm");
           }),
       );
 
@@ -558,12 +953,13 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
             };
             this.plugin.settings.llm.templates.push(next);
             await this.plugin.saveData(this.plugin.settings);
-            this.display();
+            this.rerenderSettings("llm");
           }),
       );
     }
 
     // ---- 💻 终端设置 ----
+    containerEl = terminalEl;
     containerEl.createEl("div", {
       text: "💻 终端设置",
       cls: "mv-senceai-section-title setting-item-name",
@@ -694,8 +1090,8 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
           try {
             const whereOutput = child_process.execSync("where.exe python", { encoding: "utf8", timeout: 1000 });
             const pythonPaths = whereOutput.split(/\r?\n/).map(p => p.trim()).filter(p => p && !p.includes("WindowsApps"));
-            const batShim = pythonPaths.find(p => p.toLowerCase().endsWith(".bat"));
-            pythonCmd = batShim || pythonPaths[0] || "python";
+            const executable = pythonPaths.find((p) => !/\.(bat|cmd)$/i.test(p));
+            pythonCmd = executable || pythonPaths[0] || "python";
           } catch (e2) {
             pythonCmd = "python";
           }
@@ -713,7 +1109,7 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
           .onClick(async () => {
             new Notice("正在检测 Windows 依赖 (winpty)...");
             const pythonCmd = getPythonCmd();
-            child_process.exec(`"${pythonCmd}" -c "import winpty"`, (error) => {
+            child_process.execFile(pythonCmd, ["-c", "import winpty"], { windowsHide: true }, (error) => {
               if (error) {
                 new Notice("❌ Windows 依赖检测失败：未检测到 winpty 库，请点击右侧按钮安装。");
               } else {
@@ -728,9 +1124,10 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
           .onClick(async () => {
             new Notice("正在后台更新 Windows 依赖 (pywinpty)...");
             const pythonCmd = getPythonCmd();
-            const installCmd = `"${pythonCmd}" -m pip install -U pywinpty`;
+            const installArgs = ["-m", "pip", "install", "-U", "pywinpty"];
+            const installCmd = [pythonCmd, ...installArgs].join(" ");
             new Notice(`运行命令: ${installCmd}`);
-            child_process.exec(installCmd, (error) => {
+            child_process.execFile(pythonCmd, installArgs, { windowsHide: true }, (error) => {
               if (error) {
                 new Notice(`❌ Windows 依赖更新失败:\n${error.message}`);
                 console.error(error);
@@ -740,6 +1137,364 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
             });
           })
       );
+    this.restoreSettingsScrollTop(rootEl, previousScrollTop);
+    this.forceOpenSection = null;
+  }
+
+  hide(): void {
+    this.destroySourceAssistSnippetEditors();
+  }
+
+  private rerenderSettings(openSection?: MainSettingsSectionId): void {
+    if (openSection) {
+      this.openSettingsSections.add(openSection);
+      this.forceOpenSection = openSection;
+    }
+    this.display();
+  }
+
+  private destroySourceAssistSnippetEditors(): void {
+    for (const editor of this.sourceAssistSnippetEditors) {
+      editor.destroy();
+    }
+    this.sourceAssistSnippetEditors.length = 0;
+  }
+
+  private captureSettingsUiState(containerEl: HTMLElement): number {
+    for (const details of Array.from(
+      containerEl.querySelectorAll<HTMLDetailsElement>(
+        "details.mv-senceai-settings-section[data-section-id]",
+      ),
+    )) {
+      const id = details.dataset.sectionId as MainSettingsSectionId | undefined;
+      if (!id) continue;
+      if (details.open) {
+        this.openSettingsSections.add(id);
+      } else {
+        this.openSettingsSections.delete(id);
+      }
+    }
+    return this.settingsScrollEl(containerEl).scrollTop;
+  }
+
+  private restoreSettingsScrollTop(containerEl: HTMLElement, scrollTop: number): void {
+    const scrollEl = this.settingsScrollEl(containerEl);
+    activeWindow.requestAnimationFrame(() => {
+      scrollEl.scrollTop = scrollTop;
+    });
+  }
+
+  private settingsScrollEl(containerEl: HTMLElement): HTMLElement {
+    return (
+      containerEl.closest<HTMLElement>(".vertical-tab-content")
+      ?? containerEl.closest<HTMLElement>(".modal-content")
+      ?? containerEl.parentElement
+      ?? containerEl
+    );
+  }
+
+  private createSettingsSection(
+    containerEl: HTMLElement,
+    id: MainSettingsSectionId,
+    title: string,
+  ): HTMLElement {
+    return createCollapsibleSettingsSection(
+      containerEl,
+      id,
+      title,
+      this.sectionShouldOpen(id),
+      (nextId, open) => this.setSectionOpen(nextId, open),
+    );
+  }
+
+  private sectionShouldOpen(id: MainSettingsSectionId): boolean {
+    return this.forceOpenSection === id || this.openSettingsSections.has(id);
+  }
+
+  private setSectionOpen(id: MainSettingsSectionId, open: boolean): void {
+    if (open) {
+      this.openSettingsSections.add(id);
+    } else {
+      this.openSettingsSections.delete(id);
+    }
+  }
+
+  private renderSourceAssistSettings(containerEl: HTMLElement): void {
+    const settings = this.plugin.settings.sourceAssist;
+
+    new Setting(containerEl)
+      .setName("启用源码编写辅助")
+      .setDesc("开启后启用按后缀隔离的 Latex Suite 风格 snippets。")
+      .addToggle((toggle) =>
+        toggle
+          .setValue(settings.enabled)
+          .onChange(async (value) => {
+            settings.enabled = value;
+            await this.plugin.saveSourceAssistSettings();
+          }),
+      );
+
+    new Setting(containerEl)
+      .setName("启用触发词替换")
+      .setDesc("关闭后保留源码类型注册，但不运行 snippets。")
+      .addToggle((toggle) =>
+        toggle
+          .setValue(settings.snippetsEnabled)
+          .onChange(async (value) => {
+            settings.snippetsEnabled = value;
+            await this.plugin.saveSourceAssistSettings();
+          }),
+      );
+
+    new Setting(containerEl)
+      .setName("启用公式预览")
+      .setDesc("控制 Latex Suite 原有的公式 tooltip 预览；不控制 .tex 自定义增强渲染。")
+      .addToggle((toggle) =>
+        toggle
+          .setValue(settings.mathPreviewEnabled)
+          .onChange(async (value) => {
+            settings.mathPreviewEnabled = value;
+            await this.plugin.saveSourceAssistSettings();
+          }),
+      );
+
+    for (let i = 0; i < settings.profiles.length; i += 1) {
+      const profile = settings.profiles[i];
+      if (!profile) continue;
+      this.renderSourceAssistProfile(containerEl, profile, i);
+    }
+
+    new Setting(containerEl).addButton((button) =>
+      button
+        .setButtonText("添加新源码类型")
+        .setCta()
+        .onClick(() => {
+          new SourceAssistExtensionModal(this.app, async (extension) => {
+            if (this.plugin.settings.sourceAssist.profiles.some((p) => p.extension === extension)) {
+              new Notice(`.${extension} 已存在。`);
+              return;
+            }
+            this.plugin.settings.sourceAssist.profiles.push(createSourceAssistProfile(extension));
+            await this.plugin.saveSourceAssistSettings();
+            this.rerenderSettings("source-assist");
+          }).open();
+        }),
+    );
+  }
+
+  private renderSourceAssistProfile(
+    containerEl: HTMLElement,
+    profile: SourceAssistProfile,
+    idx: number,
+  ): void {
+    const wrap = containerEl.createDiv({ cls: "mv-senceai-source-assist-profile" });
+    const title = profile.extension === "md" ? "Markdown (.md)" : `源码类型 .${profile.extension}`;
+    const header = new Setting(wrap)
+      .setName(title)
+      .setDesc(
+        profile.extension === "md"
+          ? "固定 profile：用于普通 Markdown 文件。"
+          : "该后缀会自动注册为 Markdown view，并出现在新建非 MD 源码文件命令中。若该后缀已由其它插件处理，本插件会尝试改注册为 Markdown view，可能影响其它插件的打开方式。",
+      )
+      .setHeading();
+
+    header.addToggle((toggle) =>
+      toggle
+        .setValue(profile.enabled)
+        .onChange(async (value) => {
+          const target = this.plugin.settings.sourceAssist.profiles[idx];
+          if (!target) return;
+          target.enabled = value;
+          await this.plugin.saveSourceAssistSettings();
+        }),
+    );
+
+    if (profile.extension !== "md") {
+      header.addExtraButton((button) =>
+        button
+          .setIcon("trash")
+          .setTooltip("删除该源码类型")
+          .onClick(async () => {
+            this.plugin.settings.sourceAssist.profiles.splice(idx, 1);
+            await this.plugin.saveSourceAssistSettings();
+            this.rerenderSettings("source-assist");
+          }),
+      );
+    }
+
+    if (profile.extension === "tex") {
+      new Setting(wrap)
+        .setName("打开 TeX 增强渲染")
+        .setDesc(
+          "实验功能：使用本插件自定义 Live Preview 扩展渲染 \\(...\\)、\\[...\\] 和常见数学环境，可能影响光标移动、折叠行为或其它编辑器插件兼容性。关闭后 .tex 仍作为 Markdown view 打开，snippets 仍可用。",
+        )
+        .addToggle((toggle) =>
+          toggle
+            .setValue(profile.texEnhancedRenderEnabled)
+            .onChange(async (value) => {
+              const target = this.plugin.settings.sourceAssist.profiles[idx];
+              if (!target) return;
+              target.texEnhancedRenderEnabled = value;
+              await this.plugin.saveSourceAssistSettings();
+            }),
+        );
+    }
+
+    this.renderSourceAssistSnippetsEditor(wrap, profile, idx);
+
+    this.renderSourceAssistHotkeySetting(
+      wrap,
+      profile,
+      idx,
+      "snippetsTrigger",
+      "手动触发按键",
+      "用于触发非 automatic snippets；默认与 Latex Suite 一样是 Tab。",
+    );
+    this.renderSourceAssistHotkeySetting(
+      wrap,
+      profile,
+      idx,
+      "snippetNextTabstopTrigger",
+      "下一 tabstop",
+      "snippet 展开后跳到下一个 tabstop。",
+    );
+    this.renderSourceAssistHotkeySetting(
+      wrap,
+      profile,
+      idx,
+      "snippetPreviousTabstopTrigger",
+      "上一 tabstop",
+      "snippet 展开后跳回上一个 tabstop。",
+    );
+  }
+
+  private renderSourceAssistSnippetsEditor(
+    containerEl: HTMLElement,
+    profile: SourceAssistProfile,
+    idx: number,
+  ): void {
+    const setting = new Setting(containerEl)
+      .setName("Snippets")
+      .setDesc(
+        "填写格式与 Latex Suite 的 snippets 设置一致；可以直接粘贴原 snippets 数组。行首 // 会按 JS 注释处理。",
+      )
+      .setClass("mv-senceai-source-assist-snippets-setting");
+    setting.controlEl.empty();
+
+    const editorWrap = setting.settingEl.createDiv({
+      cls: "mv-senceai-snippets-editor-wrapper",
+    });
+    const footer = setting.settingEl.createDiv({
+      cls: "mv-senceai-snippets-footer",
+    });
+    const view = createSourceAssistSnippetsEditor({
+      containerEl: editorWrap,
+      footerEl: footer,
+      initialValue: profile.snippets,
+      validate: async (value) => {
+        const snippetVariables = await getDefaultSourceAssistSnippetVariables();
+        await parseSnippets(
+          value,
+          snippetVariables,
+        );
+      },
+      onValidChange: async (value) => {
+        const target = this.plugin.settings.sourceAssist.profiles[idx];
+        if (!target || target.snippets === value) return;
+        target.snippets = value;
+        await this.plugin.saveSourceAssistSettings();
+      },
+    });
+    this.sourceAssistSnippetEditors.push(view);
+  }
+
+  private renderSourceAssistHotkeySetting(
+    containerEl: HTMLElement,
+    profile: SourceAssistProfile,
+    idx: number,
+    key: "snippetsTrigger" | "snippetNextTabstopTrigger" | "snippetPreviousTabstopTrigger",
+    name: string,
+    description: string,
+  ): void {
+    const setting = new Setting(containerEl)
+      .setName(name)
+      .setDesc(description)
+      .setClass("mv-senceai-inline-hotkey-setting");
+    const valueEl = setting.controlEl.createEl("span", {
+      cls: "mv-senceai-inline-hotkey-value",
+      text: formatInlineHotkeyLabel(profile[key]),
+    });
+    const input = setting.controlEl.createEl("input", {
+      type: "text",
+      attr: { value: profile[key], placeholder: "Tab" },
+    });
+    input.addClass("mv-senceai-source-assist-hotkey-input");
+
+    const save = async (value: string) => {
+      const target = this.plugin.settings.sourceAssist.profiles[idx];
+      if (!target) return;
+      target[key] = value.trim();
+      input.value = target[key];
+      valueEl.setText(formatInlineHotkeyLabel(target[key]));
+      await this.plugin.saveSourceAssistSettings();
+    };
+
+    input.addEventListener("change", () => {
+      void save(input.value);
+    });
+
+    setting.addDropdown((dropdown) => {
+      for (const value of ["Tab", "Shift-Tab", "Enter", "Mod-Enter", "Mod-Space"]) {
+        dropdown.addOption(value, value);
+      }
+      dropdown.addOption("__custom__", "手动录入");
+      dropdown.setValue(["Tab", "Shift-Tab", "Enter", "Mod-Enter", "Mod-Space"].includes(profile[key]) ? profile[key] : "__custom__");
+      dropdown.onChange((value) => {
+        if (value === "__custom__") {
+          input.focus();
+          return;
+        }
+        void save(value);
+      });
+    });
+
+    let cleanupRecording: (() => void) | null = null;
+    const stopRecording = () => {
+      cleanupRecording?.();
+      cleanupRecording = null;
+      valueEl.removeClass("is-recording");
+      valueEl.setText(formatInlineHotkeyLabel(profile[key]));
+    };
+
+    setting.addButton((button) =>
+      button.setButtonText("录制").onClick(() => {
+        cleanupRecording?.();
+        valueEl.addClass("is-recording");
+        valueEl.setText("请按下快捷键...");
+        let timeoutId: number | null = null;
+        const onKeyDown = (event: KeyboardEvent) => {
+          event.preventDefault();
+          event.stopPropagation();
+          const next = eventToCodeMirrorKey(
+            event,
+            activeWindow.navigator.platform.toLowerCase().includes("mac"),
+          );
+          if (!next) return;
+          void save(next).then(stopRecording);
+        };
+        cleanupRecording = () => {
+          activeWindow.removeEventListener("keydown", onKeyDown, true);
+          if (timeoutId !== null) {
+            activeWindow.clearTimeout(timeoutId);
+            timeoutId = null;
+          }
+        };
+        activeWindow.addEventListener("keydown", onKeyDown, true);
+        timeoutId = activeWindow.setTimeout(() => {
+          stopRecording();
+        }, 10_000);
+      }),
+    );
   }
 
   // ---- 行内补全：独立模块设置 ----
@@ -765,7 +1520,7 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
             cfg.armed = false;
           }
           await this.saveInlineCompletionSettings();
-          this.display();
+          this.rerenderSettings("inline-completion");
         }),
       );
 
@@ -788,7 +1543,7 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
             cfg.modelId = null;
           }
           await this.saveInlineCompletionSettings();
-          this.display();
+          this.rerenderSettings("inline-completion");
         });
       })
       .addDropdown((dropdown) => {
@@ -829,7 +1584,7 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
           .onChange(async (value) => {
             cfg.thinkingMode = value as LlmThinkingMode;
             await this.saveInlineCompletionSettings();
-            this.display();
+            this.rerenderSettings("inline-completion");
           });
       })
       .addText((text) => {
@@ -865,7 +1620,7 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
         btn.setButtonText("恢复默认").onClick(async () => {
           cfg.systemPromptBody = DEFAULT_INLINE_SYSTEM_PROMPT_BODY;
           await this.saveInlineCompletionSettings();
-          this.display();
+          this.rerenderSettings("inline-completion");
         }),
       );
 
@@ -907,7 +1662,7 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
         btn.setButtonText("恢复默认").onClick(async () => {
           cfg.noCompletionPrompt = DEFAULT_INLINE_NO_COMPLETION_PROMPT;
           await this.saveInlineCompletionSettings();
-          this.display();
+          this.rerenderSettings("inline-completion");
         }),
       );
 
@@ -931,7 +1686,7 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
         btn.setButtonText("恢复默认").onClick(async () => {
           cfg.rejectPrompt = DEFAULT_INLINE_REJECT_PROMPT;
           await this.saveInlineCompletionSettings();
-          this.display();
+          this.rerenderSettings("inline-completion");
         }),
       );
 
@@ -1181,7 +1936,7 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
           };
           this.plugin.settings.llm.providers.push(next);
           await this.plugin.saveData(this.plugin.settings);
-          this.display();
+          this.rerenderSettings("llm");
         }),
     );
   }
@@ -1246,7 +2001,7 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
           this.plugin.settings.llm.providers.splice(idx, 1);
           await this.plugin.saveData(this.plugin.settings);
           this.plugin.refreshInlineCompletion();
-          this.display();
+          this.rerenderSettings("llm");
         }),
     );
 
@@ -1298,7 +2053,7 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
             if (!target) return;
             target.useProxy = value;
             await this.plugin.saveData(this.plugin.settings);
-            this.display();
+            this.rerenderSettings("llm");
           }),
       );
 
@@ -1352,7 +2107,7 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
         }
         await this.plugin.saveData(this.plugin.settings);
         this.plugin.refreshInlineCompletion();
-        this.display();
+        this.rerenderSettings("llm");
       });
     }
     void modelsHeading; // label rendered above
@@ -1369,7 +2124,7 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
       };
       p.models.push(entry);
       await this.plugin.saveData(this.plugin.settings);
-      this.display();
+      this.rerenderSettings("llm");
     });
   }
 
@@ -1559,7 +2314,7 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
           }
           await this.plugin.saveData(this.plugin.settings);
           this.plugin.refreshLlmFeature();
-          this.display();
+          this.rerenderSettings("llm");
         }),
     );
   }

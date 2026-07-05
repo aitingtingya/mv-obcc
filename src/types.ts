@@ -24,10 +24,6 @@ export interface IdeIntegrationSettings {
   claudeCode: boolean;
   /** Codex CLI /ide context provider and managed MCP config. Fresh installs default off. */
   codex: boolean;
-  /** Whether to sync markdown coding rules to CLAUDE.md */
-  syncClaudeRules: boolean;
-  /** Whether to sync markdown coding rules to AGENTS.md */
-  syncCodexRules: boolean;
 }
 
 export type LlmProviderType = "openai" | "anthropic";
@@ -163,6 +159,34 @@ export interface InlineCompletionSettings {
   rejectPrompt: string;
 }
 
+export interface SourceAssistProfile {
+  id: string;
+  /** File extension without the leading dot, for example "md" or "tex". */
+  extension: string;
+  enabled: boolean;
+  snippets: string;
+  snippetsTrigger: string;
+  snippetNextTabstopTrigger: string;
+  snippetPreviousTabstopTrigger: string;
+  /** Enables the plugin's custom TeX Live Preview extension for .tex files only. */
+  texEnhancedRenderEnabled: boolean;
+}
+
+export interface SourceAssistSettings {
+  enabled: boolean;
+  snippetsEnabled: boolean;
+  suppressSnippetTriggerOnIME: boolean;
+  removeSnippetWhitespace: boolean;
+  mathPreviewEnabled: boolean;
+  mathPreviewPositionIsAbove: boolean;
+  mathPreviewCursor: string;
+  mathPreviewBracketHighlighting: boolean;
+  wordDelimiters: string;
+  snippetDebug: "off" | "info" | "verbose";
+  snippetRecursion: number;
+  profiles: SourceAssistProfile[];
+}
+
 export interface BridgeSettings {
   upstreamMode: UpstreamMode;
   /** Optional manual override. Empty means resolve from Claude settings. */
@@ -177,6 +201,7 @@ export interface BridgeSettings {
   ideIntegrations: IdeIntegrationSettings;
   llm: LlmFeatureSettings;
   inlineCompletion: InlineCompletionSettings;
+  sourceAssist: SourceAssistSettings;
   mcpEnabled: boolean;
   mcpAuthToken: string;
   claudeExecutable: string;

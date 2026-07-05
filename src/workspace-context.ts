@@ -27,6 +27,18 @@ interface FileLikeView extends View {
   file?: { path: string; name: string; basename?: string; extension?: string } | null;
 }
 
+interface DimensionedWorkspaceItem {
+  children?: DimensionedWorkspaceItem[];
+  direction?: string;
+  parent?: DimensionedWorkspaceItem | null;
+  recomputeChildrenDimensions?: () => void;
+  setDimension?: (dimension: number | null) => void;
+}
+
+interface SaveableWorkspace {
+  requestSaveLayout?: () => unknown;
+}
+
 function point(character = 0): { line: number; character: number } {
   return { line: 0, character };
 }
@@ -62,6 +74,42 @@ function viewSelection(view: View): string {
 
 export function activeWorkspaceLeaf(app: App): WorkspaceLeaf | null {
   return app.workspace.activeLeaf ?? app.workspace.getMostRecentLeaf();
+}
+
+export function applyBottomTerminalSplitRatio(
+  leaf: WorkspaceLeaf,
+  workspace: SaveableWorkspace,
+  terminalDimension = 25,
+): boolean {
+  try {
+    const terminalTabs = (leaf as unknown as DimensionedWorkspaceItem).parent;
+    const parentSplit = terminalTabs?.parent;
+    const children = parentSplit?.children;
+    if (
+      !terminalTabs ||
+      !parentSplit ||
+      parentSplit.direction !== "horizontal" ||
+      !Array.isArray(children) ||
+      !children.includes(terminalTabs) ||
+      children.length < 2 ||
+      typeof parentSplit.recomputeChildrenDimensions !== "function" ||
+      children.some((child) => typeof child.setDimension !== "function")
+    ) {
+      return false;
+    }
+
+    const siblingDimension = (100 - terminalDimension) / (children.length - 1);
+    for (const child of children) {
+      child.setDimension?.(child === terminalTabs ? terminalDimension : siblingDimension);
+    }
+    parentSplit.recomputeChildrenDimensions();
+    if (typeof workspace.requestSaveLayout === "function") {
+      void workspace.requestSaveLayout();
+    }
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function webViewState(view: WebViewerView): {

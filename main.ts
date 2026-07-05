@@ -2,11 +2,25 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import {
+  editorInfoField,
+  FuzzySuggestModal,
+  Keymap,
+  loadPrism,
   Notice,
   Plugin,
+  type App,
+  type PaneType,
+  type TFolder,
   type WorkspaceLeaf,
 } from "obsidian";
-import { EditorView } from "@codemirror/view";
+import { StateEffect, type EditorState } from "@codemirror/state";
+import {
+  Decoration,
+  EditorView,
+  ViewPlugin,
+  type DecorationSet,
+  type ViewUpdate,
+} from "@codemirror/view";
 import { isSelectedPageType } from "./src/activity-tracking";
 import { BridgeServer } from "./src/bridge-server";
 import {
@@ -37,13 +51,26 @@ import {
 } from "./src/lock-file";
 import { migrateLlm } from "./src/llm-migrate";
 import { migrateInlineCompletion } from "./src/inline-completion/inline-completion-migrate";
+import { SourceAssistFeature } from "./src/source-assist/source-assist-feature";
+import {
+  normalizeSourceAssistSettings,
+  sourceAssistMarkdownExtensions,
+} from "./src/source-assist/source-assist-settings";
 import {
   atMentionedParams,
   currentSelection,
   getVaultRoot,
   selectionChangedParams,
 } from "./src/selection";
-import { MvSenceAiIdeSettingTab } from "./src/settings-tab";
+import {
+  availableCustomMarkdownFilePath,
+  customMarkdownFileCommandDefinitions,
+  customMarkdownHighlightRangesForSource,
+  MvSenceAiIdeSettingTab,
+  syncCustomMarkdownExtensionRegistry,
+  type MarkdownExtensionRegistry,
+  type PrismLike,
+} from "./src/settings-tab";
 import {
   ToolRegistry,
 } from "./src/tool-registry";
@@ -65,6 +92,7 @@ import {
   type PostLayoutStartupHandle,
 } from "./src/post-layout-startup";
 import {
+  applyBottomTerminalSplitRatio,
   activeWorkspaceLeaf,
   currentWorkspaceContext,
   getOpenWorkspaceTabs,
@@ -83,7 +111,6 @@ import {
   ensureCodexShellAlias,
   removeCodexShellAlias,
 } from "./src/codex-mcp-registration";
-import { syncAgentRulesInWorkspace } from "./src/agent-rules-manager";
 import type {
   BridgeClientContext,
   BridgeSettings,
@@ -92,6 +119,46 @@ import type {
   ResolvedUpstream,
   SelectionState,
 } from "./src/types";
+
+type NewLeafSpecifier = PaneType | boolean;
+
+const refreshCustomMarkdownHighlightEffect = StateEffect.define<void>();
+
+class CustomMarkdownExtensionModal extends FuzzySuggestModal<string> {
+  constructor(
+    app: App,
+    private readonly extensions: string[],
+    private readonly onChooseExtension: (extension: string) => void,
+  ) {
+    super(app);
+    this.setPlaceholder("选择要新建的文件后缀");
+    this.emptyStateText = "没有可用的自定义 Markdown 后缀";
+    this.setInstructions([
+      { command: "↵", purpose: "新建对应后缀文件" },
+      { command: "esc", purpose: "取消" },
+    ]);
+  }
+
+  getItems(): string[] {
+    return this.extensions;
+  }
+
+  getItemText(extension: string): string {
+    return `.${extension}`;
+  }
+
+  onChooseItem(extension: string, _evt: MouseEvent | KeyboardEvent): void {
+    this.onChooseExtension(extension);
+  }
+}
+
+function customMarkdownHighlightRefreshRequested(update: ViewUpdate): boolean {
+  return update.transactions.some((transaction) =>
+    transaction.effects.some((effect) =>
+      effect.is(refreshCustomMarkdownHighlightEffect),
+    ),
+  );
+}
 
 export default class MvSenceAiIdePlugin extends Plugin {
   settings: BridgeSettings = { ...DEFAULT_SETTINGS };
@@ -114,12 +181,19 @@ export default class MvSenceAiIdePlugin extends Plugin {
   private selectionHighlighter: SelectionHighlightController | null = null;
   private llmFeature: LlmFeature | null = null;
   private inlineCompletion: InlineCompletionFeature | null = null;
+  private sourceAssist: SourceAssistFeature | null = null;
   private codexIdeProvider: CodexIdeProvider | null = null;
   private mcpRegistrationTimer: number | null = null;
   private mcpRegistrationInFlight: Promise<void> | null = null;
   private codexMcpRegistrationTimer: number | null = null;
   private codexMcpRegistrationInFlight: Promise<void> | null = null;
   private postLayoutStartup: PostLayoutStartupHandle | null = null;
+  private registeredCustomMarkdownExtensions = new Set<string>();
+  private ownedCustomMarkdownExtensions = new Set<string>();
+  private readonly registeredCustomMarkdownCommandIds = new Set<string>();
+  private customMarkdownPrism: PrismLike | null = null;
+  private customMarkdownPrismLoadStarted = false;
+  private readonly customMarkdownHighlightEditorViews = new Set<EditorView>();
   private unloaded = false;
 
   async onload(): Promise<void> {
@@ -144,11 +218,16 @@ export default class MvSenceAiIdePlugin extends Plugin {
         ...(loaded.toolContextLimits ?? {}),
       },
       ideIntegrations: {
-        ...DEFAULT_SETTINGS.ideIntegrations,
-        ...(loaded.ideIntegrations ?? {}),
+        claudeCode:
+          loaded.ideIntegrations?.claudeCode ??
+          DEFAULT_SETTINGS.ideIntegrations.claudeCode,
+        codex:
+          loaded.ideIntegrations?.codex ??
+          DEFAULT_SETTINGS.ideIntegrations.codex,
       },
       llm: migrateLlm(loaded.llm),
       inlineCompletion: migrateInlineCompletion(loaded.inlineCompletion),
+      sourceAssist: normalizeSourceAssistSettings(loaded.sourceAssist),
     };
     if (
       process.platform === "win32" &&
@@ -165,6 +244,8 @@ export default class MvSenceAiIdePlugin extends Plugin {
     this.settings = migrateManualUpstream(getVaultRoot(this.app), this.settings);
     this.registerView(DIFF_VIEW_TYPE, (leaf) => new ObsidianDiffView(leaf));
     this.registerView(TERMINAL_VIEW_TYPE, (leaf) => new TerminalView(leaf, this));
+    this.register(() => this.unregisterCustomMarkdownExtensions());
+    this.syncCustomMarkdownExtensions();
     this.addSettingTab(new MvSenceAiIdeSettingTab(this.app, this));
     this.terminalTracker = new TerminalSessionTracker(this.app);
     this.selectionHighlighter = new SelectionHighlightController(
@@ -172,6 +253,7 @@ export default class MvSenceAiIdePlugin extends Plugin {
       this.settings.preserveSelectionHighlights,
     );
     this.inlineCompletion = new InlineCompletionFeature(this);
+    this.sourceAssist = new SourceAssistFeature(this);
     this.toolRegistry = new ToolRegistry(
       this.app,
       (context) => this.latestSelectionFor(context),
@@ -235,11 +317,15 @@ export default class MvSenceAiIdePlugin extends Plugin {
     this.registerEditorExtension(
       this.inlineCompletion.markdownExtension(),
     );
+    await this.sourceAssist.load();
+    this.registerEditorExtension(this.sourceAssist.extensions);
+    this.registerEditorExtension(this.customMarkdownHighlightExtension());
     this.registerEditorExtension(
       EditorView.updateListener.of((update) => {
         if (update.selectionSet || update.docChanged) this.scheduleBroadcast();
       }),
     );
+    void this.loadCustomMarkdownPrism();
     this.addCommand({
       id: "send-selection-to-claude-code",
       name: "Send current selection to Claude Code",
@@ -259,10 +345,20 @@ export default class MvSenceAiIdePlugin extends Plugin {
       this.activateTerminalView();
     });
 
+    this.addRibbonIcon("file-plus", "新建非 MD 源码文件", (evt) => {
+      this.activateCustomMarkdownFileCreation(Keymap.isModEvent(evt));
+    });
+
     this.addCommand({
       id: "open-system-terminal",
       name: "Open System Terminal (打开系统终端)",
       callback: () => this.activateTerminalView(),
+    });
+
+    this.addCommand({
+      id: "new-custom-markdown-file",
+      name: "新建非 MD 源码文件",
+      callback: () => this.activateCustomMarkdownFileCreation(false),
     });
 
     this.llmFeature = new LlmFeature(this);
@@ -292,6 +388,7 @@ export default class MvSenceAiIdePlugin extends Plugin {
     this.llmFeature = null;
     this.inlineCompletion?.dispose();
     this.inlineCompletion = null;
+    this.customMarkdownHighlightEditorViews.clear();
 
     const leaves = this.app.workspace.getLeavesOfType(TERMINAL_VIEW_TYPE);
     for (const leaf of leaves) {
@@ -311,6 +408,7 @@ export default class MvSenceAiIdePlugin extends Plugin {
     const { workspace } = this.app;
     const position = this.settings.terminalOpenPosition || "right";
     let leaf: any;
+    let createdBottomSplit = false;
 
     if (position === "left") {
       const hasExisting = workspace.getLeavesOfType(TERMINAL_VIEW_TYPE).length > 0;
@@ -326,18 +424,7 @@ export default class MvSenceAiIdePlugin extends Plugin {
         leaf = workspace.getLeaf("tab");
       } else {
         leaf = workspace.getLeaf("split", "horizontal");
-        setTimeout(() => {
-          try {
-            const parent = leaf.parent as any;
-            if (parent && parent.children && parent.children.length === 2) {
-              parent.children[0].dimension = 75;
-              parent.children[1].dimension = 25;
-              workspace.requestSaveLayout();
-            }
-          } catch (e) {
-            console.error("Failed to adjust terminal split ratio:", e);
-          }
-        }, 100);
+        createdBottomSplit = true;
       }
     } else {
       leaf = workspace.getLeaf(true);
@@ -348,7 +435,10 @@ export default class MvSenceAiIdePlugin extends Plugin {
         type: TERMINAL_VIEW_TYPE,
         active: true,
       });
-      workspace.revealLeaf(leaf);
+      await workspace.revealLeaf(leaf);
+      if (createdBottomSplit) {
+        applyBottomTerminalSplitRatio(leaf, workspace);
+      }
       setTimeout(() => {
         const view = leaf.view;
         if (view instanceof TerminalView) {
@@ -360,10 +450,236 @@ export default class MvSenceAiIdePlugin extends Plugin {
 
   async saveAndApplySettings(): Promise<void> {
     await this.saveData(this.settings);
+    this.syncCustomMarkdownExtensions();
+    await this.sourceAssist?.settingsChanged();
     await this.syncLocalServices(true, false);
     await this.syncCodexIdeProvider();
     this.scheduleCodexMcpRegistrationIfReady();
-    void this.syncAgentRulesBestEffort();
+  }
+
+  async saveSourceAssistSettings(): Promise<void> {
+    await this.saveData(this.settings);
+    this.syncCustomMarkdownExtensions();
+    await this.sourceAssist?.settingsChanged();
+  }
+
+  private customMarkdownExtensionRegistry(): MarkdownExtensionRegistry | null {
+    return (this.app as unknown as { viewRegistry?: MarkdownExtensionRegistry }).viewRegistry ?? null;
+  }
+
+  private syncCustomMarkdownExtensions(): void {
+    const state = syncCustomMarkdownExtensionRegistry(
+      this.customMarkdownExtensionRegistry(),
+      this.ownedCustomMarkdownExtensions,
+      sourceAssistMarkdownExtensions(this.settings.sourceAssist).join(","),
+      (message, error) => {
+        console.warn(`[mv-senceai-ide] ${message}`, error ?? "");
+      },
+    );
+    this.registeredCustomMarkdownExtensions = new Set(state.active);
+    this.ownedCustomMarkdownExtensions = new Set(state.owned);
+    this.syncCustomMarkdownFileCommands();
+    this.refreshCustomMarkdownHighlights();
+  }
+
+  private syncCustomMarkdownFileCommands(): void {
+    const definitions = customMarkdownFileCommandDefinitions(
+      this.registeredCustomMarkdownExtensions,
+    );
+    const nextCommandIds = new Set(definitions.map((definition) => definition.id));
+
+    for (const id of Array.from(this.registeredCustomMarkdownCommandIds)) {
+      if (!nextCommandIds.has(id)) {
+        this.removeCommand(id);
+        this.registeredCustomMarkdownCommandIds.delete(id);
+      }
+    }
+
+    for (const definition of definitions) {
+      if (this.registeredCustomMarkdownCommandIds.has(definition.id)) continue;
+
+      this.addCommand({
+        id: definition.id,
+        name: definition.name,
+        callback: () => this.createCustomMarkdownFile(definition.extension, false),
+      });
+      this.registeredCustomMarkdownCommandIds.add(definition.id);
+    }
+  }
+
+  private customMarkdownCreationExtensions(): string[] {
+    return Array.from(this.registeredCustomMarkdownExtensions);
+  }
+
+  private activateCustomMarkdownFileCreation(
+    newLeaf: NewLeafSpecifier = false,
+  ): void {
+    const extensions = this.customMarkdownCreationExtensions();
+    if (extensions.length === 0) {
+      new Notice("请先在“源码编写辅助”中添加源码类型。");
+      return;
+    }
+
+    if (extensions.length === 1) {
+      void this.createCustomMarkdownFile(extensions[0]!, newLeaf);
+      return;
+    }
+
+    new CustomMarkdownExtensionModal(this.app, extensions, (extension) => {
+      void this.createCustomMarkdownFile(extension, newLeaf);
+    }).open();
+  }
+
+  private async createCustomMarkdownFile(
+    extension: string,
+    newLeaf: NewLeafSpecifier = false,
+  ): Promise<void> {
+    try {
+      const sourcePath = this.app.workspace.getActiveFile()?.path ?? "";
+      const parent = this.app.fileManager.getNewFileParent(
+        sourcePath,
+        `Untitled.${extension}`,
+      );
+      const filePath = this.availableCustomMarkdownFilePath(parent, extension);
+      const file = await this.app.vault.create(filePath, "");
+      await this.app.workspace.getLeaf(newLeaf).openFile(file, {
+        active: true,
+        state: { mode: "source" },
+        eState: { rename: "all" },
+      });
+    } catch (error) {
+      console.error(
+        "[mv-senceai-ide] Failed to create custom Markdown file",
+        error,
+      );
+      const message = error instanceof Error ? error.message : String(error);
+      new Notice(`创建 .${extension} 文件失败：${message}`);
+    }
+  }
+
+  private availableCustomMarkdownFilePath(
+    parent: TFolder,
+    extension: string,
+  ): string {
+    return availableCustomMarkdownFilePath(parent.path, extension, (filePath) =>
+      this.app.vault.getAbstractFileByPath(filePath) !== null,
+    );
+  }
+
+  private unregisterCustomMarkdownExtensions(): void {
+    for (const id of Array.from(this.registeredCustomMarkdownCommandIds)) {
+      this.removeCommand(id);
+      this.registeredCustomMarkdownCommandIds.delete(id);
+    }
+
+    const extensions = Array.from(this.ownedCustomMarkdownExtensions);
+    if (extensions.length === 0) {
+      this.registeredCustomMarkdownExtensions.clear();
+      this.refreshCustomMarkdownHighlights();
+      return;
+    }
+
+    try {
+      this.customMarkdownExtensionRegistry()?.unregisterExtensions?.(extensions);
+    } catch (error) {
+      console.warn("[mv-senceai-ide] Failed to unregister custom Markdown extensions.", error);
+    } finally {
+      this.registeredCustomMarkdownExtensions.clear();
+      this.ownedCustomMarkdownExtensions.clear();
+      this.refreshCustomMarkdownHighlights();
+    }
+  }
+
+  private customMarkdownHighlightExtension() {
+    const plugin = this;
+    return ViewPlugin.fromClass(
+      class {
+        decorations: DecorationSet;
+
+        constructor(private readonly view: EditorView) {
+          plugin.customMarkdownHighlightEditorViews.add(view);
+          this.decorations = plugin.customMarkdownHighlightDecorations(view);
+        }
+
+        update(update: ViewUpdate): void {
+          if (
+            update.docChanged ||
+            plugin.customMarkdownEditorExtension(update.startState) !==
+              plugin.customMarkdownEditorExtension(update.state) ||
+            customMarkdownHighlightRefreshRequested(update)
+          ) {
+            this.decorations = plugin.customMarkdownHighlightDecorations(
+              update.view,
+            );
+          }
+        }
+
+        destroy(): void {
+          plugin.customMarkdownHighlightEditorViews.delete(this.view);
+        }
+      },
+      {
+        decorations: (pluginValue) => pluginValue.decorations,
+      },
+    );
+  }
+
+  private customMarkdownHighlightDecorations(view: EditorView): DecorationSet {
+    const ranges = customMarkdownHighlightRangesForSource(
+      this.customMarkdownPrism,
+      this.registeredCustomMarkdownExtensions,
+      this.customMarkdownEditorExtension(view.state),
+      view.state.doc.toString(),
+      (message, error) => {
+        console.warn(`[mv-senceai-ide] ${message}`, error ?? "");
+      },
+    );
+    if (ranges.length === 0) return Decoration.none;
+
+    const docLength = view.state.doc.length;
+    const decorations = ranges
+      .filter((range) => range.from < range.to && range.to <= docLength)
+      .map((range) =>
+        Decoration.mark({ class: range.classes }).range(range.from, range.to),
+      );
+    return decorations.length > 0
+      ? Decoration.set(decorations, true)
+      : Decoration.none;
+  }
+
+  private customMarkdownEditorExtension(state: EditorState): string {
+    return (
+      state
+        .field(editorInfoField, false)
+        ?.file?.extension?.toLowerCase() ?? ""
+    );
+  }
+
+  private async loadCustomMarkdownPrism(): Promise<void> {
+    if (this.customMarkdownPrismLoadStarted) return;
+    this.customMarkdownPrismLoadStarted = true;
+
+    try {
+      this.customMarkdownPrism = (await loadPrism()) as PrismLike;
+      this.refreshCustomMarkdownHighlights();
+    } catch (error) {
+      console.warn("[mv-senceai-ide] Failed to load Prism.", error);
+    }
+  }
+
+  private refreshCustomMarkdownHighlights(): void {
+    for (const view of Array.from(this.customMarkdownHighlightEditorViews)) {
+      try {
+        view.dispatch({
+          effects: refreshCustomMarkdownHighlightEffect.of(undefined),
+        });
+      } catch (error) {
+        console.warn(
+          "[mv-senceai-ide] Failed to refresh custom Markdown highlighting.",
+          error,
+        );
+      }
+    }
   }
 
   refreshLlmFeature(): void {
@@ -785,7 +1101,6 @@ export default class MvSenceAiIdePlugin extends Plugin {
     await this.syncCodexIdeProvider();
     if (this.unloaded) return;
     this.scheduleCodexMcpRegistrationIfReady();
-    await this.syncAgentRulesBestEffort();
   }
 
   private scheduleCodexMcpRegistrationIfReady(): void {
@@ -794,18 +1109,6 @@ export default class MvSenceAiIdePlugin extends Plugin {
       return;
     }
     this.scheduleCodexMcpRegistration();
-  }
-
-  private async syncAgentRulesBestEffort(): Promise<void> {
-    try {
-      await syncAgentRulesInWorkspace(
-        getVaultRoot(this.app),
-        this.settings.ideIntegrations.syncClaudeRules,
-        this.settings.ideIntegrations.syncCodexRules,
-      );
-    } catch (error) {
-      console.warn("[mv-senceai-ide] agent rules sync failed", error);
-    }
   }
 
   private cleanupCodexRuntimeCacheBestEffort(): void {
