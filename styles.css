@@ -83,6 +83,45 @@
   color: var(--interactive-accent);
 }
 
+.cm-editor :where(.mv-senceai-source-token.token.comment) {
+  color: var(--code-comment, var(--text-faint));
+  font-style: italic;
+}
+
+.cm-editor :where(.mv-senceai-source-token.token.keyword),
+.cm-editor :where(.mv-senceai-source-token.token.selector),
+.cm-editor :where(.mv-senceai-source-token.token.important) {
+  color: var(--code-keyword, var(--color-accent));
+}
+
+.cm-editor :where(.mv-senceai-source-token.token.string),
+.cm-editor :where(.mv-senceai-source-token.token.char),
+.cm-editor :where(.mv-senceai-source-token.token.attr-value) {
+  color: var(--code-string, var(--text-success));
+}
+
+.cm-editor :where(.mv-senceai-source-token.token.number),
+.cm-editor :where(.mv-senceai-source-token.token.boolean),
+.cm-editor :where(.mv-senceai-source-token.token.constant) {
+  color: var(--code-value, var(--text-accent));
+}
+
+.cm-editor :where(.mv-senceai-source-token.token.function),
+.cm-editor :where(.mv-senceai-source-token.token.class-name) {
+  color: var(--code-function, var(--text-warning));
+}
+
+.cm-editor :where(.mv-senceai-source-token.token.property),
+.cm-editor :where(.mv-senceai-source-token.token.attr-name),
+.cm-editor :where(.mv-senceai-source-token.token.variable) {
+  color: var(--code-property, var(--text-normal));
+}
+
+.cm-editor :where(.mv-senceai-source-token.token.operator),
+.cm-editor :where(.mv-senceai-source-token.token.punctuation) {
+  color: var(--code-punctuation, var(--text-muted));
+}
+
 /* 选词调用 LLM 独立功能 */
 
 .mv-senceai-llm-result {
@@ -746,4 +785,145 @@
 	padding: 0;
 	outline: none;
 	pointer-events: none;
+}
+
+.mv-senceai-settings-section {
+	margin: 12px 0;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 12px;
+	background: var(--background-secondary);
+}
+
+.mv-senceai-settings-section-summary {
+	cursor: pointer;
+	padding: 14px 16px;
+	list-style: none;
+}
+
+.mv-senceai-settings-section-summary::-webkit-details-marker {
+	display: none;
+}
+
+.mv-senceai-settings-section-summary::before {
+	content: "▸";
+	display: inline-block;
+	margin-right: 8px;
+	transition: transform 120ms ease;
+}
+
+.mv-senceai-settings-section[open] .mv-senceai-settings-section-summary::before {
+	transform: rotate(90deg);
+}
+
+.mv-senceai-settings-section-body {
+	padding: 0 12px 12px;
+}
+
+.mv-senceai-source-assist-profile {
+	margin: 12px 0;
+	padding: 10px 12px;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 10px;
+	background: var(--background-primary);
+}
+
+.mv-senceai-source-assist-snippets-setting {
+	display: block;
+}
+
+.mv-senceai-source-assist-snippets-setting > .setting-item-info,
+.mv-senceai-source-assist-snippets-setting > .setting-item-control {
+	width: 100%;
+}
+
+.mv-senceai-snippets-editor-wrapper {
+	margin-top: 10px;
+	width: 100%;
+}
+
+.mv-senceai-snippets-editor-wrapper .cm-editor {
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 6px;
+	font-size: var(--font-inputs);
+	height: 20em;
+	outline: none !important;
+	text-align: left;
+}
+
+.mv-senceai-snippets-editor-wrapper .cm-line,
+.mv-senceai-snippets-editor-wrapper .cm-lineNumbers {
+	font-family: var(--font-monospace);
+}
+
+.mv-senceai-snippets-footer {
+	align-items: center;
+	display: flex;
+	justify-content: space-between;
+	margin-top: 8px;
+	width: 100%;
+}
+
+.mv-senceai-snippets-editor-validity {
+	align-items: center;
+	display: flex;
+	min-height: 24px;
+}
+
+.mv-senceai-snippets-editor-validity-indicator {
+	border-radius: 1em;
+	color: white;
+	cursor: default;
+	display: inline-block;
+	margin-right: 10px;
+	visibility: hidden;
+}
+
+.mv-senceai-snippets-editor-validity-indicator svg {
+	height: 16px !important;
+	width: 16px !important;
+}
+
+.mv-senceai-snippets-editor-validity-indicator:hover {
+	color: white;
+}
+
+.mv-senceai-snippets-editor-validity-indicator.valid {
+	background-color: var(--color-green);
+	visibility: visible;
+}
+
+.mv-senceai-snippets-editor-validity-indicator.invalid {
+	background-color: var(--color-red);
+	visibility: visible;
+}
+
+.mv-senceai-snippets-editor-validity-text.setting-item-description {
+	padding: 0;
+}
+
+.mv-senceai-source-assist-hotkey-input,
+.mv-senceai-source-assist-extension-input {
+	min-width: 120px;
+}
+
+.mv-senceai-modal-button-row {
+	display: flex;
+	gap: 8px;
+	justify-content: flex-end;
+	margin-top: 16px;
+}
+
+.mv-senceai-tex-math-preview {
+	cursor: text;
+}
+
+.mv-senceai-tex-math-preview-display {
+	display: block;
+	margin: 0.5em 0;
+	text-align: center;
+	overflow-x: auto;
+}
+
+.mv-senceai-tex-math-preview-inline {
+	display: inline;
 }

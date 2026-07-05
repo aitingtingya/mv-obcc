@@ -2,11 +2,12 @@
 
 **mv-SenceAI** 是一款专为 Obsidian 打造的 AI 笔记、科研、与终端桥接插件。它能够在您的本地代码环境、命令行工具与 Obsidian 知识库之间建立无缝的数据通道与操作体验。
 
-本插件包含四个相对独立的核心能力：
+本插件包含五个相对独立的核心能力：
 1. **IDE 桥接 (IDE Bridge)**：为 Claude Code 与 Codex CLI 提供 Obsidian 当前的上下文信息（如当前标签、选区内容）。Claude Code 侧支持标准 MCP 主动工具和差异审核（Diff）；Codex CLI 侧支持 `/ide` 上下文读取，并通过标准 MCP 使用 Obsidian 工具。
 2. **划词助手 (LLM Assistant)**：完全独立于 IDE 桥接的内置功能。允许您在 Obsidian 的各种视图（Markdown、PDF、Web Viewer）中选中文本后，通过自定义提示词直接流式调用 OpenAI 或 Anthropic 兼容的语言模型 API。
 3. **行内补全 (Inline Completion)**：在 Markdown 编辑器中显示 ghost text 续写建议，支持接受、取消、拒绝后重新生成，并可在左侧功能区一键启用/停用。
 4. **系统终端 (System Terminal)**：在 Obsidian 内部拉起全功能的本地系统终端（支持 macOS/Linux Shell 与 Windows ConPTY），支持与 Obsidian 双向联动，双击或 Ctrl+点击终端内文件路径可直接在编辑器中定位笔记。
+5. **源码编写辅助 (Source Assist)**：可将用户指定的非 `.md` 后缀注册为 Markdown view，按后缀分别配置 Latex Suite 风格 snippets，并提供新建非 MD 源码文件、源码高亮与可选 TeX 增强渲染。
 
 ---
 
@@ -84,7 +85,7 @@
 3. **按需控制**：点亮左侧功能区的“行内补全”图标时自动触发；关闭时不会自动打扰，但仍可通过手动请求快捷键触发一次。
 
 ### 4. 💻 系统终端功能
-- **启动与快捷键**：点击左侧功能区终端 Ribbon 图标，或使用命令面板运行 `Open System Terminal`。默认系统快捷键为 **`Cmd/Ctrl + Shift + T`**。
+- **启动与快捷键**：点击左侧功能区终端 Ribbon 图标，或使用命令面板运行 `Open System Terminal`。插件不设置默认系统快捷键，可在 Obsidian 快捷键设置中自行绑定。
 - **外观自适应**：终端文字、背景、前景色和光标会自动提取当前 Obsidian 主题颜色并完美同步。
 - **自定义 Shell 与路径**：可在设置中指定 macOS/Linux 和 Windows 的 Shell 可执行文件路径及启动参数。
 - **打开位置自定义**：在“💻 终端设置”中选择“终端打开位置”：
@@ -96,6 +97,13 @@
   - 选择“底部拆分栏”时，首次打开将自动将上方编辑区与下方终端区域的高度比例设置为 **`75:25`（即底部 1/4 占比）**。
   - 若已存在底部终端，再次打开时**不会重复向下拆分，而是自动在新终端中直接作为标签页（Tab 2, Tab 3）并入当前底部分栏**，保持界面整洁。
 - **自定义字体支持**：支持在终端设置中填写 `Nerd Fonts` 字体（如 `MesloLGS NF` 等）及字号，彻底解决因默认字体 Menlo 缺字导致的 Zsh/Powerlevel10k 复杂主题图标或分隔线乱码重影（显示为 `WWWW...`）的问题。
+
+### 5. 🧩 源码编写辅助
+- **额外后缀识别**：在“源码编写辅助”中添加如 `.tex`、`.bib`、`.m` 等后缀后，Obsidian 会将这些文件作为 Markdown view 打开，从而保留 Markdown 编辑器生态能力。
+- **按后缀配置 snippets**：每个后缀 profile 都有独立 snippets、手动触发按键、下一/上一 tabstop 按键。snippets 的填写格式与执行逻辑复用 Latex Suite `1.11.5` 的源码实现。
+- **新建非 MD 源码文件**：左侧 Ribbon 和命令面板提供“新建非 MD 源码文件”，可从已添加的后缀中创建对应文件。
+- **源码高亮与 TeX 预览**：自定义后缀文件仍保持 Markdown view 身份；源码编辑区会按后缀尽量使用 Obsidian/Prism 的同名语言高亮。`.tex` profile 额外提供“TeX 增强渲染”开关，默认关闭，开启后会用插件自定义 Live Preview 扩展渲染 `\(...\)`、`\[...\]` 和常见数学环境。
+- **兼容性提醒**：将非 `.md` 后缀注册为 Markdown view 时，如果该后缀已被 Obsidian 或其它插件注册为其它 view，本插件会尝试解除原注册并改为 Markdown view；这可能影响其它插件对同后缀文件的打开方式。TeX 增强渲染也可能影响光标移动、折叠或其它编辑器插件兼容性，建议按需开启。
 
 ---
 
@@ -126,6 +134,7 @@
 > - **PDF 视图限制**：PDF 需带有底层文本层方可划词或读取。因 PDF 视图右键菜单被 Obsidian 占用，请使用快捷键触发划词调用。
 > - **配置的隔离性**：划词助手、行内补全或系统终端的 API 调用/配置错误，**绝对不会**波及或影响 Claude Code / Codex CLI 桥接通道的稳定性。
 > - **桌面权限说明**：Claude Code 集成会读取和更新 Claude 项目配置与 IDE lock 文件；Codex 集成会创建本地 IPC socket，并在 `~/.codex/config.toml` 中维护本插件的 MCP 服务地址，均不会启动外部进程后台守护服务。
+> - **源码后缀兼容性**：源码编写辅助会将用户配置的非 `.md` 后缀注册为 Markdown view；若同后缀已由其它插件处理，可能改变该后缀文件的打开方式。
 
 ---
 
@@ -133,6 +142,7 @@
 
 - 行内补全的 CodeMirror ghost-text 架构设计参考了插件 [obsidian-github-copilot](https://github.com/Pierrad/obsidian-github-copilot)。mv-SenceAI 在运行时不绑定或依赖该插件。
 - 本地系统终端的 PTY 进程桥接架构与基本实现参考了插件 [obsidian-claude-sidebar](https://github.com/derek-larson14/obsidian-claude-sidebar)。mv-SenceAI 在运行时不绑定或依赖该插件。
+- 源码编写辅助的 snippets 核心 vendored 并复用了 [obsidian-latex-suite](https://github.com/artisticat1/obsidian-latex-suite) `1.11.5` 的源码实现；本插件仅按文件后缀路由不同 profile 数据，并保留上游 MIT 许可声明。
 
 ---
 ---
@@ -141,11 +151,12 @@
 
 **mv-SenceAI** is a desktop bridge and system terminal plugin connecting your local vaults, CLI tools, and development environment to Obsidian.
 
-This plugin provides four key capabilities:
+This plugin provides five key capabilities:
 1. **IDE Bridge**: Feeds contextual information (active tab, selections) from your vault to Claude Code and Codex CLI. Claude Code uses the existing IDE/MCP bridge; Codex CLI uses `/ide` context IPC plus standard MCP tools.
 2. **LLM Assistant (Selection Reader)**: A completely independent feature to call OpenAI or Anthropic compatible APIs directly from Obsidian views (Markdown, PDF, Web Viewer) using custom prompt templates, streaming responses into a floating output window.
 3. **Inline Completion**: A separate Markdown-only ghost-text completion module with accept, cancel, and reject/regenerate shortcuts, controllable via a ribbon toggle button.
 4. **System Terminal**: Spawns fully functional local system terminals (macOS/Linux Shell & Windows ConPTY) inside Obsidian, supporting automatic dark/light theme sync, customized fonts, and file path click-to-open integration.
+5. **Source Assist**: Registers configured non-`.md` extensions as Markdown views, routes Latex Suite-style snippets by file extension, and provides non-MD file creation, source highlighting, and optional TeX enhanced rendering.
 
 ---
 
@@ -223,7 +234,7 @@ You can install this plugin either **via the Community Plugin Store**, **manuall
 3. **Control Toggle**: Ribbons toggle handles auto-completion; when turned off, completions are only requested via manual shortcut.
 
 ### 4. 💻 System Terminal Feature
-- **Spawning**: Spawn via the ribbon terminal icon or by running `Open System Terminal` in the command palette. Default shortcut is **`Cmd/Ctrl + Shift + T`**.
+- **Spawning**: Spawn via the ribbon terminal icon or by running `Open System Terminal` in the command palette. The plugin does not install a default shortcut; bind one in Obsidian's hotkey settings if needed.
 - **Visual Theme Sync**: Terminal background, foreground, selection, and cursor adapt to match Obsidian's active theme.
 - **Custom executable path**: Define executable shell path and arguments for macOS/Linux and Windows.
 - **Customizable Open Position**: Configure "Terminal Open Position" in settings:
@@ -235,6 +246,13 @@ You can install this plugin either **via the Community Plugin Store**, **manuall
   - Horizontal split automatically sets height ratio to **`75:25` (bottom 1/4 layout)**.
   - Subsequent terminal spawns **automatically merge as tabs (Tab 2, Tab 3) in the existing bottom panel** instead of stacking vertically.
 - **Custom Font Support**: Specify customizable `Nerd Fonts` (e.g. `MesloLGS NF`) and font size in settings, solving characters or dividers formatting glitch (`WWWW...`) caused by Menlo default font.
+
+### 5. 🧩 Source Assist
+- **Extra extension recognition**: Add extensions such as `.tex`, `.bib`, or `.m` under "Source Assist" so Obsidian opens those files as Markdown views and keeps Markdown editor ecosystem features available.
+- **Per-extension snippets**: Each profile has independent snippets, manual trigger key, next tabstop key, and previous tabstop key. Snippet syntax and execution are vendored from Latex Suite `1.11.5`.
+- **Create non-MD source files**: The ribbon button and command palette entry "Create non-MD source file" create files using configured extensions.
+- **Highlighting and TeX preview**: Custom-extension files still keep Markdown view identity; source mode tries to use Obsidian/Prism language highlighting by extension. `.tex` profiles also show an opt-in "TeX enhanced rendering" toggle, disabled by default, for `\(...\)`, `\[...\]`, and common math environments.
+- **Compatibility note**: When a non-`.md` extension is registered as a Markdown view, mv-SenceAI may unregister an existing handler for the same extension and replace it with Markdown view handling. This can change how other plugins open files with that extension. TeX enhanced rendering is a custom Live Preview extension and may affect cursor movement, folding, or editor-plugin compatibility.
 
 ---
 
@@ -265,6 +283,7 @@ Spawning terminals on Windows relies on Python and the `pywinpty` package. If th
 > - **PDF Interface**: Scanned PDFs without text layers cannot be read. Use shortcuts to trigger the LLM Assistant as the PDF right-click menu is locked by Obsidian.
 > - **Config Isolation**: LLM Assistant, Inline Completion, and System Terminal configurations are fully isolated and **will not** interfere with Claude Code or Codex CLI IDE bridges.
 > - **Permissions**: Integrated Claude Code and Codex CLI bridges manage project lock files, settings, and local Unix domain socket IPC; they do not start persistent background daemon processes.
+> - **Source Extension Compatibility**: Source Assist registers configured non-`.md` extensions as Markdown views. If another plugin already handles the same extension, its file-opening behavior may change.
 
 ---
 
@@ -272,3 +291,4 @@ Spawning terminals on Windows relies on Python and the `pywinpty` package. If th
 
 - The CodeMirror ghost-text architecture for Inline Completion was informed by [obsidian-github-copilot](https://github.com/Pierrad/obsidian-github-copilot). mv-SenceAI has no runtime dependency on that plugin.
 - The PTY process bridge architecture for the local terminal was informed by [obsidian-claude-sidebar](https://github.com/derek-larson14/obsidian-claude-sidebar). mv-SenceAI has no runtime dependency on that plugin.
+- The Source Assist snippets core vendors and reuses source code from [obsidian-latex-suite](https://github.com/artisticat1/obsidian-latex-suite) `1.11.5`; mv-SenceAI only routes profile data by file extension and preserves the upstream MIT license notice.
