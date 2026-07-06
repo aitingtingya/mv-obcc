@@ -1,4 +1,4 @@
-import { Menu, Modal, Notice, PluginSettingTab, Setting, type App } from "obsidian";
+import { Menu, Modal, Notice, PluginSettingTab, Setting, setIcon, type App } from "obsidian";
 import type { EditorView } from "@codemirror/view";
 import type MvSenceAiIdePlugin from "../main";
 import * as child_process from "child_process";
@@ -20,6 +20,9 @@ import type {
   LlmThinkingMode,
   InlineCompletionKeymap,
   SourceAssistProfile,
+  SourceHighlightCustomTheme,
+  TerminalThemePalette,
+  TerminalThemePreset,
   ToolToggles,
 } from "./types";
 import {
@@ -29,6 +32,27 @@ import {
 import { getDefaultSourceAssistSnippetVariables } from "./source-assist/default-snippet-variables";
 import { createSourceAssistSnippetsEditor } from "./source-assist/snippets-editor";
 import { parseSnippets } from "./vendor/latex-suite/src/snippets/parse";
+import {
+  importSourceHighlightTheme,
+  removeSourceHighlightThemeReferences,
+  type SourceHighlightImportFormat,
+  sourceHighlightProfileThemeOptions,
+} from "./source-assist/highlight-themes";
+import {
+  createTerminalCustomTheme,
+  isSafeTerminalColor,
+  normalizeTerminalPalette,
+  normalizeTerminalThemeSettings,
+  TERMINAL_DARK_PALETTE,
+  TERMINAL_LIGHT_PALETTE,
+  TERMINAL_THEME_CUSTOM,
+  TERMINAL_THEME_DARK,
+  TERMINAL_THEME_FIELD_LABELS,
+  TERMINAL_THEME_LIGHT,
+  TERMINAL_THEME_OBSIDIAN,
+  TERMINAL_THEME_PALETTE_KEYS,
+  type TerminalThemePaletteKey,
+} from "./terminal/terminal-themes";
 
 type MainSettingsSectionId =
   | "ide"
@@ -92,6 +116,92 @@ class SourceAssistExtensionModal extends Modal {
     }
     this.onSubmit(extension);
     this.close();
+  }
+}
+
+class SourceHighlightThemeImportModal extends Modal {
+  private fileEl!: HTMLInputElement;
+  private nameEl!: HTMLInputElement;
+  private format: SourceHighlightImportFormat = "auto";
+
+  constructor(
+    app: App,
+    private readonly onImport: (theme: SourceHighlightCustomTheme, warnings: string[]) => Promise<void>,
+  ) {
+    super(app);
+  }
+
+  onOpen(): void {
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.createEl("h3", { text: "载入自定义代码高亮主题" });
+    contentEl.createEl("p", {
+      text: "支持 Prism CSS、highlight.js CSS、VS Code/Shiki/TextMate JSON 和 mv-SenceAI JSON。非 Prism 格式会转换为近似效果，不能完全还原原主题。",
+      cls: "setting-item-description",
+    });
+
+    const fileSetting = new Setting(contentEl)
+      .setName("主题文件")
+      .setDesc("选择本地已下载的 .css 或 .json 主题文件。插件只保存解析后的颜色数据。")
+      .setClass("mv-senceai-theme-file-setting");
+    this.fileEl = fileSetting.controlEl.createEl("input", {
+      type: "file",
+      attr: { accept: ".css,.json" },
+    });
+
+    new Setting(contentEl)
+      .setName("主题名称（可选）")
+      .addText((text) => {
+        this.nameEl = text.inputEl;
+        text.setPlaceholder("留空则使用文件名或主题内置名称");
+      });
+
+    new Setting(contentEl)
+      .setName("主题格式")
+      .setDesc("自动检测失败时可手动指定格式。")
+      .addDropdown((dropdown) =>
+        dropdown
+          .addOption("auto", "自动检测")
+          .addOption("prism-css", "Prism CSS")
+          .addOption("highlight-js-css", "highlight.js CSS")
+          .addOption("textmate-json", "VS Code / Shiki / TextMate JSON")
+          .addOption("mv-senceai-json", "mv-SenceAI JSON")
+          .setValue(this.format)
+          .onChange((value) => {
+            this.format = value as SourceHighlightImportFormat;
+          }),
+      );
+
+    const buttonRow = contentEl.createDiv({ cls: "mv-senceai-modal-button-row" });
+    const importButton = buttonRow.createEl("button", { text: "载入" });
+    importButton.addClass("mod-cta");
+    importButton.addEventListener("click", () => {
+      void this.submit();
+    });
+    const cancelButton = buttonRow.createEl("button", { text: "取消" });
+    cancelButton.addEventListener("click", () => this.close());
+  }
+
+  private async submit(): Promise<void> {
+    const file = this.fileEl.files?.[0];
+    if (!file) {
+      new Notice("请选择一个主题文件。");
+      return;
+    }
+    try {
+      const content = await file.text();
+      const result = importSourceHighlightTheme(content, {
+        fileName: file.name,
+        format: this.format,
+        nameOverride: this.nameEl.value,
+      });
+      await this.onImport(result.theme, result.warnings);
+      this.close();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      new Notice(`主题载入失败：${message}`);
+      console.warn("[mv-senceai-ide] Failed to import source highlight theme.", error);
+    }
   }
 }
 
@@ -436,8 +546,10 @@ function createCollapsibleSettingsSection(
 
 export class MvSenceAiIdeSettingTab extends PluginSettingTab {
   private readonly openSettingsSections = new Set<MainSettingsSectionId>();
+  private readonly openSourceAssistProfileIds = new Set<string>();
   private readonly sourceAssistSnippetEditors: EditorView[] = [];
   private forceOpenSection: MainSettingsSectionId | null = null;
+  private forceOpenSourceAssistProfileId: string | null = null;
 
   constructor(app: App, private readonly plugin: MvSenceAiIdePlugin) {
     super(app, plugin);
@@ -965,7 +1077,7 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
       cls: "mv-senceai-section-title setting-item-name",
     });
 
-    addHeading(containerEl, "Shell 配置");
+    addHeading(containerEl, "打开与主题");
 
     new Setting(containerEl)
       .setName("终端打开位置")
@@ -982,6 +1094,10 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
             await this.plugin.saveData(this.plugin.settings);
           })
       );
+
+    this.renderTerminalThemeSettings(containerEl);
+
+    addHeading(containerEl, "Shell 配置");
 
     new Setting(containerEl)
       .setName("macOS/Linux Shell 路径")
@@ -1219,6 +1335,226 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
     }
   }
 
+  private async saveTerminalThemeSettings(rerender = false): Promise<void> {
+    this.plugin.settings = normalizeTerminalThemeSettings(this.plugin.settings);
+    await this.plugin.saveData(this.plugin.settings);
+    this.plugin.refreshTerminalThemes();
+    if (rerender) {
+      this.rerenderSettings("terminal");
+    }
+  }
+
+  private renderTerminalThemeSettings(containerEl: HTMLElement): void {
+    this.plugin.settings = normalizeTerminalThemeSettings(this.plugin.settings);
+    const settings = this.plugin.settings;
+
+    new Setting(containerEl)
+      .setName("终端主题")
+      .setDesc("控制本插件内置终端的 xterm 配色。浅色/深色使用固定高对比色板；自定义主题可复制后自行调整。")
+      .addDropdown((dropdown) =>
+        dropdown
+          .addOption(TERMINAL_THEME_OBSIDIAN, "跟随 Obsidian")
+          .addOption(TERMINAL_THEME_LIGHT, "浅色")
+          .addOption(TERMINAL_THEME_DARK, "深色")
+          .addOption(TERMINAL_THEME_CUSTOM, "自定义")
+          .setValue(settings.terminalThemeMode)
+          .onChange(async (value) => {
+            settings.terminalThemeMode = value as typeof settings.terminalThemeMode;
+            if (settings.terminalThemeMode === TERMINAL_THEME_CUSTOM) {
+              const firstCustomTheme = settings.terminalCustomThemes[0];
+              if (firstCustomTheme) {
+                settings.terminalCustomThemeId = firstCustomTheme.id;
+              } else {
+                const theme = createTerminalCustomTheme(
+                  TERMINAL_DARK_PALETTE,
+                  "自定义深色终端",
+                );
+                settings.terminalCustomThemes.push(theme);
+                settings.terminalCustomThemeId = theme.id;
+              }
+            }
+            await this.saveTerminalThemeSettings(true);
+          }),
+      );
+
+    if (settings.terminalThemeMode === TERMINAL_THEME_CUSTOM) {
+      new Setting(containerEl)
+        .setName("当前自定义主题")
+        .setDesc("选择要应用到已打开和新建终端的自定义主题。")
+        .addDropdown((dropdown) => {
+          for (const theme of settings.terminalCustomThemes) {
+            dropdown.addOption(theme.id, theme.name);
+          }
+          dropdown
+            .setValue(settings.terminalCustomThemeId)
+            .onChange(async (value) => {
+              settings.terminalCustomThemeId = value;
+              await this.saveTerminalThemeSettings();
+            });
+        });
+    }
+
+    this.renderTerminalCustomThemeManager(containerEl);
+  }
+
+  private renderTerminalCustomThemeManager(containerEl: HTMLElement): void {
+    const settings = this.plugin.settings;
+    const details = containerEl.createEl("details", {
+      cls: "mv-senceai-terminal-theme-manager",
+    });
+    details.createEl("summary", {
+      text: "自定义终端主题",
+      cls: "mv-senceai-source-profile-summary setting-item-name",
+    });
+    details.createEl("p", {
+      text: "自定义主题只保存结构化颜色数据，不执行 CSS/JS。浅色和深色内置主题不可直接修改，可复制后调整。",
+      cls: "setting-item-description",
+    });
+
+    new Setting(details)
+      .setName("创建自定义主题")
+      .setDesc("从内置浅色或深色色板复制一份，然后在下方编辑。")
+      .addButton((button) =>
+        button
+          .setButtonText("复制浅色")
+          .onClick(async () => {
+            await this.addTerminalCustomTheme(TERMINAL_LIGHT_PALETTE, "自定义浅色终端");
+          }),
+      )
+      .addButton((button) =>
+        button
+          .setButtonText("复制深色")
+          .onClick(async () => {
+            await this.addTerminalCustomTheme(TERMINAL_DARK_PALETTE, "自定义深色终端");
+          }),
+      );
+
+    if (settings.terminalCustomThemes.length === 0) {
+      details.createEl("p", {
+        text: "尚未创建自定义终端主题。",
+        cls: "setting-item-description",
+      });
+      return;
+    }
+
+    for (const theme of settings.terminalCustomThemes) {
+      this.renderTerminalCustomThemeEditor(details, theme);
+    }
+  }
+
+  private async addTerminalCustomTheme(
+    palette: TerminalThemePalette,
+    name: string,
+  ): Promise<void> {
+    const theme = createTerminalCustomTheme(palette, name);
+    this.plugin.settings.terminalCustomThemes.push(theme);
+    this.plugin.settings.terminalThemeMode = TERMINAL_THEME_CUSTOM;
+    this.plugin.settings.terminalCustomThemeId = theme.id;
+    await this.saveTerminalThemeSettings(true);
+  }
+
+  private renderTerminalCustomThemeEditor(
+    containerEl: HTMLElement,
+    theme: TerminalThemePreset,
+  ): void {
+    const details = containerEl.createEl("details", {
+      cls: "mv-senceai-terminal-theme-card",
+    });
+    const summary = details.createEl("summary", {
+      cls: "mv-senceai-source-profile-summary setting-item-name",
+    });
+    const titleEl = summary.createSpan({ text: theme.name });
+
+    new Setting(details)
+      .setName("主题名称")
+      .addText((text) =>
+        text
+          .setValue(theme.name)
+          .onChange(async (value) => {
+            theme.name = value.trim().slice(0, 80) || "自定义终端主题";
+            titleEl.setText(theme.name);
+            await this.saveTerminalThemeSettings();
+          }),
+      )
+      .addButton((button) =>
+        button
+          .setButtonText("设为当前")
+          .onClick(async () => {
+            this.plugin.settings.terminalThemeMode = TERMINAL_THEME_CUSTOM;
+            this.plugin.settings.terminalCustomThemeId = theme.id;
+            await this.saveTerminalThemeSettings(true);
+          }),
+      )
+      .addButton((button) =>
+        button
+          .setButtonText("删除")
+          .setWarning()
+          .onClick(async () => {
+            this.plugin.settings.terminalCustomThemes =
+              this.plugin.settings.terminalCustomThemes.filter((item) => item.id !== theme.id);
+            if (this.plugin.settings.terminalCustomThemeId === theme.id) {
+              this.plugin.settings.terminalCustomThemeId = "";
+              this.plugin.settings.terminalThemeMode = TERMINAL_THEME_OBSIDIAN;
+            }
+            await this.saveTerminalThemeSettings(true);
+          }),
+      );
+
+    new Setting(details)
+      .setName("恢复默认配色")
+      .setDesc("会覆盖该自定义主题当前的所有颜色。")
+      .addButton((button) =>
+        button
+          .setButtonText("套用浅色默认")
+          .onClick(async () => {
+            theme.palette = normalizeTerminalPalette(TERMINAL_LIGHT_PALETTE);
+            await this.saveTerminalThemeSettings(true);
+          }),
+      )
+      .addButton((button) =>
+        button
+          .setButtonText("套用深色默认")
+          .onClick(async () => {
+            theme.palette = normalizeTerminalPalette(TERMINAL_DARK_PALETTE);
+            await this.saveTerminalThemeSettings(true);
+          }),
+      );
+
+    for (const key of TERMINAL_THEME_PALETTE_KEYS) {
+      this.renderTerminalColorSetting(details, theme, key);
+    }
+  }
+
+  private renderTerminalColorSetting(
+    containerEl: HTMLElement,
+    theme: TerminalThemePreset,
+    key: TerminalThemePaletteKey,
+  ): void {
+    const setting = new Setting(containerEl)
+      .setName(TERMINAL_THEME_FIELD_LABELS[key])
+      .setDesc("支持 #rgb/#rrggbb/#rrggbbaa、rgb()/rgba()、hsl()/hsla()。");
+    const statusEl = setting.descEl.createDiv({
+      cls: "mv-senceai-terminal-color-status",
+    });
+    setting.addText((text) =>
+      text
+        .setPlaceholder(TERMINAL_DARK_PALETTE[key])
+        .setValue(theme.palette[key])
+        .onChange(async (value) => {
+          const next = value.trim();
+          if (!isSafeTerminalColor(next)) {
+            statusEl.setText("颜色格式无效，未保存。");
+            statusEl.addClass("mv-senceai-status-error");
+            return;
+          }
+          statusEl.setText("");
+          statusEl.removeClass("mv-senceai-status-error");
+          theme.palette[key] = next;
+          await this.saveTerminalThemeSettings();
+        }),
+    );
+  }
+
   private renderSourceAssistSettings(containerEl: HTMLElement): void {
     const settings = this.plugin.settings.sourceAssist;
 
@@ -1230,30 +1566,6 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
           .setValue(settings.enabled)
           .onChange(async (value) => {
             settings.enabled = value;
-            await this.plugin.saveSourceAssistSettings();
-          }),
-      );
-
-    new Setting(containerEl)
-      .setName("启用触发词替换")
-      .setDesc("关闭后保留源码类型注册，但不运行 snippets。")
-      .addToggle((toggle) =>
-        toggle
-          .setValue(settings.snippetsEnabled)
-          .onChange(async (value) => {
-            settings.snippetsEnabled = value;
-            await this.plugin.saveSourceAssistSettings();
-          }),
-      );
-
-    new Setting(containerEl)
-      .setName("启用公式预览")
-      .setDesc("控制 Latex Suite 原有的公式 tooltip 预览；不控制 .tex 自定义增强渲染。")
-      .addToggle((toggle) =>
-        toggle
-          .setValue(settings.mathPreviewEnabled)
-          .onChange(async (value) => {
-            settings.mathPreviewEnabled = value;
             await this.plugin.saveSourceAssistSettings();
           }),
       );
@@ -1274,12 +1586,16 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
               new Notice(`.${extension} 已存在。`);
               return;
             }
-            this.plugin.settings.sourceAssist.profiles.push(createSourceAssistProfile(extension));
+            const profile = createSourceAssistProfile(extension);
+            this.plugin.settings.sourceAssist.profiles.push(profile);
+            this.forceOpenSourceAssistProfileId = profile.id;
             await this.plugin.saveSourceAssistSettings();
             this.rerenderSettings("source-assist");
           }).open();
         }),
     );
+
+    this.renderSourceHighlightImportSettings(containerEl);
   }
 
   private renderSourceAssistProfile(
@@ -1287,31 +1603,67 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
     profile: SourceAssistProfile,
     idx: number,
   ): void {
-    const wrap = containerEl.createDiv({ cls: "mv-senceai-source-assist-profile" });
+    const details = containerEl.createEl("details", {
+      cls: "mv-senceai-source-assist-profile",
+    });
+    const shouldForceOpen = this.forceOpenSourceAssistProfileId === profile.id;
+    details.open = shouldForceOpen || this.openSourceAssistProfileIds.has(profile.id);
+    if (shouldForceOpen) {
+      this.openSourceAssistProfileIds.add(profile.id);
+      this.forceOpenSourceAssistProfileId = null;
+    }
+    details.addEventListener("toggle", () => {
+      if (details.open) {
+        this.openSourceAssistProfileIds.add(profile.id);
+      } else {
+        this.openSourceAssistProfileIds.delete(profile.id);
+      }
+    });
     const title = profile.extension === "md" ? "Markdown (.md)" : `源码类型 .${profile.extension}`;
-    const header = new Setting(wrap)
-      .setName(title)
-      .setDesc(
+    const summary = details.createEl("summary", {
+      cls: "mv-senceai-source-assist-profile-summary",
+    });
+    const summaryText = summary.createDiv({
+      cls: "mv-senceai-source-assist-profile-summary-text",
+    });
+    summaryText.createDiv({
+      cls: "setting-item-name",
+      text: title,
+    });
+    summaryText.createDiv({
+      cls: "setting-item-description",
+      text:
         profile.extension === "md"
           ? "固定 profile：用于普通 Markdown 文件。"
           : "该后缀会自动注册为 Markdown view，并出现在新建非 MD 源码文件命令中。若该后缀已由其它插件处理，本插件会尝试改注册为 Markdown view，可能影响其它插件的打开方式。",
-      )
-      .setHeading();
+    });
 
     if (profile.extension !== "md") {
-      header.addExtraButton((button) =>
-        button
-          .setIcon("trash")
-          .setTooltip("删除该源码类型并取消本插件对该后缀的识别")
-          .onClick(async () => {
-            this.plugin.settings.sourceAssist.profiles.splice(idx, 1);
-            await this.plugin.saveSourceAssistSettings();
-            this.rerenderSettings("source-assist");
-          }),
-      );
+      const deleteButton = summary.createEl("button", {
+        cls: "clickable-icon mv-senceai-source-assist-profile-delete",
+        attr: {
+          "aria-label": "删除该源码类型并取消本插件对该后缀的识别",
+          type: "button",
+        },
+      });
+      setIcon(deleteButton, "trash");
+      deleteButton.addEventListener("click", async (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        this.plugin.settings.sourceAssist.profiles.splice(idx, 1);
+        this.openSourceAssistProfileIds.delete(profile.id);
+        await this.plugin.saveSourceAssistSettings();
+        this.rerenderSettings("source-assist");
+      });
     }
 
+    const wrap = details.createDiv({ cls: "mv-senceai-source-assist-profile-body" });
+
     this.renderSourceAssistProfileEnabledSetting(wrap, profile, idx);
+
+    if (profile.extension !== "md") {
+      this.renderSourceAssistProfileHighlightThemeSetting(wrap, profile, idx);
+    }
 
     if (profile.extension === "tex") {
       new Setting(wrap)
@@ -1385,7 +1737,84 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
             target.enabled = value;
             await this.plugin.saveSourceAssistSettings();
           }),
+	      );
+  }
+
+  private renderSourceAssistProfileHighlightThemeSetting(
+    containerEl: HTMLElement,
+    profile: SourceAssistProfile,
+    idx: number,
+  ): void {
+    new Setting(containerEl)
+      .setName("源码高亮主题")
+      .setDesc("只影响该后缀文件的源码 token 配色，不影响 snippets 替换、Markdown view 注册或 TeX 增强渲染。")
+      .addDropdown((dropdown) => {
+        for (const option of sourceHighlightProfileThemeOptions(
+          this.plugin.settings.sourceAssist.customHighlightThemes,
+        )) {
+          dropdown.addOption(option.id, option.name);
+        }
+        dropdown
+          .setValue(profile.highlightThemeId)
+          .onChange(async (value) => {
+            const target = this.plugin.settings.sourceAssist.profiles[idx];
+            if (!target) return;
+            target.highlightThemeId = value;
+            await this.plugin.saveSourceAssistSettings();
+          });
+      });
+  }
+
+  private renderSourceHighlightImportSettings(containerEl: HTMLElement): void {
+    addHeading(containerEl, "自定义代码高亮主题");
+    new Setting(containerEl)
+      .setName("载入自定义代码高亮主题")
+      .setDesc(
+        "从本地 .css/.json 文件导入，保存为插件自己的主题数据；非 Prism 主题会转换为近似效果，不能完全还原。",
+      )
+      .addButton((button) =>
+        button
+          .setButtonText("选择主题文件")
+          .setCta()
+          .onClick(() => {
+            new SourceHighlightThemeImportModal(this.app, async (theme, warnings) => {
+              this.plugin.settings.sourceAssist.customHighlightThemes.push(theme);
+              await this.plugin.saveSourceAssistSettings();
+              new Notice(`已载入主题：${theme.name}`);
+              for (const warning of warnings) console.info(`[mv-senceai-ide] ${warning}`);
+              this.rerenderSettings("source-assist");
+            }).open();
+          }),
       );
+
+    const themes = this.plugin.settings.sourceAssist.customHighlightThemes;
+    if (themes.length === 0) {
+      containerEl.createDiv({
+        cls: "setting-item-description mv-senceai-source-highlight-empty",
+        text: "暂无自定义主题。内置主题可直接在上方源码类型中选择。",
+      });
+      return;
+    }
+
+    const listEl = containerEl.createDiv({ cls: "mv-senceai-source-highlight-theme-list" });
+    for (const theme of themes) {
+      new Setting(listEl)
+        .setName(theme.name)
+        .setDesc(`格式：${theme.format}；已保存为解析后的 token palette。`)
+        .addButton((button) =>
+          button
+            .setButtonText("删除")
+            .setWarning()
+            .onClick(async () => {
+              removeSourceHighlightThemeReferences(
+                this.plugin.settings.sourceAssist,
+                theme.id,
+              );
+              await this.plugin.saveSourceAssistSettings();
+              this.rerenderSettings("source-assist");
+            }),
+        );
+    }
   }
 
   private renderSourceAssistHotkeyIntro(containerEl: HTMLElement): void {

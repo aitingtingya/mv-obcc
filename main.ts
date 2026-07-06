@@ -44,6 +44,7 @@ import {
 } from "./src/context-cache";
 import { ObsidianDiffView } from "./src/diff-view";
 import { TerminalView } from "./src/terminal/terminal-view";
+import { normalizeTerminalThemeSettings } from "./src/terminal/terminal-themes";
 import {
   cleanStaleObsidianLocks,
   removeLockFile,
@@ -58,6 +59,7 @@ import {
   normalizeSourceAssistSettings,
   sourceAssistMarkdownExtensions,
 } from "./src/source-assist/source-assist-settings";
+import { sourceHighlightThemeStyleAttribute } from "./src/source-assist/highlight-themes";
 import {
   atMentionedParams,
   currentSelection,
@@ -204,7 +206,7 @@ export default class MvSenceAiIdePlugin extends Plugin {
       | (Partial<BridgeSettings> & { codex?: unknown })
       | null;
     const { codex: _legacyCodex, ...loaded } = rawLoaded ?? {};
-    this.settings = {
+    this.settings = normalizeTerminalThemeSettings({
       ...DEFAULT_SETTINGS,
       ...loaded,
       activityTracking: {
@@ -230,7 +232,7 @@ export default class MvSenceAiIdePlugin extends Plugin {
       llm: migrateLlm(loaded.llm),
       inlineCompletion: migrateInlineCompletion(loaded.inlineCompletion),
       sourceAssist: normalizeSourceAssistSettings(loaded.sourceAssist),
-    };
+    });
     if (
       process.platform === "win32" &&
       this.settings.windowsMcpRegistrationVersion !==
@@ -322,6 +324,7 @@ export default class MvSenceAiIdePlugin extends Plugin {
     await this.sourceAssist.load();
     this.registerEditorExtension(this.sourceAssist.extensions);
     this.registerEditorExtension(this.customMarkdownPlainVisualsExtension());
+    this.registerEditorExtension(this.customMarkdownHighlightThemeExtension());
     this.registerEditorExtension(this.customMarkdownHighlightExtension());
     this.registerEditorExtension(
       EditorView.updateListener.of((update) => {
@@ -448,6 +451,15 @@ export default class MvSenceAiIdePlugin extends Plugin {
           view.focusTerminal();
         }
       }, 100);
+    }
+  }
+
+  refreshTerminalThemes(): void {
+    for (const leaf of this.app.workspace.getLeavesOfType(TERMINAL_VIEW_TYPE)) {
+      const view = leaf.view;
+      if (view instanceof TerminalView) {
+        view.refreshTheme();
+      }
     }
   }
 
@@ -636,6 +648,24 @@ export default class MvSenceAiIdePlugin extends Plugin {
       )
         ? { class: CUSTOM_MARKDOWN_PLAIN_VISUALS_CLASS }
         : null;
+    });
+  }
+
+  private customMarkdownHighlightThemeExtension() {
+    return EditorView.editorAttributes.of((view) => {
+      const extension = this.customMarkdownEditorExtension(view.state);
+      const style = sourceHighlightThemeStyleAttribute(
+        this.settings.sourceAssist,
+        this.registeredCustomMarkdownExtensions,
+        extension,
+      );
+      if (!style && !this.registeredCustomMarkdownExtensions.has(extension)) {
+        return null;
+      }
+      return {
+        class: "mv-senceai-source-highlight-themed",
+        ...(style ? { style } : {}),
+      };
     });
   }
 

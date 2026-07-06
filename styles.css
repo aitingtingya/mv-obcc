@@ -83,43 +83,69 @@
   color: var(--interactive-accent);
 }
 
-.cm-editor :where(.mv-senceai-source-token.token.comment) {
-  color: var(--code-comment, var(--text-faint));
-  font-style: italic;
+.cm-editor.mv-senceai-source-highlight-themed .mv-senceai-source-token.token.comment {
+  color: var(--mv-source-comment, var(--code-comment, var(--text-faint))) !important;
+  font-style: var(--mv-source-comment-font-style, italic) !important;
+  font-weight: var(--mv-source-comment-font-weight, inherit) !important;
+  text-decoration: var(--mv-source-comment-text-decoration, inherit) !important;
 }
 
-.cm-editor :where(.mv-senceai-source-token.token.keyword),
-.cm-editor :where(.mv-senceai-source-token.token.selector),
-.cm-editor :where(.mv-senceai-source-token.token.important) {
-  color: var(--code-keyword, var(--color-accent));
+.cm-editor.mv-senceai-source-highlight-themed .mv-senceai-source-token.token.keyword,
+.cm-editor.mv-senceai-source-highlight-themed .mv-senceai-source-token.token.selector,
+.cm-editor.mv-senceai-source-highlight-themed .mv-senceai-source-token.token.important {
+  color: var(--mv-source-keyword, var(--code-keyword, var(--color-accent))) !important;
+  font-style: var(--mv-source-keyword-font-style, inherit) !important;
+  font-weight: var(--mv-source-keyword-font-weight, inherit) !important;
+  text-decoration: var(--mv-source-keyword-text-decoration, inherit) !important;
 }
 
-.cm-editor :where(.mv-senceai-source-token.token.string),
-.cm-editor :where(.mv-senceai-source-token.token.char),
-.cm-editor :where(.mv-senceai-source-token.token.attr-value) {
-  color: var(--code-string, var(--text-success));
+.cm-editor.mv-senceai-source-highlight-themed .mv-senceai-source-token.token.string,
+.cm-editor.mv-senceai-source-highlight-themed .mv-senceai-source-token.token.char,
+.cm-editor.mv-senceai-source-highlight-themed .mv-senceai-source-token.token.attr-value {
+  color: var(--mv-source-string, var(--code-string, var(--text-success))) !important;
+  font-style: var(--mv-source-string-font-style, inherit) !important;
+  font-weight: var(--mv-source-string-font-weight, inherit) !important;
+  text-decoration: var(--mv-source-string-text-decoration, inherit) !important;
 }
 
-.cm-editor :where(.mv-senceai-source-token.token.number),
-.cm-editor :where(.mv-senceai-source-token.token.boolean),
-.cm-editor :where(.mv-senceai-source-token.token.constant) {
-  color: var(--code-value, var(--text-accent));
+.cm-editor.mv-senceai-source-highlight-themed .mv-senceai-source-token.token.number,
+.cm-editor.mv-senceai-source-highlight-themed .mv-senceai-source-token.token.boolean,
+.cm-editor.mv-senceai-source-highlight-themed .mv-senceai-source-token.token.constant {
+  color: var(--mv-source-number, var(--code-value, var(--text-accent))) !important;
+  font-style: var(--mv-source-number-font-style, inherit) !important;
+  font-weight: var(--mv-source-number-font-weight, inherit) !important;
+  text-decoration: var(--mv-source-number-text-decoration, inherit) !important;
 }
 
-.cm-editor :where(.mv-senceai-source-token.token.function),
-.cm-editor :where(.mv-senceai-source-token.token.class-name) {
-  color: var(--code-function, var(--text-warning));
+.cm-editor.mv-senceai-source-highlight-themed .mv-senceai-source-token.token.function,
+.cm-editor.mv-senceai-source-highlight-themed .mv-senceai-source-token.token.class-name {
+  color: var(--mv-source-function, var(--code-function, var(--text-warning))) !important;
+  font-style: var(--mv-source-function-font-style, inherit) !important;
+  font-weight: var(--mv-source-function-font-weight, inherit) !important;
+  text-decoration: var(--mv-source-function-text-decoration, inherit) !important;
 }
 
-.cm-editor :where(.mv-senceai-source-token.token.property),
-.cm-editor :where(.mv-senceai-source-token.token.attr-name),
-.cm-editor :where(.mv-senceai-source-token.token.variable) {
-  color: var(--code-property, var(--text-normal));
+.cm-editor.mv-senceai-source-highlight-themed .mv-senceai-source-token.token.property,
+.cm-editor.mv-senceai-source-highlight-themed .mv-senceai-source-token.token.attr-name,
+.cm-editor.mv-senceai-source-highlight-themed .mv-senceai-source-token.token.variable {
+  color: var(--mv-source-property, var(--code-property, var(--text-normal))) !important;
+  font-style: var(--mv-source-property-font-style, inherit) !important;
+  font-weight: var(--mv-source-property-font-weight, inherit) !important;
+  text-decoration: var(--mv-source-property-text-decoration, inherit) !important;
 }
 
-.cm-editor :where(.mv-senceai-source-token.token.operator),
-.cm-editor :where(.mv-senceai-source-token.token.punctuation) {
-  color: var(--code-punctuation, var(--text-muted));
+.cm-editor.mv-senceai-source-highlight-themed .mv-senceai-source-token.token.punctuation {
+  color: var(--mv-source-punctuation, var(--code-punctuation, var(--text-muted))) !important;
+  font-style: var(--mv-source-punctuation-font-style, inherit) !important;
+  font-weight: var(--mv-source-punctuation-font-weight, inherit) !important;
+  text-decoration: var(--mv-source-punctuation-text-decoration, inherit) !important;
+}
+
+.cm-editor.mv-senceai-source-highlight-themed .mv-senceai-source-token.token.operator {
+  color: var(--mv-source-operator, var(--mv-source-punctuation, var(--code-punctuation, var(--text-muted)))) !important;
+  font-style: var(--mv-source-operator-font-style, var(--mv-source-punctuation-font-style, inherit)) !important;
+  font-weight: var(--mv-source-operator-font-weight, var(--mv-source-punctuation-font-weight, inherit)) !important;
+  text-decoration: var(--mv-source-operator-text-decoration, var(--mv-source-punctuation-text-decoration, inherit)) !important;
 }
 
 .cm-editor.mv-senceai-source-plain-markdown
@@ -723,7 +749,8 @@
 }
 
 .vault-terminal-host .xterm-dim {
-	opacity: 0.5;
+	/* xterm applies dimming to generated foreground colors; opacity must stay at 1. */
+	opacity: 1 !important;
 }
 
 .vault-terminal-host .xterm-underline-1 {
@@ -774,6 +801,31 @@
 	text-decoration: line-through;
 }
 
+/* Keep these scoped xterm.js decoration rules in sync with node_modules/xterm/css/xterm.css.
+   The terminal DOM renderer draws selection as a z-index: 1 overlay and lifts selected text
+   with .xterm-decoration-top; removing these rules makes selection cover the text. */
+.vault-terminal-host .xterm-screen .xterm-decoration-container .xterm-decoration {
+	z-index: 6;
+	position: absolute;
+}
+
+.vault-terminal-host .xterm-screen .xterm-decoration-container .xterm-decoration.xterm-decoration-top-layer {
+	z-index: 7;
+}
+
+.vault-terminal-host .xterm-decoration-overview-ruler {
+	z-index: 8;
+	position: absolute;
+	top: 0;
+	right: 0;
+	pointer-events: none;
+}
+
+.vault-terminal-host .xterm-decoration-top {
+	z-index: 2;
+	position: relative;
+}
+
 /* 💻 终端设置与样式 */
 .workspace-leaf-content[data-type="mv-terminal-view"] .view-content {
 	overflow: clip;
@@ -789,7 +841,7 @@
 	padding: 8px 12px;
 	padding-bottom: calc(8px + var(--status-bar-height, 0px) + env(safe-area-inset-bottom, 0px));
 	box-sizing: border-box;
-	background-color: var(--background-secondary);
+	background-color: var(--mv-terminal-background, var(--background-secondary));
 	overflow: hidden;
 }
 
@@ -798,22 +850,22 @@
 	min-height: 0;
 	overflow: hidden;
 	position: relative;
-	background-color: var(--background-secondary);
+	background-color: var(--mv-terminal-background, var(--background-secondary));
 	overscroll-behavior: contain;
 }
 
 .vault-terminal-host .xterm {
 	height: 100%;
-	background-color: var(--background-secondary);
+	background-color: var(--mv-terminal-background, var(--background-secondary));
 }
 
 .vault-terminal-host .xterm .xterm-screen {
-	background-color: var(--background-secondary);
+	background-color: var(--mv-terminal-background, var(--background-secondary));
 }
 
 .vault-terminal-host .xterm-viewport {
 	overflow-y: auto !important;
-	background-color: var(--background-secondary) !important;
+	background-color: var(--mv-terminal-background, var(--background-secondary)) !important;
 	overscroll-behavior: contain;
 	scrollbar-gutter: stable;
 }
@@ -824,6 +876,24 @@
 	padding: 0;
 	outline: none;
 	pointer-events: none;
+}
+
+.mv-senceai-terminal-theme-manager,
+.mv-senceai-terminal-theme-card {
+	margin: 12px 0;
+	padding: 10px 12px;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 10px;
+	background: var(--background-secondary);
+}
+
+.mv-senceai-terminal-theme-manager > summary,
+.mv-senceai-terminal-theme-card > summary {
+	cursor: pointer;
+}
+
+.mv-senceai-terminal-color-status {
+	margin-top: 4px;
 }
 
 .mv-senceai-settings-section {
@@ -860,10 +930,59 @@
 
 .mv-senceai-source-assist-profile {
 	margin: 12px 0;
-	padding: 10px 12px;
 	border: 1px solid var(--background-modifier-border);
 	border-radius: 10px;
 	background: var(--background-primary);
+}
+
+.mv-senceai-source-assist-profile-summary {
+	align-items: center;
+	cursor: pointer;
+	display: flex;
+	gap: 12px;
+	justify-content: space-between;
+	list-style: none;
+	padding: 12px;
+}
+
+.mv-senceai-source-assist-profile-summary::-webkit-details-marker {
+	display: none;
+}
+
+.mv-senceai-source-assist-profile-summary::before {
+	content: "▸";
+	flex: 0 0 auto;
+	transition: transform 120ms ease;
+}
+
+.mv-senceai-source-assist-profile[open] .mv-senceai-source-assist-profile-summary::before {
+	transform: rotate(90deg);
+}
+
+.mv-senceai-source-assist-profile-summary-text {
+	flex: 1 1 auto;
+	min-width: 0;
+}
+
+.mv-senceai-source-assist-profile-delete {
+	flex: 0 0 auto;
+}
+
+.mv-senceai-source-assist-profile-body {
+	padding: 0 12px 12px;
+}
+
+.mv-senceai-theme-file-setting {
+	border-bottom: 0;
+	padding-bottom: 4px;
+}
+
+.mv-senceai-source-highlight-empty {
+	margin: 8px 0 12px;
+}
+
+.mv-senceai-source-highlight-theme-list {
+	margin-top: 8px;
 }
 
 .mv-senceai-source-assist-snippets-setting {

@@ -7,6 +7,11 @@ import * as path from "path";
 import * as child_process from "child_process";
 import { StringDecoder } from "string_decoder";
 import { TERMINAL_VIEW_TYPE } from "../constants";
+import {
+  resolveTerminalTheme,
+  terminalThemeSignature,
+  type ResolvedTerminalTheme,
+} from "./terminal-themes";
 import { TERMINAL_PTY_PY_BASE64, TERMINAL_WIN_PY_BASE64 } from "./terminal-scripts";
 import MvSenceAiIdePlugin from "../../main";
 
@@ -25,6 +30,7 @@ export class TerminalView extends ItemView {
   private _fitPending = false;
   private _scrollTarget: number | null = null;
   private debounceFitTimer: NodeJS.Timeout | null = null;
+  private appliedThemeSignature = "";
 
   constructor(leaf: WorkspaceLeaf, plugin: MvSenceAiIdePlugin) {
     super(leaf);
@@ -33,6 +39,10 @@ export class TerminalView extends ItemView {
 
   focusTerminal(): void {
     this.term?.focus();
+  }
+
+  refreshTheme(): void {
+    this.updateTheme(true);
   }
 
   getViewType(): string {
@@ -79,22 +89,24 @@ export class TerminalView extends ItemView {
     this.termHost = container.createDiv({ cls: "vault-terminal-host" });
   }
 
-  private getThemeColors() {
+  private getThemeColors(): ResolvedTerminalTheme {
     const styles = getComputedStyle(document.body);
-    const bg = styles.getPropertyValue("--background-secondary").trim() || "#1e1e1e";
-    const fg = styles.getPropertyValue("--text-normal").trim() || "#d4d4d4";
-    const cursor = styles.getPropertyValue("--text-accent").trim() || "#ffffff";
-    const isLightMode = document.body.classList.contains("theme-light");
-    const selectionBackground = isLightMode ? "rgba(0, 100, 200, 0.3)" : undefined;
-    return { background: bg, foreground: fg, cursor, selectionBackground };
+    return resolveTerminalTheme(this.plugin.settings, {
+      isLightMode: document.body.classList.contains("theme-light"),
+      getCssVar: (name) => styles.getPropertyValue(name).trim(),
+    });
   }
 
-  private updateTheme() {
+  private updateTheme(force = false) {
     if (!this.term) return;
-    const newTheme = this.getThemeColors();
-    const cur = this.term.options.theme;
-    if (cur?.background !== newTheme.background || cur?.foreground !== newTheme.foreground) {
-      this.term.options.theme = newTheme;
+    const resolvedTheme = this.getThemeColors();
+    const signature = terminalThemeSignature(resolvedTheme);
+    if (force || signature !== this.appliedThemeSignature) {
+      this.term.options.theme = resolvedTheme.palette;
+      this.term.options.minimumContrastRatio = resolvedTheme.minimumContrastRatio;
+      this.appliedThemeSignature = signature;
+      this.containerEl.style.setProperty("--mv-terminal-background", resolvedTheme.palette.background);
+      this.termHost?.style.setProperty("--mv-terminal-background", resolvedTheme.palette.background);
     }
   }
 
@@ -105,11 +117,17 @@ export class TerminalView extends ItemView {
     const fontFamily = settings.terminalFontFamily || "Menlo, Monaco, 'Cascadia Mono', 'Cascadia Code', Consolas, 'Courier New', 'Microsoft YaHei', monospace";
     const fontSize = Number(settings.terminalFontSize) || 13;
 
+    const resolvedTheme = this.getThemeColors();
+    this.appliedThemeSignature = terminalThemeSignature(resolvedTheme);
+    this.containerEl.style.setProperty("--mv-terminal-background", resolvedTheme.palette.background);
+    this.termHost.style.setProperty("--mv-terminal-background", resolvedTheme.palette.background);
+
     this.term = new Terminal({
       cursorBlink: true,
       fontSize: fontSize,
       fontFamily: fontFamily,
-      theme: this.getThemeColors(),
+      theme: resolvedTheme.palette,
+      minimumContrastRatio: resolvedTheme.minimumContrastRatio,
       scrollback: 10000,
       macOptionIsMeta: false
     });
