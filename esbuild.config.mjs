@@ -5,6 +5,12 @@ import path from "node:path";
 
 const production = process.argv[2] === "production";
 const latexSuiteSource = path.resolve("src/vendor/latex-suite/src");
+const licenseBanner = [
+  "/*!",
+  " * mv-SenceAI bundles portions of obsidian-latex-suite 1.11.5.",
+  " * obsidian-latex-suite is MIT licensed; see THIRD_PARTY_NOTICES.md and src/vendor/latex-suite/LICENSE.md.",
+  " */",
+].join("\n");
 const external = [
   "obsidian",
   "electron",
@@ -94,6 +100,7 @@ const context = await esbuild.context({
   sourcemap: production ? false : "inline",
   treeShaking: true,
   outfile: "dist/main.js",
+  banner: production ? { js: licenseBanner } : undefined,
   logLevel: "info",
   plugins: [inlineImportPlugin, latexSuiteStartupPatchPlugin],
 });

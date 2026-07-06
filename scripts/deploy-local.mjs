@@ -35,7 +35,7 @@ if (
   !enabledPlugins.includes(manifest.id)
 ) {
   throw new Error(
-    `community-plugins.json must enable only ${manifest.id}.`,
+    `community-plugins.json must enable ${manifest.id} and must not enable duplicate plugin ids.`,
   );
 }
 
@@ -69,5 +69,7 @@ for (const [sourceName, destinationName] of files) {
   fs.renameSync(temporary, target);
   console.log(`${destinationName}  ${sha256(target)}`);
 }
+
+fs.rmSync(path.join(destination, "latex-suite-blackbox.cjs"), { force: true });
 
 console.log(`Deployed ${manifest.id} to ${destination}`);
