@@ -1,6 +1,6 @@
 {
   "name": "mv-obcc",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "description": "A focused Claude Code and Codex CLI IDE bridge for local vaults.",
   "main": "main.js",
   "type": "module",

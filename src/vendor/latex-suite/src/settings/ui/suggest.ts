@@ -3,6 +3,18 @@
 import { createPopper, Instance as PopperInstance } from "@popperjs/core";
 import { App, ISuggestOwner, Scope } from "obsidian";
 
+type AppWithSuggestInternals = App & {
+	dom: {
+		appContainerEl: HTMLElement;
+	};
+	keymap: {
+		pushScope(scope: Scope): void;
+		popScope(scope: Scope): void;
+	};
+};
+
+const appWithSuggestInternals = (app: App): AppWithSuggestInternals => app as AppWithSuggestInternals;
+
 const wrapAround = (value: number, size: number): number => {
 		return ((value % size) + size) % size;
 };
@@ -132,14 +144,12 @@ export abstract class TextInputSuggest<T> implements ISuggestOwner<T> {
 
 		if (suggestions.length > 0) {
 			this.suggest.setSuggestions(suggestions);
-			// eslint-disable-next-line @typescript-eslint/no-explicit-any
-			this.open((<any>this.app).dom.appContainerEl, this.inputEl);
+			this.open(appWithSuggestInternals(this.app).dom.appContainerEl, this.inputEl);
 		}
 	}
 
 	open(container: HTMLElement, inputEl: HTMLElement): void {
-		// eslint-disable-next-line @typescript-eslint/no-explicit-any
-		(<any>this.app).keymap.pushScope(this.scope);
+		appWithSuggestInternals(this.app).keymap.pushScope(this.scope);
 
 		container.appendChild(this.suggestEl);
 		this.popper = createPopper(inputEl, this.suggestEl, {
@@ -168,8 +178,7 @@ export abstract class TextInputSuggest<T> implements ISuggestOwner<T> {
 	}
 
 	close(): void {
-		// eslint-disable-next-line @typescript-eslint/no-explicit-any
-		(<any>this.app).keymap.popScope(this.scope);
+		appWithSuggestInternals(this.app).keymap.popScope(this.scope);
 
 		this.suggest.setSuggestions([]);
 		this.popper.destroy();

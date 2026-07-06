@@ -53,6 +53,8 @@ import { migrateLlm } from "./src/llm-migrate";
 import { migrateInlineCompletion } from "./src/inline-completion/inline-completion-migrate";
 import { SourceAssistFeature } from "./src/source-assist/source-assist-feature";
 import {
+  CUSTOM_MARKDOWN_PLAIN_VISUALS_CLASS,
+  customMarkdownPlainVisualsEnabled,
   normalizeSourceAssistSettings,
   sourceAssistMarkdownExtensions,
 } from "./src/source-assist/source-assist-settings";
@@ -319,6 +321,7 @@ export default class MvSenceAiIdePlugin extends Plugin {
     );
     await this.sourceAssist.load();
     this.registerEditorExtension(this.sourceAssist.extensions);
+    this.registerEditorExtension(this.customMarkdownPlainVisualsExtension());
     this.registerEditorExtension(this.customMarkdownHighlightExtension());
     this.registerEditorExtension(
       EditorView.updateListener.of((update) => {
@@ -602,12 +605,12 @@ export default class MvSenceAiIdePlugin extends Plugin {
         }
 
         update(update: ViewUpdate): void {
-          if (
+          const shouldRefresh =
             update.docChanged ||
             plugin.customMarkdownEditorExtension(update.startState) !==
               plugin.customMarkdownEditorExtension(update.state) ||
-            customMarkdownHighlightRefreshRequested(update)
-          ) {
+            customMarkdownHighlightRefreshRequested(update);
+          if (shouldRefresh) {
             this.decorations = plugin.customMarkdownHighlightDecorations(
               update.view,
             );
@@ -622,6 +625,18 @@ export default class MvSenceAiIdePlugin extends Plugin {
         decorations: (pluginValue) => pluginValue.decorations,
       },
     );
+  }
+
+  private customMarkdownPlainVisualsExtension() {
+    return EditorView.editorAttributes.of((view) => {
+      const extension = this.customMarkdownEditorExtension(view.state);
+      return customMarkdownPlainVisualsEnabled(
+        this.registeredCustomMarkdownExtensions,
+        extension,
+      )
+        ? { class: CUSTOM_MARKDOWN_PLAIN_VISUALS_CLASS }
+        : null;
+    });
   }
 
   private customMarkdownHighlightDecorations(view: EditorView): DecorationSet {

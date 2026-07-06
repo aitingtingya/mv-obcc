@@ -680,7 +680,7 @@ export class LatexSuiteSettingTab extends PluginSettingTab {
 
 		const validityText = validity.createDiv("snippets-editor-validity-text");
 		validityText.addClass("setting-item-description");
-		validityText.style.padding = "0";
+		validityText.addClass("snippets-editor-validity-text-no-padding");
 
 
 		function updateValidityIndicator(success: boolean) {
@@ -823,6 +823,11 @@ export function isIMESupported(): boolean {
 function getTriggerHelpText(name: string) {
 	const fragment = new DocumentFragment();
 	const div = fragment.createDiv();
-	div.innerHTML = `What key to press to trigger ${name}. Should follow codemirror keymap syntax such as "Ctrl-k Ctrl-a". For more info see <a href="https://codemirror.net/docs/ref/#view.KeyBinding">codemirror keymap documentation</a>.`;
+	div.appendText(`What key to press to trigger ${name}. Should follow codemirror keymap syntax such as "Ctrl-k Ctrl-a". For more info see `);
+	div.createEl("a", {
+		href: "https://codemirror.net/docs/ref/#view.KeyBinding",
+		text: "codemirror keymap documentation",
+	});
+	div.appendText(".");
 	return fragment;
 }
