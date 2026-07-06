@@ -389,7 +389,7 @@ function buildTexDisplayMathPreviewUnsafe(
         bound.outer_end,
         Decoration.replace({
           widget,
-          block: bound.display && isBlockDisplayRange(view, bound),
+          block: bound.display,
         }),
       );
       continue;
@@ -649,7 +649,7 @@ function positionInsideBound(pos: number, bound: SourceAssistMathBound): boolean
 }
 
 function positionActivatesBound(pos: number, bound: SourceAssistMathBound): boolean {
-  return pos >= bound.outer_start && pos < bound.outer_end;
+  return pos >= bound.outer_start && pos <= bound.outer_end;
 }
 
 function nudgeEndBoundaryInsideBound(
@@ -688,14 +688,6 @@ function selectionTouchesBound(view: EditorView, bound: SourceAssistMathBound): 
     if (range.empty) return positionActivatesBound(range.head, bound);
     return range.from < bound.outer_end && range.to > bound.outer_start;
   });
-}
-
-function isBlockDisplayRange(view: EditorView, bound: SourceAssistMathBound): boolean {
-  const startLine = view.state.doc.lineAt(bound.outer_start);
-  const endLine = view.state.doc.lineAt(bound.outer_end);
-  const before = view.state.sliceDoc(startLine.from, bound.outer_start);
-  const after = view.state.sliceDoc(bound.outer_end, endLine.to);
-  return before.trim() === "" && after.trim() === "";
 }
 
 function isLivePreview(view: EditorView): boolean {

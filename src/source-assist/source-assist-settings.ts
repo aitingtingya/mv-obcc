@@ -5,11 +5,25 @@ import type {
 } from "../types";
 
 export const SOURCE_ASSIST_EXTENSION_PATTERN = /^[a-z0-9][a-z0-9+_-]*$/;
+export const CUSTOM_MARKDOWN_PLAIN_VISUALS_CLASS =
+  "mv-senceai-source-plain-markdown";
 
 export function normalizeSourceAssistExtension(value: string): string | null {
   const extension = value.trim().replace(/^\.+/, "").toLowerCase();
   if (!extension || !SOURCE_ASSIST_EXTENSION_PATTERN.test(extension)) return null;
   return extension;
+}
+
+export function customMarkdownPlainVisualsEnabled(
+  registeredExtensions: Iterable<string>,
+  rawExtension: string,
+): boolean {
+  const extension = rawExtension.replace(/^\.+/, "").toLowerCase();
+  if (!extension || extension === "md" || extension === "tex") return false;
+  for (const registeredExtension of registeredExtensions) {
+    if (registeredExtension.toLowerCase() === extension) return true;
+  }
+  return false;
 }
 
 export function sourceAssistProfileId(extension: string): string {

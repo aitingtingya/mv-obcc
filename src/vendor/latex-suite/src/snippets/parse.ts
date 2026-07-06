@@ -86,6 +86,7 @@ export async function parseSnippets(snippetsStr: string, snippetVariables: Snipp
 async function importModuleDefault(module: string): Promise<unknown> {
 	let data;
 	try {
+		// eslint-disable-next-line no-unsanitized/method -- Latex Suite snippets are trusted local JavaScript modules; dynamic data-URL import preserves upstream parser semantics.
 		data = await import(module);
 	} catch {
 		throw `failed to import module ${module}`;
@@ -267,7 +268,5 @@ function normalizeKeyName(name: string) {
 	return result;
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type Fn<Args extends readonly any[], Ret> = (...args: Args) => Ret;
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type AnyFunction = Fn<any, any>;
+type Fn<Args extends readonly unknown[], Ret> = (...args: Args) => Ret;
+type AnyFunction = Fn<unknown[], string>;

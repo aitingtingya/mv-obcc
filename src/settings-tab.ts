@@ -448,7 +448,7 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
     const previousScrollTop = this.captureSettingsUiState(rootEl);
     this.destroySourceAssistSnippetEditors();
     rootEl.empty();
-    addHeading(rootEl, "mv-SenceAI IDE");
+    addHeading(rootEl, this.plugin.manifest.name || "mv-SenceAI");
 
     const ideEl = this.createSettingsSection(rootEl, "ide", "IDE桥接");
     const llmEl = this.createSettingsSection(rootEl, "llm", "划词助手");
@@ -805,7 +805,7 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
       .addButton((button) =>
         button.setButtonText("重启").onClick(async () => {
           await this.plugin.restartBridge();
-          new Notice("mv-SenceAI IDE 桥接已重启。");
+          new Notice("mv-SenceAI 桥接已重启。");
           this.rerenderSettings("ide");
         }),
       );
@@ -816,7 +816,7 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
       .addButton((button) =>
         button.setButtonText("恢复").onClick(async () => {
           await this.plugin.restoreClaudeSettings();
-          new Notice("已恢复 mv-SenceAI IDE 管理的 Claude 设置。");
+          new Notice("已恢复 mv-SenceAI 管理的 Claude 设置。");
           this.rerenderSettings("ide");
         }),
       );
@@ -1298,22 +1298,11 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
       )
       .setHeading();
 
-    header.addToggle((toggle) =>
-      toggle
-        .setValue(profile.enabled)
-        .onChange(async (value) => {
-          const target = this.plugin.settings.sourceAssist.profiles[idx];
-          if (!target) return;
-          target.enabled = value;
-          await this.plugin.saveSourceAssistSettings();
-        }),
-    );
-
     if (profile.extension !== "md") {
       header.addExtraButton((button) =>
         button
           .setIcon("trash")
-          .setTooltip("删除该源码类型")
+          .setTooltip("删除该源码类型并取消本插件对该后缀的识别")
           .onClick(async () => {
             this.plugin.settings.sourceAssist.profiles.splice(idx, 1);
             await this.plugin.saveSourceAssistSettings();
@@ -1322,11 +1311,13 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
       );
     }
 
+    this.renderSourceAssistProfileEnabledSetting(wrap, profile, idx);
+
     if (profile.extension === "tex") {
       new Setting(wrap)
         .setName("打开 TeX 增强渲染")
         .setDesc(
-          "实验功能：使用本插件自定义 Live Preview 扩展渲染 \\(...\\)、\\[...\\] 和常见数学环境，可能影响光标移动、折叠行为或其它编辑器插件兼容性。关闭后 .tex 仍作为 Markdown view 打开，snippets 仍可用。",
+          "实验功能：使用本插件自定义 Live Preview 扩展渲染 \\(...\\)、\\[...\\] 和常见数学环境，可能影响光标移动、折叠行为或其它编辑器插件兼容性。该功能要求本 profile 的 snippets 替换开关处于开启状态，否则不会加载。关闭后 .tex 仍作为 Markdown view 打开，snippets 仍可用。",
         )
         .addToggle((toggle) =>
           toggle
@@ -1341,6 +1332,7 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
     }
 
     this.renderSourceAssistSnippetsEditor(wrap, profile, idx);
+    this.renderSourceAssistHotkeyIntro(wrap);
 
     this.renderSourceAssistHotkeySetting(
       wrap,
@@ -1356,7 +1348,7 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
       idx,
       "snippetNextTabstopTrigger",
       "下一 tabstop",
-      "snippet 展开后跳到下一个 tabstop。",
+      "snippet 展开后跳到下一个 $1/$2/$0 等占位点。",
     );
     this.renderSourceAssistHotkeySetting(
       wrap,
@@ -1364,8 +1356,43 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
       idx,
       "snippetPreviousTabstopTrigger",
       "上一 tabstop",
-      "snippet 展开后跳回上一个 tabstop。",
+      "snippet 展开后跳回上一个占位点。",
     );
+  }
+
+  private renderSourceAssistProfileEnabledSetting(
+    containerEl: HTMLElement,
+    profile: SourceAssistProfile,
+    idx: number,
+  ): void {
+    const name =
+      profile.extension === "md"
+        ? "启用 Markdown snippets 替换"
+        : "启用该后缀的 snippets 替换";
+    const desc =
+      profile.extension === "md"
+        ? "关闭后只停用 Markdown profile 的 Latex Suite snippets、tabstop 和相关预览 runtime。"
+        : "关闭后只停用该 profile 的 Latex Suite snippets、tabstop 和相关预览 runtime；不取消后缀注册、不移除新建命令、不影响源码高亮或 Markdown 视觉屏蔽。";
+    new Setting(containerEl)
+      .setName(name)
+      .setDesc(desc)
+      .addToggle((toggle) =>
+        toggle
+          .setValue(profile.enabled)
+          .onChange(async (value) => {
+            const target = this.plugin.settings.sourceAssist.profiles[idx];
+            if (!target) return;
+            target.enabled = value;
+            await this.plugin.saveSourceAssistSettings();
+          }),
+      );
+  }
+
+  private renderSourceAssistHotkeyIntro(containerEl: HTMLElement): void {
+    containerEl.createDiv({
+      cls: "setting-item-description mv-senceai-source-assist-hotkey-intro",
+      text: "按键说明：手动触发按键用于触发非 automatic snippets；下一/上一 tabstop 用于在 $1/$2/$0 等占位点之间跳转。",
+    });
   }
 
   private renderSourceAssistSnippetsEditor(

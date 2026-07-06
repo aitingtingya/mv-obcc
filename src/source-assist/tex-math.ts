@@ -18,6 +18,7 @@ const TEX_DISPLAY_ENVIRONMENTS = new Set([
   "alignat",
   "displaymath",
   "equation",
+  "eqnarray",
   "flalign",
   "gather",
   "math",

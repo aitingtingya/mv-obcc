@@ -122,6 +122,45 @@
   color: var(--code-punctuation, var(--text-muted));
 }
 
+.cm-editor.mv-senceai-source-plain-markdown
+  :where(.cm-highlight, .cm-formatting-highlight, mark) {
+  background: transparent !important;
+}
+
+.cm-editor.mv-senceai-source-plain-markdown
+  :where(.cm-strong, .cm-formatting-strong, strong, b) {
+  font-weight: inherit !important;
+}
+
+.cm-editor.mv-senceai-source-plain-markdown
+  :where(.cm-em, .cm-formatting-em, em, i) {
+  font-style: inherit !important;
+}
+
+.cm-editor.mv-senceai-source-plain-markdown
+  :where(.cm-strikethrough, .cm-formatting-strikethrough, s, del) {
+  text-decoration: none !important;
+}
+
+.cm-editor.mv-senceai-source-plain-markdown
+  :where(.cm-inline-code, .cm-formatting-code, .cm-hmd-code, code) {
+  background: transparent !important;
+  border-color: transparent !important;
+  font-family: inherit !important;
+}
+
+.cm-editor.mv-senceai-source-plain-markdown
+  :where(
+    .cm-link,
+    .cm-url,
+    .cm-formatting-link,
+    .cm-hmd-internal-link,
+    .cm-hmd-external-link,
+    a
+  ) {
+  text-decoration: none !important;
+}
+
 /* 选词调用 LLM 独立功能 */
 
 .mv-senceai-llm-result {
@@ -898,12 +937,20 @@
 }
 
 .mv-senceai-snippets-editor-validity-text.setting-item-description {
-	padding: 0;
+  padding: 0;
+}
+
+.snippets-editor-validity-text-no-padding.setting-item-description {
+  padding: 0;
+}
+
+.mv-senceai-source-assist-hotkey-intro {
+  margin: 10px 0 4px;
 }
 
 .mv-senceai-source-assist-hotkey-input,
 .mv-senceai-source-assist-extension-input {
-	min-width: 120px;
+  min-width: 120px;
 }
 
 .mv-senceai-modal-button-row {
