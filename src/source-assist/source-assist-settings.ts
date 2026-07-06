@@ -3,6 +3,11 @@ import type {
   SourceAssistProfile,
   SourceAssistSettings,
 } from "../types";
+import {
+  normalizeSourceHighlightCustomThemes,
+  normalizeSourceHighlightThemeId,
+  SOURCE_HIGHLIGHT_OBSIDIAN,
+} from "./highlight-themes";
 
 export const SOURCE_ASSIST_EXTENSION_PATTERN = /^[a-z0-9][a-z0-9+_-]*$/;
 export const CUSTOM_MARKDOWN_PLAIN_VISUALS_CLASS =
@@ -43,6 +48,7 @@ export function createSourceAssistProfile(
     id: sourceAssistProfileId(normalized),
     extension: normalized,
     enabled: true,
+    highlightThemeId: SOURCE_HIGHLIGHT_OBSIDIAN,
     snippets: EMPTY_LATEX_SUITE_SNIPPETS,
     snippetsTrigger: "Tab",
     snippetNextTabstopTrigger: "Tab",
@@ -58,6 +64,10 @@ function normalizeProfile(raw: Partial<SourceAssistProfile> | undefined): Source
     id: raw?.id || sourceAssistProfileId(extension),
     extension,
     enabled: raw?.enabled ?? true,
+    highlightThemeId: normalizeSourceHighlightThemeId(
+      raw?.highlightThemeId,
+      SOURCE_HIGHLIGHT_OBSIDIAN,
+    ),
     snippets: typeof raw?.snippets === "string" ? raw.snippets : EMPTY_LATEX_SUITE_SNIPPETS,
     snippetsTrigger: raw?.snippetsTrigger || "Tab",
     snippetNextTabstopTrigger: raw?.snippetNextTabstopTrigger || "Tab",
@@ -89,6 +99,15 @@ export function normalizeSourceAssistSettings(
   return {
     ...defaults,
     ...loaded,
+    snippetsEnabled: true,
+    mathPreviewEnabled: true,
+    highlightThemeId: normalizeSourceHighlightThemeId(
+      loaded?.highlightThemeId,
+      SOURCE_HIGHLIGHT_OBSIDIAN,
+    ),
+    customHighlightThemes: normalizeSourceHighlightCustomThemes(
+      loaded?.customHighlightThemes,
+    ),
     snippetDebug:
       loaded?.snippetDebug === "info" || loaded?.snippetDebug === "verbose"
         ? loaded.snippetDebug

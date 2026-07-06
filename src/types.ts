@@ -164,12 +164,49 @@ export interface SourceAssistProfile {
   /** File extension without the leading dot, for example "md" or "tex". */
   extension: string;
   enabled: boolean;
+  /** "follow-global" or a built-in/custom source highlight theme id. */
+  highlightThemeId: string;
   snippets: string;
   snippetsTrigger: string;
   snippetNextTabstopTrigger: string;
   snippetPreviousTabstopTrigger: string;
   /** Enables the plugin's custom TeX Live Preview extension for .tex files only. */
   texEnhancedRenderEnabled: boolean;
+}
+
+export type SourceHighlightThemeFormat =
+  | "mv-senceai-json"
+  | "prism-css"
+  | "highlight-js-css"
+  | "textmate-json";
+
+export type SourceHighlightPaletteKey =
+  | "comment"
+  | "keyword"
+  | "string"
+  | "number"
+  | "function"
+  | "property"
+  | "operator"
+  | "punctuation";
+
+export interface SourceHighlightTokenStyle {
+  color?: string;
+  fontStyle?: "normal" | "italic";
+  fontWeight?: "normal" | "bold";
+  textDecoration?: "none" | "underline";
+}
+
+export type SourceHighlightPalette = Partial<
+  Record<SourceHighlightPaletteKey, SourceHighlightTokenStyle>
+>;
+
+export interface SourceHighlightCustomTheme {
+  id: string;
+  name: string;
+  format: SourceHighlightThemeFormat;
+  importedAt: number;
+  palette: SourceHighlightPalette;
 }
 
 export interface SourceAssistSettings {
@@ -184,7 +221,44 @@ export interface SourceAssistSettings {
   wordDelimiters: string;
   snippetDebug: "off" | "info" | "verbose";
   snippetRecursion: number;
+  highlightThemeId: string;
+  customHighlightThemes: SourceHighlightCustomTheme[];
   profiles: SourceAssistProfile[];
+}
+
+export type TerminalThemeMode = "obsidian" | "light" | "dark" | "custom";
+
+export interface TerminalThemePalette {
+  foreground: string;
+  background: string;
+  cursor: string;
+  cursorAccent: string;
+  selectionBackground: string;
+  selectionForeground: string;
+  selectionInactiveBackground: string;
+  black: string;
+  red: string;
+  green: string;
+  yellow: string;
+  blue: string;
+  magenta: string;
+  cyan: string;
+  white: string;
+  brightBlack: string;
+  brightRed: string;
+  brightGreen: string;
+  brightYellow: string;
+  brightBlue: string;
+  brightMagenta: string;
+  brightCyan: string;
+  brightWhite: string;
+}
+
+export interface TerminalThemePreset {
+  id: string;
+  name: string;
+  createdAt: number;
+  palette: TerminalThemePalette;
 }
 
 export interface BridgeSettings {
@@ -216,6 +290,9 @@ export interface BridgeSettings {
   terminalFontFamily: string;
   terminalFontSize: string;
   terminalOpenPosition: string;
+  terminalThemeMode: TerminalThemeMode;
+  terminalCustomThemeId: string;
+  terminalCustomThemes: TerminalThemePreset[];
 }
 
 export interface BridgeClientContext {

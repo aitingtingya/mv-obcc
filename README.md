@@ -21,7 +21,7 @@
 3. 启用该插件。
 
 ### 方法二：手动从 Releases 安装
-1. 前往 GitHub 仓库的 [Releases](https://github.com/aitingtingya/mv-obcc/releases) 页面，下载最新版本（例如 `0.7.0`）的以下三个资产文件：
+1. 前往 GitHub 仓库的 [Releases](https://github.com/aitingtingya/mv-obcc/releases) 页面，下载最新版本（例如 `0.7.2`）的以下三个资产文件：
    - `main.js`
    - `manifest.json`
    - `styles.css`
@@ -86,7 +86,7 @@
 
 ### 4. 💻 系统终端功能
 - **启动与快捷键**：点击左侧功能区终端 Ribbon 图标，或使用命令面板运行 `Open System Terminal`。插件不设置默认系统快捷键，可在 Obsidian 快捷键设置中自行绑定。
-- **外观自适应**：终端文字、背景、前景色和光标会自动提取当前 Obsidian 主题颜色并完美同步。
+- **终端主题**：支持跟随 Obsidian、浅色、深色和自定义主题；内置高对比色板覆盖文字、背景、光标、选区和 ANSI 16 色，确保浅色/深色环境下都清晰可读。
 - **自定义 Shell 与路径**：可在设置中指定 macOS/Linux 和 Windows 的 Shell 可执行文件路径及启动参数。
 - **打开位置自定义**：在“💻 终端设置”中选择“终端打开位置”：
   - **右侧边栏 (Right Sidebar)**（默认）：在右边侧栏打开，多开时自动合并为侧栏标签页（Tabs）。
@@ -102,7 +102,7 @@
 - **额外后缀识别**：在“源码编写辅助”中添加如 `.tex`、`.bib`、`.m` 等后缀后，Obsidian 会将这些文件作为 Markdown view 打开，从而保留 Markdown 编辑器生态能力。
 - **按后缀配置 snippets**：每个后缀 profile 都有独立 snippets、手动触发按键、下一/上一 tabstop 按键。snippets 的填写格式与执行逻辑复用 Latex Suite `1.11.5` 的源码实现。
 - **新建非 MD 源码文件**：左侧 Ribbon 和命令面板提供“新建非 MD 源码文件”，可从已添加的后缀中创建对应文件。
-- **源码高亮与 TeX 预览**：自定义后缀文件仍保持 Markdown view 身份；源码编辑区会按后缀尽量使用 Obsidian/Prism 的同名语言高亮。`.tex` profile 额外提供“TeX 增强渲染”开关，默认关闭，开启后会用插件自定义 Live Preview 扩展渲染 `\(...\)`、`\[...\]` 和常见数学环境。
+- **源码高亮与 TeX 预览**：自定义后缀文件仍保持 Markdown view 身份；源码编辑区会按后缀尽量使用 Obsidian/Prism 的同名语言高亮，并支持内置主题与本地自定义主题导入。`.tex` profile 额外提供“TeX 增强渲染”开关，默认关闭，开启后会用插件自定义 Live Preview 扩展渲染 `\(...\)`、`\[...\]` 和常见数学环境。
 - **屏蔽 Markdown inline 视觉污染**：除 `.tex` 外，自定义源码后缀会屏蔽常见 Markdown inline 视觉格式（如 `==高亮==`、`**加粗**`、`*斜体*`、`~~删除线~~`），减少源码显示污染；snippets 仍依赖 Markdown/CodeMirror 编辑器宿主运行。
 - **兼容性提醒**：将非 `.md` 后缀注册为 Markdown view 时，如果该后缀已被 Obsidian 或其它插件注册为其它 view，本插件会尝试解除原注册并改为 Markdown view；这可能影响其它插件对同后缀文件的打开方式。TeX 增强渲染也可能影响光标移动、折叠或其它编辑器插件兼容性，建议按需开启。
 
@@ -171,7 +171,7 @@ You can install this plugin either **via the Community Plugin Store**, **manuall
 3. Enable the plugin.
 
 ### Method 2: Manual Installation from Releases
-1. Go to the [Releases](https://github.com/aitingtingya/mv-obcc/releases) page of this repository and download the latest release files (e.g. `0.7.0`):
+1. Go to the [Releases](https://github.com/aitingtingya/mv-obcc/releases) page of this repository and download the latest release files (e.g. `0.7.2`):
    - `main.js`
    - `manifest.json`
    - `styles.css`
@@ -236,7 +236,7 @@ You can install this plugin either **via the Community Plugin Store**, **manuall
 
 ### 4. 💻 System Terminal Feature
 - **Spawning**: Spawn via the ribbon terminal icon or by running `Open System Terminal` in the command palette. The plugin does not install a default shortcut; bind one in Obsidian's hotkey settings if needed.
-- **Visual Theme Sync**: Terminal background, foreground, selection, and cursor adapt to match Obsidian's active theme.
+- **Terminal Themes**: Choose follow-Obsidian, light, dark, or custom themes. Built-in high-contrast palettes cover foreground, background, cursor, selection, and ANSI 16 colors for readable output in both light and dark environments.
 - **Custom executable path**: Define executable shell path and arguments for macOS/Linux and Windows.
 - **Customizable Open Position**: Configure "Terminal Open Position" in settings:
   - **Right Sidebar (Default)**: Opens in the right panel; subsequent terminals merge into tabs.
@@ -252,7 +252,7 @@ You can install this plugin either **via the Community Plugin Store**, **manuall
 - **Extra extension recognition**: Add extensions such as `.tex`, `.bib`, or `.m` under "Source Assist" so Obsidian opens those files as Markdown views and keeps Markdown editor ecosystem features available.
 - **Per-extension snippets**: Each profile has independent snippets, manual trigger key, next tabstop key, and previous tabstop key. Snippet syntax and execution are vendored from Latex Suite `1.11.5`.
 - **Create non-MD source files**: The ribbon button and command palette entry "Create non-MD source file" create files using configured extensions.
-- **Highlighting and TeX preview**: Custom-extension files still keep Markdown view identity; source mode tries to use Obsidian/Prism language highlighting by extension. `.tex` profiles also show an opt-in "TeX enhanced rendering" toggle, disabled by default, for `\(...\)`, `\[...\]`, and common math environments.
+- **Highlighting and TeX preview**: Custom-extension files still keep Markdown view identity; source mode tries to use Obsidian/Prism language highlighting by extension, with built-in themes and local custom theme import. `.tex` profiles also show an opt-in "TeX enhanced rendering" toggle, disabled by default, for `\(...\)`, `\[...\]`, and common math environments.
 - **Markdown inline visual suppression**: Except for `.tex`, custom source extensions suppress common Markdown inline visual formatting such as `==highlight==`, `**bold**`, `*italic*`, and `~~strikethrough~~` to reduce source display pollution; snippets still rely on the Markdown/CodeMirror editor host.
 - **Compatibility note**: When a non-`.md` extension is registered as a Markdown view, mv-SenceAI may unregister an existing handler for the same extension and replace it with Markdown view handling. This can change how other plugins open files with that extension. TeX enhanced rendering is a custom Live Preview extension and may affect cursor movement, folding, or editor-plugin compatibility.
 
