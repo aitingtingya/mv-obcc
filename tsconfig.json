@@ -8,10 +8,16 @@
     "esModuleInterop": true,
     "isolatedModules": true,
     "strict": true,
-    "noUncheckedIndexedAccess": true,
+    "strictFunctionTypes": false,
+    "strictPropertyInitialization": false,
+    "useDefineForClassFields": false,
+    "noUncheckedIndexedAccess": false,
     "skipLibCheck": true,
-    "types": ["node"],
+    "paths": {
+      "src/*": ["src/vendor/latex-suite/src/*"]
+    },
+    "types": ["node", "vitest/globals"],
     "lib": ["DOM", "ES2022"]
   },
-  "include": ["main.ts", "src/**/*.ts"]
+  "include": ["main.ts", "src/**/*.ts", "tests/**/*.ts"]
 }

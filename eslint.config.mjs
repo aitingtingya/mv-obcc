@@ -3,7 +3,7 @@ import obsidianmd from "eslint-plugin-obsidianmd";
 
 export default [
   {
-    ignores: ["dist/**", "node_modules/**", "release/**"],
+    ignores: ["dist/**", "node_modules/**", "release/**", "src/vendor/**"],
   },
   {
     files: ["main.ts", "src/**/*.ts"],
