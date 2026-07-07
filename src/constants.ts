@@ -170,13 +170,6 @@ export const DEFAULT_SETTINGS = {
     highlightThemeId: "builtin:obsidian",
     customHighlightThemes: [],
   },
-  externalFileOpener: {
-    enabled: false,
-    extensionMode: "markdown-only" as const,
-    mirrorFolder: "senceai-external-files/mirror",
-    mappings: {},
-    openerToken: "",
-  },
   mcpEnabled: true,
   mcpAuthToken: "",
   claudeExecutable: "",

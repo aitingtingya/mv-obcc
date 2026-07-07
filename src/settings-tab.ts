@@ -29,7 +29,6 @@ import {
   createSourceAssistProfile,
   normalizeSourceAssistExtension,
 } from "./source-assist/source-assist-settings";
-import { externalFileAllowedExtensions } from "./external-file-opener";
 import { getDefaultSourceAssistSnippetVariables } from "./source-assist/default-snippet-variables";
 import { createSourceAssistSnippetsEditor } from "./source-assist/snippets-editor";
 import { parseSnippets } from "./vendor/latex-suite/src/snippets/parse";
@@ -60,8 +59,7 @@ type MainSettingsSectionId =
   | "llm"
   | "inline-completion"
   | "terminal"
-  | "source-assist"
-  | "external-file-opener";
+  | "source-assist";
 
 const SOURCE_LABELS = {
   manual: "手动覆盖",
@@ -577,11 +575,6 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
       "source-assist",
       "源码编写辅助",
     );
-    const externalFileOpenerEl = this.createSettingsSection(
-      rootEl,
-      "external-file-opener",
-      "默认文件打开器",
-    );
     let containerEl = ideEl;
 
     const claudeSetting = new Setting(containerEl)
@@ -702,9 +695,6 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
 
     containerEl = sourceAssistEl;
     this.renderSourceAssistSettings(containerEl);
-
-    containerEl = externalFileOpenerEl;
-    this.renderExternalFileOpenerSettings(containerEl);
 
     containerEl = ideEl;
     addHeading(containerEl, "视觉辅助");
@@ -1563,88 +1553,6 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
           await this.saveTerminalThemeSettings();
         }),
     );
-  }
-
-  private renderExternalFileOpenerSettings(containerEl: HTMLElement): void {
-    const settings = this.plugin.settings.externalFileOpener;
-    const supportedExtensions = externalFileAllowedExtensions(this.plugin.settings)
-      .map((extension) => `.${extension}`)
-      .join("、");
-
-    new Setting(containerEl)
-      .setName("启用默认文件打开器")
-      .setDesc(
-        "开启后，本插件会启动本地服务，供系统默认打开器 wrapper 打开电脑上的外部文件。",
-      )
-      .addToggle((toggle) =>
-        toggle.setValue(settings.enabled).onChange(async (value) => {
-          settings.enabled = value;
-          await this.plugin.saveAndApplySettings();
-          this.rerenderSettings("external-file-opener");
-        }),
-      );
-
-    new Setting(containerEl)
-      .setName("支持的后缀范围")
-      .setDesc(`当前支持：${supportedExtensions}`)
-      .addDropdown((dropdown) =>
-        dropdown
-          .addOption("markdown-only", "仅支持 md")
-          .addOption("markdown-and-source-assist", "支持扩展后缀名")
-          .setValue(settings.extensionMode)
-          .setDisabled(!settings.enabled)
-          .onChange(async (value) => {
-            settings.extensionMode =
-              value === "markdown-and-source-assist"
-                ? "markdown-and-source-assist"
-                : "markdown-only";
-            await this.plugin.saveAndApplySettings();
-            this.rerenderSettings("external-file-opener");
-          }),
-      );
-
-    new Setting(containerEl)
-      .setName("系统默认打开方式")
-      .setDesc(this.plugin.defaultFileOpenerStatus)
-      .addButton((button) =>
-        button.setButtonText("检查").onClick(() => {
-          const status = this.plugin.checkDefaultFileOpener();
-          new Notice(status.message);
-          this.rerenderSettings("external-file-opener");
-        }),
-      )
-      .addButton((button) =>
-        button
-          .setButtonText("一键注入")
-          .setCta()
-          .setDisabled(!settings.enabled)
-          .onClick(async () => {
-            await this.plugin.installDefaultFileOpener();
-            this.rerenderSettings("external-file-opener");
-          }),
-      )
-      .addButton((button) =>
-        button.setButtonText("清理").onClick(async () => {
-          await this.plugin.cleanupDefaultFileOpener();
-          this.rerenderSettings("external-file-opener");
-        }),
-      );
-
-    new Setting(containerEl)
-      .setName("镜像目录")
-      .setDesc("外部文件会以 symlink 形式映射到此 vault 内目录。")
-      .addText((text) =>
-        text
-          .setValue(settings.mirrorFolder)
-          .setPlaceholder("senceai-external-files/mirror")
-          .setDisabled(!settings.enabled)
-          .onChange(async (value) => {
-            settings.mirrorFolder =
-              value.trim().replace(/^\/+/, "") ||
-              DEFAULT_SETTINGS.externalFileOpener.mirrorFolder;
-            await this.plugin.saveData(this.plugin.settings);
-          }),
-      );
   }
 
   private renderSourceAssistSettings(containerEl: HTMLElement): void {
