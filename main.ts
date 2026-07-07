@@ -6,8 +6,10 @@ import {
   FuzzySuggestModal,
   Keymap,
   loadPrism,
+  Modal,
   Notice,
   Plugin,
+  Setting,
   type App,
   type PaneType,
   type TFolder,
@@ -106,6 +108,15 @@ import { TerminalSessionTracker } from "./src/terminal-session-tracker";
 import { LlmFeature } from "./src/llm-feature";
 import { InlineCompletionFeature } from "./src/inline-completion/inline-completion-feature";
 import {
+  ExternalFileOpenerFeature,
+  externalFileAllowedExtensions,
+  normalizeExternalFileOpenerExtensionMode,
+} from "./src/external-file-opener";
+import {
+  ExternalFileOpenerSystem,
+  type DefaultOpenerStatus,
+} from "./src/external-file-opener-system";
+import {
   CodexIdeProvider,
   type CodexIdeContextSnapshot,
 } from "./src/codex-ide-provider";
@@ -125,6 +136,13 @@ import type {
 } from "./src/types";
 
 type NewLeafSpecifier = PaneType | boolean;
+
+interface NativeOpenDialog {
+  showOpenDialog(options: {
+    properties?: string[];
+    filters?: Array<{ name: string; extensions: string[] }>;
+  }): Promise<{ canceled: boolean; filePaths: string[] }>;
+}
 
 const refreshCustomMarkdownHighlightEffect = StateEffect.define<void>();
 
@@ -156,6 +174,63 @@ class CustomMarkdownExtensionModal extends FuzzySuggestModal<string> {
   }
 }
 
+class ExternalFilePathModal extends Modal {
+  private pathValue = "";
+
+  constructor(
+    app: App,
+    private readonly allowedExtensions: string[],
+    private readonly onSubmitPath: (filePath: string) => void,
+  ) {
+    super(app);
+  }
+
+  onOpen(): void {
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.createEl("h3", { text: "通过路径打开电脑上的文件" });
+    contentEl.createEl("p", {
+      text: `支持后缀：${this.allowedExtensions.map((ext) => `.${ext}`).join("、")}`,
+      cls: "setting-item-description",
+    });
+    const setting = new Setting(contentEl)
+      .setName("文件路径")
+      .addText((text) => {
+        text
+          .setPlaceholder("/absolute/path/file.md")
+          .setValue(this.pathValue)
+          .onChange((value) => {
+            this.pathValue = value;
+          });
+      });
+    const input = setting.controlEl.querySelector("input");
+    input?.addEventListener("keydown", (event: KeyboardEvent) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        this.submit();
+      }
+    });
+    new Setting(contentEl)
+      .addButton((button) =>
+        button.setButtonText("打开").setCta().onClick(() => this.submit()),
+      )
+      .addButton((button) =>
+        button.setButtonText("取消").onClick(() => this.close()),
+      );
+    input?.focus();
+  }
+
+  private submit(): void {
+    const value = this.pathValue.trim();
+    if (!value) {
+      new Notice("请输入外部文件绝对路径。");
+      return;
+    }
+    this.onSubmitPath(value);
+    this.close();
+  }
+}
+
 function customMarkdownHighlightRefreshRequested(update: ViewUpdate): boolean {
   return update.transactions.some((transaction) =>
     transaction.effects.some((effect) =>
@@ -169,6 +244,7 @@ export default class MvSenceAiIdePlugin extends Plugin {
   port = 0;
   mcpStatus = "尚未检查";
   codexMcpStatus = "Codex MCP 未启用";
+  defaultFileOpenerStatus = "尚未检查";
   claudeIdeError: string | null = null;
   codexIdeError: string | null = null;
   private server: BridgeServer | null = null;
@@ -186,6 +262,8 @@ export default class MvSenceAiIdePlugin extends Plugin {
   private llmFeature: LlmFeature | null = null;
   private inlineCompletion: InlineCompletionFeature | null = null;
   private sourceAssist: SourceAssistFeature | null = null;
+  private externalFileOpener: ExternalFileOpenerFeature | null = null;
+  private readonly externalFileOpenerSystem = new ExternalFileOpenerSystem();
   private codexIdeProvider: CodexIdeProvider | null = null;
   private mcpRegistrationTimer: number | null = null;
   private mcpRegistrationInFlight: Promise<void> | null = null;
@@ -232,7 +310,20 @@ export default class MvSenceAiIdePlugin extends Plugin {
       llm: migrateLlm(loaded.llm),
       inlineCompletion: migrateInlineCompletion(loaded.inlineCompletion),
       sourceAssist: normalizeSourceAssistSettings(loaded.sourceAssist),
+      externalFileOpener: {
+        ...DEFAULT_SETTINGS.externalFileOpener,
+        ...(loaded.externalFileOpener ?? {}),
+        extensionMode: normalizeExternalFileOpenerExtensionMode(
+          loaded.externalFileOpener?.extensionMode,
+        ),
+        mappings: {
+          ...(loaded.externalFileOpener?.mappings ?? {}),
+        },
+      },
     });
+    if (!this.settings.externalFileOpener.openerToken) {
+      this.settings.externalFileOpener.openerToken = randomUUID();
+    }
     if (
       process.platform === "win32" &&
       this.settings.windowsMcpRegistrationVersion !==
@@ -258,6 +349,12 @@ export default class MvSenceAiIdePlugin extends Plugin {
     );
     this.inlineCompletion = new InlineCompletionFeature(this);
     this.sourceAssist = new SourceAssistFeature(this);
+    this.externalFileOpener = new ExternalFileOpenerFeature({
+      app: this.app,
+      getSettings: () => this.settings,
+      getVaultRoot: () => getVaultRoot(this.app),
+      saveSettings: () => this.saveData(this.settings),
+    });
     this.toolRegistry = new ToolRegistry(
       this.app,
       (context) => this.latestSelectionFor(context),
@@ -367,11 +464,28 @@ export default class MvSenceAiIdePlugin extends Plugin {
       callback: () => this.activateCustomMarkdownFileCreation(false),
     });
 
+    this.addCommand({
+      id: "open-external-file",
+      name: "打开电脑上的文件",
+      callback: () => void this.openExternalFileViaDialog(),
+    });
+
+    this.addCommand({
+      id: "open-external-file-by-path",
+      name: "通过路径打开电脑上的文件",
+      callback: () => this.openExternalFileByPath(),
+    });
+
+    this.addCommand({
+      id: "prune-external-file-links",
+      name: "清理外部文件链接",
+      callback: () => void this.pruneExternalFileLinks(),
+    });
+
     this.llmFeature = new LlmFeature(this);
     this.llmFeature.registerCommands();
     this.llmFeature.registerMenus();
 
-    await this.syncLocalServices(false, false);
     this.schedulePostLayoutStartup();
     this.terminalTracker.scan();
     this.selectionHighlighter.sync(true);
@@ -569,6 +683,81 @@ export default class MvSenceAiIdePlugin extends Plugin {
       );
       const message = error instanceof Error ? error.message : String(error);
       new Notice(`创建 .${extension} 文件失败：${message}`);
+    }
+  }
+
+  private externalFileAllowedExtensions(): string[] {
+    return externalFileAllowedExtensions(this.settings);
+  }
+
+  private async openExternalFileViaDialog(): Promise<void> {
+    const dialog = this.nativeOpenDialog();
+    if (!dialog) {
+      new Notice("当前 Obsidian 环境无法打开系统文件选择器，请改用路径打开。");
+      this.openExternalFileByPath();
+      return;
+    }
+    const extensions = this.externalFileAllowedExtensions();
+    const result = await dialog.showOpenDialog({
+      properties: ["openFile"],
+      filters: [
+        { name: "SenceAI supported files", extensions },
+        { name: "All files", extensions: ["*"] },
+      ],
+    });
+    if (result.canceled || result.filePaths.length === 0) return;
+    await this.openExternalFile(result.filePaths[0]!);
+  }
+
+  private openExternalFileByPath(): void {
+    new ExternalFilePathModal(
+      this.app,
+      this.externalFileAllowedExtensions(),
+      (filePath) => {
+        void this.openExternalFile(filePath);
+      },
+    ).open();
+  }
+
+  private async openExternalFile(
+    filePath: string,
+    makeFrontmost = true,
+  ): Promise<void> {
+    const result = await this.externalFileOpener?.openExternalFile(filePath, {
+      makeFrontmost,
+    });
+    if (!result) {
+      new Notice("外部文件打开器尚未初始化。");
+      return;
+    }
+    if (!result.success) {
+      new Notice(`打开外部文件失败：${result.message ?? "未知错误"}`, 8000);
+    }
+  }
+
+  private async pruneExternalFileLinks(): Promise<void> {
+    const removed = await this.externalFileOpener?.pruneBrokenMappings();
+    new Notice(
+      removed && removed > 0
+        ? `已清理 ${removed} 个失效外部文件链接。`
+        : "没有需要清理的外部文件链接。",
+    );
+  }
+
+  private nativeOpenDialog(): NativeOpenDialog | null {
+    try {
+      const requireFn = (window as unknown as {
+        require?: (moduleName: string) => unknown;
+      }).require;
+      const electron = requireFn?.("electron") as
+        | {
+            remote?: { dialog?: NativeOpenDialog };
+            dialog?: NativeOpenDialog;
+          }
+        | undefined;
+      return electron?.remote?.dialog ?? electron?.dialog ?? null;
+    } catch {
+      return null;
     }
   }
 
@@ -785,8 +974,58 @@ export default class MvSenceAiIdePlugin extends Plugin {
     await this.saveData(this.settings);
   }
 
+  checkDefaultFileOpener(): DefaultOpenerStatus {
+    const status = this.externalFileOpenerSystem.check(getVaultRoot(this.app));
+    this.defaultFileOpenerStatus = status.message;
+    return status;
+  }
+
+  async installDefaultFileOpener(): Promise<void> {
+    if (!this.settings.externalFileOpener.enabled) {
+      this.settings.externalFileOpener.enabled = true;
+      await this.saveAndApplySettings();
+    }
+    const result = await this.externalFileOpenerSystem.install({
+      vaultRoot: getVaultRoot(this.app),
+      vaultName: this.vaultName(),
+      extensionMode: this.settings.externalFileOpener.extensionMode,
+      extensions: this.externalFileAllowedExtensions(),
+    });
+    this.defaultFileOpenerStatus = result.message;
+    if (result.ok) {
+      this.syncExternalFileOpenerRuntime();
+    }
+    new Notice(result.message, result.ok ? 4000 : 8000);
+  }
+
+  async cleanupDefaultFileOpener(): Promise<void> {
+    const result = await this.externalFileOpenerSystem.cleanup(getVaultRoot(this.app));
+    this.defaultFileOpenerStatus = result.message;
+    new Notice(result.message);
+  }
+
+  private syncExternalFileOpenerRuntime(): void {
+    const vaultRoot = getVaultRoot(this.app);
+    if (!this.settings.externalFileOpener.enabled || !this.port) {
+      this.externalFileOpenerSystem.removeRuntime(vaultRoot);
+      return;
+    }
+    this.externalFileOpenerSystem.writeRuntime({
+      vaultRoot,
+      vaultName: this.vaultName(),
+      port: this.port,
+      token: this.settings.externalFileOpener.openerToken,
+    });
+  }
+
+  private vaultName(): string {
+    const vault = this.app.vault as unknown as { getName?: () => string };
+    return vault.getName?.() || path.basename(getVaultRoot(this.app));
+  }
+
   private shouldRunLocalServer(): boolean {
     return (
+      this.settings.externalFileOpener.enabled ||
       this.settings.ideIntegrations.claudeCode ||
       (this.settings.ideIntegrations.codex && this.settings.mcpEnabled)
     );
@@ -817,6 +1056,7 @@ export default class MvSenceAiIdePlugin extends Plugin {
           ? "Codex MCP 等待启动后初始化"
           : "Codex MCP 未启用";
     }
+    this.syncExternalFileOpenerRuntime();
   }
 
   private async syncClaudeIntegration(notify = false): Promise<void> {
@@ -855,6 +1095,20 @@ export default class MvSenceAiIdePlugin extends Plugin {
       vaultRoot,
       settings: () => this.settings,
       upstreamBaseUrl: () => this.resolvedUpstream().url,
+      externalFileOpenerToken: () =>
+        this.settings.externalFileOpener.openerToken,
+      onExternalFileOpen: async (request) => {
+        const result = await this.externalFileOpener?.openExternalFile(
+          request.path,
+          { makeFrontmost: request.makeFrontmost },
+        );
+        return result ?? {
+          success: false,
+          externalPath: request.path,
+          vaultPath: null,
+          message: "外部文件打开器尚未初始化。",
+        };
+      },
       onMessage: (request, context) =>
         this.handleRequest(request, "ide", context),
       onMcpMessage: (request, context) =>
@@ -871,6 +1125,7 @@ export default class MvSenceAiIdePlugin extends Plugin {
 
   private async stopBridge(): Promise<void> {
     const port = this.port;
+    this.externalFileOpenerSystem.removeRuntime(getVaultRoot(this.app));
     this.port = 0;
     this.bridgeAuthToken = null;
     await this.server?.stop();
@@ -1144,6 +1399,8 @@ export default class MvSenceAiIdePlugin extends Plugin {
     if (this.unloaded) return;
     this.cleanupCodexRuntimeCacheBestEffort();
     await this.syncCodexIdeProvider();
+    if (this.unloaded) return;
+    await this.syncLocalServices(false, false);
     if (this.unloaded) return;
     this.scheduleCodexMcpRegistrationIfReady();
   }

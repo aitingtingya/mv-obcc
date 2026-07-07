@@ -19,6 +19,11 @@ interface BridgeServerOptions {
   vaultRoot: string;
   settings: () => BridgeSettings;
   upstreamBaseUrl: () => string;
+  externalFileOpenerToken?: () => string;
+  onExternalFileOpen?: (
+    request: { path: string; makeFrontmost: boolean },
+    context: BridgeClientContext,
+  ) => Promise<unknown>;
   onMessage: (
     request: JsonRpcRequest,
     context: BridgeClientContext,
@@ -219,6 +224,10 @@ export class BridgeServer {
       await this.handleMcpHttp(request, response);
       return;
     }
+    if (pathname === "/external-file/open") {
+      await this.handleExternalFileOpenHttp(request, response);
+      return;
+    }
 
     const settings = this.options.settings();
     const upstreamBaseUrl = this.options.upstreamBaseUrl().trim();
@@ -276,6 +285,91 @@ export class BridgeServer {
             type: "mv_senceai_proxy_error",
             message: "MV SenceAI IDE compatibility proxy failed.",
           },
+        }),
+      );
+    }
+  }
+
+  private async handleExternalFileOpenHttp(
+    request: IncomingMessage,
+    response: ServerResponse,
+  ): Promise<void> {
+    if (!this.options.onExternalFileOpen || !this.options.externalFileOpenerToken) {
+      response.writeHead(404, { "content-type": "application/json" });
+      response.end(JSON.stringify({ error: "External file opener is disabled." }));
+      return;
+    }
+    if (request.method !== "POST") {
+      response.writeHead(405, {
+        allow: "POST",
+        "content-type": "application/json",
+      });
+      response.end(JSON.stringify({ error: "Method not allowed" }));
+      return;
+    }
+    if (
+      request.headers.authorization !==
+      `Bearer ${this.options.externalFileOpenerToken()}`
+    ) {
+      response.writeHead(401, { "content-type": "application/json" });
+      response.end(JSON.stringify({ error: "Unauthorized" }));
+      return;
+    }
+
+    const chunks: Buffer[] = [];
+    let size = 0;
+    for await (const chunk of request) {
+      const buffer = Buffer.from(chunk);
+      size += buffer.length;
+      if (size > 64 * 1024) {
+        response.writeHead(413, { "content-type": "application/json" });
+        response.end(JSON.stringify({ error: "Request too large" }));
+        return;
+      }
+      chunks.push(buffer);
+    }
+
+    let body: unknown;
+    try {
+      body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    } catch {
+      response.writeHead(400, { "content-type": "application/json" });
+      response.end(JSON.stringify({ error: "Parse error" }));
+      return;
+    }
+    const pathValue =
+      body && typeof body === "object" && "path" in body
+        ? (body as { path?: unknown }).path
+        : undefined;
+    if (typeof pathValue !== "string" || pathValue.trim() === "") {
+      response.writeHead(400, { "content-type": "application/json" });
+      response.end(JSON.stringify({ error: "Missing path." }));
+      return;
+    }
+    const makeFrontmost =
+      body && typeof body === "object" && "makeFrontmost" in body
+        ? (body as { makeFrontmost?: unknown }).makeFrontmost !== false
+        : true;
+
+    try {
+      const result = await this.options.onExternalFileOpen(
+        { path: pathValue, makeFrontmost },
+        { clientId: randomUUID(), channel: "ide" },
+      );
+      const failed =
+        result !== null &&
+        typeof result === "object" &&
+        "success" in result &&
+        (result as { success?: unknown }).success === false;
+      response.writeHead(failed ? 422 : 200, {
+        "content-type": "application/json",
+      });
+      response.end(JSON.stringify(result));
+    } catch (error) {
+      response.writeHead(500, { "content-type": "application/json" });
+      response.end(
+        JSON.stringify({
+          error: error instanceof Error ? error.message : "Internal error",
         }),
       );
     }
