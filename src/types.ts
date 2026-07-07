@@ -226,25 +226,6 @@ export interface SourceAssistSettings {
   profiles: SourceAssistProfile[];
 }
 
-export type ExternalFileOpenerExtensionMode =
-  | "markdown-only"
-  | "markdown-and-source-assist";
-
-export interface ExternalFileMapping {
-  externalPath: string;
-  vaultPath: string;
-  createdAt: number;
-  extension: string;
-}
-
-export interface ExternalFileOpenerSettings {
-  enabled: boolean;
-  extensionMode: ExternalFileOpenerExtensionMode;
-  mirrorFolder: string;
-  mappings: Record<string, ExternalFileMapping>;
-  openerToken: string;
-}
-
 export type TerminalThemeMode = "obsidian" | "light" | "dark" | "custom";
 
 export interface TerminalThemePalette {
@@ -295,7 +276,6 @@ export interface BridgeSettings {
   llm: LlmFeatureSettings;
   inlineCompletion: InlineCompletionSettings;
   sourceAssist: SourceAssistSettings;
-  externalFileOpener: ExternalFileOpenerSettings;
   mcpEnabled: boolean;
   mcpAuthToken: string;
   claudeExecutable: string;
