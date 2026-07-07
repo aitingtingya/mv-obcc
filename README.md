@@ -2,12 +2,13 @@
 
 **mv-SenceAI** 是一款专为 Obsidian 打造的 AI 笔记、科研、与终端桥接插件。它能够在您的本地代码环境、命令行工具与 Obsidian 知识库之间建立无缝的数据通道与操作体验。
 
-本插件包含五个相对独立的核心能力：
+本插件包含六个相对独立的核心能力：
 1. **IDE 桥接 (IDE Bridge)**：为 Claude Code 与 Codex CLI 提供 Obsidian 当前的上下文信息（如当前标签、选区内容）。Claude Code 侧支持标准 MCP 主动工具和差异审核（Diff）；Codex CLI 侧支持 `/ide` 上下文读取，并通过标准 MCP 使用 Obsidian 工具。
 2. **划词助手 (LLM Assistant)**：完全独立于 IDE 桥接的内置功能。允许您在 Obsidian 的各种视图（Markdown、PDF、Web Viewer）中选中文本后，通过自定义提示词直接流式调用 OpenAI 或 Anthropic 兼容的语言模型 API。
 3. **行内补全 (Inline Completion)**：在 Markdown 编辑器中显示 ghost text 续写建议，支持接受、取消、拒绝后重新生成，并可在左侧功能区一键启用/停用。
 4. **系统终端 (System Terminal)**：在 Obsidian 内部拉起全功能的本地系统终端（支持 macOS/Linux Shell 与 Windows ConPTY），支持与 Obsidian 双向联动，双击或 Ctrl+点击终端内文件路径可直接在编辑器中定位笔记。
 5. **源码编写辅助 (Source Assist)**：可将用户指定的非 `.md` 后缀注册为 Markdown view，按后缀分别配置 Latex Suite 风格 snippets，并提供新建非 MD 源码文件、源码高亮与可选 TeX 增强渲染。
+6. **默认文件打开器 (Default File Opener)**：可选地把 `.md` 及已启用的源码后缀注册到系统默认打开方式，通过本地 wrapper 唤醒指定 vault 并在 Obsidian 中打开 vault 外文件。
 
 ---
 
@@ -106,6 +107,12 @@
 - **屏蔽 Markdown inline 视觉污染**：除 `.tex` 外，自定义源码后缀会屏蔽常见 Markdown inline 视觉格式（如 `==高亮==`、`**加粗**`、`*斜体*`、`~~删除线~~`），减少源码显示污染；snippets 仍依赖 Markdown/CodeMirror 编辑器宿主运行。
 - **兼容性提醒**：将非 `.md` 后缀注册为 Markdown view 时，如果该后缀已被 Obsidian 或其它插件注册为其它 view，本插件会尝试解除原注册并改为 Markdown view；这可能影响其它插件对同后缀文件的打开方式。TeX 增强渲染也可能影响光标移动、折叠或其它编辑器插件兼容性，建议按需开启。
 
+### 6. 🗂️ 默认文件打开器
+- **手动启用**：在设置页“默认文件打开器”分区开启功能后，可选择“仅支持 md”或“支持扩展后缀名”。扩展后缀来自已启用的源码编写辅助 profile。
+- **检查、注入、清理**：检查按钮会区分“尚未由本插件注册”“已由其它 vault 注册”“当前 vault 已注册”。注入按钮不会覆盖已有本插件注册；如需切换 vault，请先清理再注入。
+- **vault 外文件访问**：该功能会读取您双击打开的 vault 外本地文件，并在当前 vault 的镜像目录创建 symlink，使 Obsidian 的 Markdown editor 可以编辑该文件。启用后插件会写入 `~/.mv-senceai/` 下的 wrapper 状态，并按系统平台修改默认打开方式。
+- **启动边界**：wrapper 只用于把系统文件打开请求转发给本地 Obsidian 插件服务。插件不会安装常驻后台守护进程；Obsidian 关闭时，wrapper 会先通过 Obsidian URL 唤醒目标 vault，再等待插件本地服务启动。
+
 ---
 
 ## Windows 系统 PTY 依赖手动安装指南
@@ -136,6 +143,7 @@
 > - **配置的隔离性**：划词助手、行内补全或系统终端的 API 调用/配置错误，**绝对不会**波及或影响 Claude Code / Codex CLI 桥接通道的稳定性。
 > - **桌面权限说明**：Claude Code 集成会读取和更新 Claude 项目配置与 IDE lock 文件；Codex 集成会创建本地 IPC socket，并在 `~/.codex/config.toml` 中维护本插件的 MCP 服务地址，均不会启动外部进程后台守护服务。
 > - **源码后缀兼容性**：源码编写辅助会将用户配置的非 `.md` 后缀注册为 Markdown view；若同后缀已由其它插件处理，可能改变该后缀文件的打开方式。
+> - **默认打开器权限**：默认文件打开器会访问 vault 外的本地文件，并在系统层注册 `.md` 或扩展后缀的默认打开方式。多 vault 同时注入会产生归属冲突，请用设置页的检查和清理按钮显式管理当前注册。
 
 ---
 
@@ -152,12 +160,13 @@
 
 **mv-SenceAI** is a desktop bridge and system terminal plugin connecting your local vaults, CLI tools, and development environment to Obsidian.
 
-This plugin provides five key capabilities:
+This plugin provides six key capabilities:
 1. **IDE Bridge**: Feeds contextual information (active tab, selections) from your vault to Claude Code and Codex CLI. Claude Code uses the existing IDE/MCP bridge; Codex CLI uses `/ide` context IPC plus standard MCP tools.
 2. **LLM Assistant (Selection Reader)**: A completely independent feature to call OpenAI or Anthropic compatible APIs directly from Obsidian views (Markdown, PDF, Web Viewer) using custom prompt templates, streaming responses into a floating output window.
 3. **Inline Completion**: A separate Markdown-only ghost-text completion module with accept, cancel, and reject/regenerate shortcuts, controllable via a ribbon toggle button.
 4. **System Terminal**: Spawns fully functional local system terminals (macOS/Linux Shell & Windows ConPTY) inside Obsidian, supporting automatic dark/light theme sync, customized fonts, and file path click-to-open integration.
 5. **Source Assist**: Registers configured non-`.md` extensions as Markdown views, routes Latex Suite-style snippets by file extension, and provides non-MD file creation, source highlighting, and optional TeX enhanced rendering.
+6. **Default File Opener**: Optionally registers `.md` and enabled source extensions as system file handlers, then opens external local files in the selected vault through a local wrapper.
 
 ---
 
@@ -256,6 +265,12 @@ You can install this plugin either **via the Community Plugin Store**, **manuall
 - **Markdown inline visual suppression**: Except for `.tex`, custom source extensions suppress common Markdown inline visual formatting such as `==highlight==`, `**bold**`, `*italic*`, and `~~strikethrough~~` to reduce source display pollution; snippets still rely on the Markdown/CodeMirror editor host.
 - **Compatibility note**: When a non-`.md` extension is registered as a Markdown view, mv-SenceAI may unregister an existing handler for the same extension and replace it with Markdown view handling. This can change how other plugins open files with that extension. TeX enhanced rendering is a custom Live Preview extension and may affect cursor movement, folding, or editor-plugin compatibility.
 
+### 6. 🗂️ Default File Opener
+- **Manual opt-in**: Enable "Default File Opener" in settings, then choose either Markdown-only handling or Markdown plus enabled Source Assist extensions.
+- **Check, install, cleanup**: The check button distinguishes unregistered, registered by another vault, and registered by the current vault. Install never overwrites an existing mv-SenceAI registration; use cleanup first when switching vault ownership.
+- **External file access**: This feature reads local files outside the vault when you open them from the operating system. It creates symlinks in the configured vault mirror folder so Obsidian's Markdown editor can edit those files, writes wrapper state under `~/.mv-senceai/`, and changes system file-handler registration for the selected extensions.
+- **Startup boundary**: The wrapper only forwards file-open requests to the local plugin service. It does not install a persistent background daemon; when Obsidian is closed, the wrapper wakes the target vault through an Obsidian URL and waits for the plugin service to start.
+
 ---
 
 ## Windows Manual PTY Dependency Installation Guide
@@ -286,6 +301,7 @@ Spawning terminals on Windows relies on Python and the `pywinpty` package. If th
 > - **Config Isolation**: LLM Assistant, Inline Completion, and System Terminal configurations are fully isolated and **will not** interfere with Claude Code or Codex CLI IDE bridges.
 > - **Permissions**: Integrated Claude Code and Codex CLI bridges manage project lock files, settings, and local Unix domain socket IPC; they do not start persistent background daemon processes.
 > - **Source Extension Compatibility**: Source Assist registers configured non-`.md` extensions as Markdown views. If another plugin already handles the same extension, its file-opening behavior may change.
+> - **Default Opener Permissions**: The Default File Opener accesses local files outside the vault and registers `.md` or configured source extensions as system file handlers. Multiple vaults cannot own the same mv-SenceAI registration at once; manage ownership explicitly with the settings check and cleanup buttons.
 
 ---
 
