@@ -25,10 +25,7 @@ export class TerminalView extends ItemView {
   private stderrDecoder: StringDecoder | null = null;
   private resizeObserver: ResizeObserver | null = null;
   private themeObserver: MutationObserver | null = null;
-  private userScrolledAt = 0;
   private _fitInProgress = false;
-  private _fitPending = false;
-  private _scrollTarget: number | null = null;
   private debounceFitTimer: NodeJS.Timeout | null = null;
   private appliedThemeSignature = "";
 
@@ -68,14 +65,15 @@ export class TerminalView extends ItemView {
     this.themeObserver = new MutationObserver(() => this.updateTheme());
     this.themeObserver.observe(document.body, { attributes: true, attributeFilter: ["class"] });
 
-    this.termHost?.addEventListener("wheel", () => {
-      this.userScrolledAt = Date.now();
-    }, { passive: true });
   }
 
   async onClose(): Promise<void> {
     this.resizeObserver?.disconnect();
     this.themeObserver?.disconnect();
+    if (this.debounceFitTimer) {
+      clearTimeout(this.debounceFitTimer);
+      this.debounceFitTimer = null;
+    }
     this.stopShell();
     this.term?.dispose();
     this.term = null;
@@ -195,6 +193,7 @@ export class TerminalView extends ItemView {
     });
 
     this.term.onResize(({ cols: c, rows: r }) => {
+      if (c < 10 || r < 3) return;
       if (this.proc && this.proc.stdin && !this.proc.killed) {
         this.proc.stdin.write(`\x1b]RESIZE;${c};${r}\x07`);
       }
@@ -386,32 +385,30 @@ export class TerminalView extends ItemView {
   }
 
   private debouncedFit() {
-    if (this.debounceFitTimer) clearTimeout(this.debounceFitTimer);
-    this.debounceFitTimer = setTimeout(() => this.fit(), 100);
+    if (this.debounceFitTimer) {
+      clearTimeout(this.debounceFitTimer);
+    }
+    this.debounceFitTimer = setTimeout(() => {
+      this.debounceFitTimer = null;
+      this.fit();
+    }, 100);
   }
 
   private fit() {
     if (!this.term || !this.fitAddon) return;
     if (this._fitInProgress) return;
+    const width = this.containerEl.clientWidth;
+    const height = this.containerEl.clientHeight;
+    if (width <= 0 || height <= 0) return;
+
+    const dimensions = this.fitAddon.proposeDimensions();
+    if (!dimensions || dimensions.cols < 10 || dimensions.rows < 3) return;
+
     this._fitInProgress = true;
     try {
-      const buffer = this.term.buffer.active;
-      const userScrolled = Date.now() - this.userScrolledAt < 5000;
-      const wasAtBottom = !userScrolled && buffer.baseY === buffer.viewportY;
-      const savedViewportY = this._fitPending && this._scrollTarget !== null
-        ? this._scrollTarget
-        : buffer.viewportY;
-      
-      this._fitPending = false;
-      this._scrollTarget = null;
       this.fitAddon.fit();
-      
-      if (wasAtBottom) {
-        this.term.scrollToBottom();
-      } else if (buffer.viewportY !== savedViewportY) {
-        this.term.scrollToLine(savedViewportY);
-      }
-    } catch (_) {}
-    this._fitInProgress = false;
+    } finally {
+      this._fitInProgress = false;
+    }
   }
 }

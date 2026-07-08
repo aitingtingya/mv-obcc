@@ -96,7 +96,7 @@ export const DEFAULT_SETTINGS: LatexSuitePluginSettings = {
 	mathPreviewPositionIsAbove: true,
 	mathPreviewCursor: "▶",
 	mathPreviewBracketHighlighting: false,
-	autofractionEnabled: true,
+	autofractionEnabled: false,
 	autofractionSymbol: "\\frac",
 	autofractionBreakingChars: "+-=\t",
 	matrixShortcutsEnabled: true,
