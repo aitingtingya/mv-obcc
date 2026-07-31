@@ -3,7 +3,7 @@
   "name": "mv-AIDE",
   "version": "0.9.0",
   "minAppVersion": "1.7.2",
-  "description": "AI IDE for Obsidian: bridges Claude Code, Codex CLI and universal MCP agents to your vault, with integrated terminal, inline completion, selection assistant, source authoring aids and a system default file opener.",
+  "description": "AI IDE for your vault: bridges Claude Code, Codex CLI and universal MCP agents, with integrated terminal, inline completion, selection assistant, source authoring aids and a system default file opener.",
   "author": "MV",
   "isDesktopOnly": true
 }

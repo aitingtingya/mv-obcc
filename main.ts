@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import { createRequire } from "node:module";
+import os from "node:os";
 import path from "node:path";
 import {
   editorInfoField,
@@ -1835,10 +1836,11 @@ export default class MvSenceAiIdePlugin extends Plugin {
   }
 
   private universalMcpRuntimeDescriptorPath(): string {
+    // 运行时生成物不得写入插件安装目录（官方行为检查会将"写自身插件
+    // 目录"判为自更新，且插件更新/同步会覆盖该目录），放系统临时目录。
     return path.join(
-      this.pluginInstallDirectory(),
-      "tmp",
-      "universal-mcp",
+      os.tmpdir(),
+      `mv-aide-universal-mcp-${stablePortSeed(getVaultRoot(this.app))}`,
       "runtime.json",
     );
   }
