@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { t } from "./i18n";
 import childProcess from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
@@ -77,7 +78,7 @@ class ExternalFileSymlinkFallbackRequiredError extends Error {
   constructor(readonly failure: FileSymlinkFailure) {
     super(
       `${describeFileSymlinkFailure(failure)} ` +
-        "可重新检测符号链接，或明确选择受管临时副本后重试。",
+        t("可重新检测符号链接，或明确选择受管临时副本后重试。"),
     );
     this.name = "ExternalFileSymlinkFallbackRequiredError";
   }
@@ -214,10 +215,10 @@ export function isAbsoluteExternalPath(filePath: string): boolean {
 
 export function normalizeExternalFilePath(filePath: string): string {
   const trimmed = filePath.trim();
-  if (!trimmed) throw new Error("外部文件路径为空。");
+  if (!trimmed) throw new Error(t("外部文件路径为空。"));
   const resolved = trimmed.startsWith("file://") ? fileURLToPath(trimmed) : trimmed;
   if (!isAbsoluteExternalPath(resolved)) {
-    throw new Error("外部文件路径必须是绝对路径。");
+    throw new Error(t("外部文件路径必须是绝对路径。"));
   }
   return process.platform === "win32"
     ? path.win32.normalize(resolved)
@@ -561,7 +562,7 @@ export class ExternalFileOpenerFeature {
     try {
       const settings = this.options.getSettings();
       if (!settings.externalFileOpener.enabled) {
-        throw new Error("默认文件打开器已关闭。");
+        throw new Error(t("默认文件打开器已关闭。"));
       }
 
       // 冷启动时协议调用可能先于布局恢复到达；等布局就绪后再查找已打开
@@ -572,12 +573,12 @@ export class ExternalFileOpenerFeature {
       externalPath = normalizeExternalFilePath(rawExternalPath);
       if (!isExternalFileExtensionAllowed(settings, externalPath)) {
         throw new Error(
-          `不支持该后缀：.${normalizeExternalFileExtension(externalPath) || "unknown"}`,
+          t("不支持该后缀：.{v0}", { v0: normalizeExternalFileExtension(externalPath) || "unknown" }),
         );
       }
 
       const stat = fs.statSync(externalPath);
-      if (!stat.isFile()) throw new Error("只能打开文件，不能打开文件夹。");
+      if (!stat.isFile()) throw new Error(t("只能打开文件，不能打开文件夹。"));
 
       const directVaultPath = windowsVaultRelativeFilePath(
         this.options.getVaultRoot(),
@@ -591,8 +592,8 @@ export class ExternalFileOpenerFeature {
       if (!file) {
         throw new Error(
           directVaultPath
-            ? `Obsidian 尚未索引仓库内文件：${vaultPath}`
-            : `Obsidian 尚未索引镜像文件：${vaultPath}`,
+            ? t("Obsidian 尚未索引仓库内文件：{v0}", { v0: vaultPath })
+            : t("Obsidian 尚未索引镜像文件：{v0}", { v0: vaultPath }),
         );
       }
 
@@ -788,7 +789,7 @@ export class ExternalFileOpenerFeature {
         !mapping.vaultPath.trim()
       ) {
         this.reportManagedCopyError(new Error(
-          `本机受管临时副本映射 ${storageKey} 的路径字段无效，已跳过恢复。`,
+          t("本机受管临时副本映射 {v0} 的路径字段无效，已跳过恢复。", { v0: storageKey }),
         ));
         continue;
       }
@@ -802,7 +803,7 @@ export class ExternalFileOpenerFeature {
       }
       if (Object.prototype.hasOwnProperty.call(settings.mappings, expectedKey)) {
         this.reportManagedCopyError(new Error(
-          `无法迁移旧版受管临时副本映射 ${storageKey}：本机隔离键已被占用。已保留原状态且未自动恢复。`,
+          t("无法迁移旧版受管临时副本映射 {v0}：本机隔离键已被占用。已保留原状态且未自动恢复。", { v0: storageKey }),
         ));
         continue;
       }
@@ -832,7 +833,7 @@ export class ExternalFileOpenerFeature {
         if (!reportedDuplicateIdentities.has(identity)) {
           reportedDuplicateIdentities.add(identity);
           this.reportManagedCopyError(new Error(
-            `发现多个本机受管临时副本映射：${mapping.externalPath}。已拒绝自动恢复，未覆盖任何状态。`,
+            t("发现多个本机受管临时副本映射：{v0}。已拒绝自动恢复，未覆盖任何状态。", { v0: mapping.externalPath }),
           ));
         }
         continue;
@@ -983,7 +984,7 @@ export class ExternalFileOpenerFeature {
         mapping.managedCopy && isManagedCopyOwnedByScope(mapping.managedCopy, scope!));
       if (localEntries.length > 1) {
         throw new Error(
-          `发现多个本机受管临时副本映射：${externalPath}。已拒绝自动选择，未覆盖任何状态。`,
+          t("发现多个本机受管临时副本映射：{v0}。已拒绝自动选择，未覆盖任何状态。", { v0: externalPath }),
         );
       }
       if (localEntries.length === 1) {
@@ -1057,7 +1058,7 @@ export class ExternalFileOpenerFeature {
     };
     const storageKey = managedCopyMappingStorageKey(scope.scopeKey, externalPath);
     if (Object.prototype.hasOwnProperty.call(settings.mappings, storageKey)) {
-      throw new Error("本机受管临时副本的持久化键已被占用，未覆盖现有映射。");
+      throw new Error(t("本机受管临时副本的持久化键已被占用，未覆盖现有映射。"));
     }
     settings.mappings[storageKey] = mapping;
     this.startManagedCopyWatcher(storageKey, mapping, scope);
@@ -1066,7 +1067,7 @@ export class ExternalFileOpenerFeature {
 
   private managedCopyScope(): ManagedCopyScope {
     const hostId = this.options.getManagedCopyHostId?.().trim();
-    if (!hostId) throw new Error("无法读取本机受管临时副本标识。");
+    if (!hostId) throw new Error(t("无法读取本机受管临时副本标识。"));
     return resolveManagedCopyScope({
       hostId,
       vaultRoot: this.options.getVaultRoot(),
@@ -1079,7 +1080,7 @@ export class ExternalFileOpenerFeature {
     scope: ManagedCopyScope,
   ): Promise<void> {
     if (!mapping.managedCopy) {
-      throw new Error("本机受管临时副本映射缺少同步状态。");
+      throw new Error(t("本机受管临时副本映射缺少同步状态。"));
     }
     const restoredDuringStartup = await (
       this.managedCopyRestoreTask?.prioritize(mapping.externalPath) ?? false
@@ -1205,7 +1206,7 @@ export class ExternalFileOpenerFeature {
         return candidate;
       }
     }
-    throw new Error("无法为外部文件分配持久化映射键。");
+    throw new Error(t("无法为外部文件分配持久化映射键。"));
   }
 
   private disposeManagedCopyWatchersExcept(storageKeys: Set<string>): void {
@@ -1253,7 +1254,7 @@ export class ExternalFileOpenerFeature {
         return candidate;
       }
     }
-    throw new Error("无法为外部文件分配镜像路径。");
+    throw new Error(t("无法为外部文件分配镜像路径。"));
   }
 
 

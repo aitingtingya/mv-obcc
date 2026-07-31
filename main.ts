@@ -1,6 +1,5 @@
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
-import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import {
@@ -27,6 +26,11 @@ import {
 } from "@codemirror/view";
 import { isSelectedPageType } from "./src/activity-tracking";
 import { detectSystemNodeCommand } from "./src/universal-mcp-stdio-command";
+import {
+  UniversalMcpServer,
+  type UniversalMcpRuntimeDescriptor,
+} from "./src/universal-mcp";
+import stdioLauncherSource from "inline:dist/universal-mcp-stdio.cjs";
 import { BridgeServer } from "./src/bridge-server";
 import {
   applyManagedTerminalHooks,
@@ -50,6 +54,7 @@ import {
   rememberLatestSelection,
 } from "./src/context-cache";
 import { ObsidianDiffView } from "./src/diff-view";
+import { setLanguage, t, type Language } from "./src/i18n";
 import { TerminalView } from "./src/terminal/terminal-view";
 import { normalizeTerminalThemeSettings } from "./src/terminal/terminal-themes";
 import {
@@ -169,12 +174,7 @@ import type {
 } from "./src/types";
 
 type NewLeafSpecifier = PaneType | boolean;
-type UniversalMcpRuntimeModule = typeof import("./src/universal-mcp");
-type UniversalMcpServerInstance = InstanceType<
-  UniversalMcpRuntimeModule["UniversalMcpServer"]
->;
-type UniversalMcpRuntimeDescriptor =
-  import("./src/universal-mcp").UniversalMcpRuntimeDescriptor;
+type UniversalMcpServerInstance = InstanceType<typeof UniversalMcpServer>;
 
 interface UniversalMcpIdleHandle {
   kind: "idle" | "timeout";
@@ -202,11 +202,11 @@ class CustomMarkdownExtensionModal extends FuzzySuggestModal<string> {
     private readonly onChooseExtension: (extension: string) => void,
   ) {
     super(app);
-    this.setPlaceholder("选择要新建的文件后缀");
-    this.emptyStateText = "没有可用的自定义 Markdown 后缀";
+    this.setPlaceholder(t("选择要新建的文件后缀"));
+    this.emptyStateText = t("没有可用的自定义 Markdown 后缀");
     this.setInstructions([
-      { command: "↵", purpose: "新建对应后缀文件" },
-      { command: "esc", purpose: "取消" },
+      { command: "↵", purpose: t("新建对应后缀文件") },
+      { command: "esc", purpose: t("取消") },
     ]);
   }
 
@@ -237,13 +237,15 @@ class ExternalFilePathModal extends Modal {
   onOpen(): void {
     const { contentEl } = this;
     contentEl.empty();
-    contentEl.createEl("h3", { text: "通过路径打开电脑上的文件" });
+    contentEl.createEl("h3", { text: t("通过路径打开电脑上的文件") });
     contentEl.createEl("p", {
-      text: `支持后缀：${this.allowedExtensions.map((ext) => `.${ext}`).join("、")}`,
+      text: t("支持后缀：{extensions}", {
+        extensions: this.allowedExtensions.map((ext) => `.${ext}`).join("、"),
+      }),
       cls: "setting-item-description",
     });
     const setting = new Setting(contentEl)
-      .setName("文件路径")
+      .setName(t("文件路径"))
       .addText((text) => {
         text
           .setPlaceholder("/absolute/path/file.md")
@@ -261,10 +263,10 @@ class ExternalFilePathModal extends Modal {
     });
     new Setting(contentEl)
       .addButton((button) =>
-        button.setButtonText("打开").setCta().onClick(() => this.submit()),
+        button.setButtonText(t("打开")).setCta().onClick(() => this.submit()),
       )
       .addButton((button) =>
-        button.setButtonText("取消").onClick(() => this.close()),
+        button.setButtonText(t("取消")).onClick(() => this.close()),
       );
     input?.focus();
   }
@@ -272,7 +274,7 @@ class ExternalFilePathModal extends Modal {
   private submit(): void {
     const value = this.pathValue.trim();
     if (!value) {
-      new Notice("请输入外部文件绝对路径。");
+      new Notice(t("请输入外部文件绝对路径。"));
       return;
     }
     this.onSubmitPath(value);
@@ -296,34 +298,34 @@ class ManagedCopyConflictModal extends Modal {
   onOpen(): void {
     const { contentEl } = this;
     contentEl.empty();
-    contentEl.createEl("h3", { text: "外部文件出现双边修改" });
+    contentEl.createEl("h3", { text: t("外部文件出现双边修改") });
     contentEl.createEl("p", {
-      text: "外部原文件和 Obsidian 中的受管临时副本都已修改。为防止覆盖，本插件已暂停自动同步，请选择保留哪一侧。",
+      text: t("外部原文件和 Obsidian 中的受管临时副本都已修改。为防止覆盖，本插件已暂停自动同步，请选择保留哪一侧。"),
       cls: "setting-item-description",
     });
     contentEl.createEl("p", {
-      text: `外部文件：${this.conflict.state.externalPath}`,
+      text: t("外部文件：{path}", { path: this.conflict.state.externalPath }),
       cls: "setting-item-description",
     });
     contentEl.createEl("p", {
-      text: `Vault 副本：${this.conflict.state.vaultPath}`,
+      text: t("Vault 副本：{path}", { path: this.conflict.state.vaultPath }),
       cls: "setting-item-description",
     });
     new Setting(contentEl)
       .addButton((button) =>
         button
-          .setButtonText("保留外部文件")
+          .setButtonText(t("保留外部文件"))
           .setCta()
           .onClick(() => void this.choose("external")),
       )
       .addButton((button) =>
         button
-          .setButtonText("保留 Obsidian 副本")
+          .setButtonText(t("保留 Obsidian 副本"))
           .onClick(() => void this.choose("copy")),
       )
       .addButton((button) =>
         button
-          .setButtonText("稍后处理")
+          .setButtonText(t("稍后处理"))
           .onClick(() => void this.choose("later")),
       );
   }
@@ -339,15 +341,17 @@ class ManagedCopyConflictModal extends Modal {
     try {
       const result = await this.resolveConflict(choice);
       if (result.status === "resolved-external") {
-        new Notice("已保留外部文件，并更新 Obsidian 受管副本。");
+        new Notice(t("已保留外部文件，并更新 Obsidian 受管副本。"));
       } else if (result.status === "resolved-copy") {
-        new Notice("已保留 Obsidian 副本，并安全写回外部文件。");
+        new Notice(t("已保留 Obsidian 副本，并安全写回外部文件。"));
       } else if (result.status === "stale") {
-        new Notice("选择期间文件再次变化；本次未覆盖任何一侧，请重新处理。", 8000);
+        new Notice(t("选择期间文件再次变化；本次未覆盖任何一侧，请重新处理。"), 8000);
       }
     } catch (error) {
       new Notice(
-        `受管副本冲突处理失败：${error instanceof Error ? error.message : String(error)}`,
+        t("受管副本冲突处理失败：{message}", {
+          message: error instanceof Error ? error.message : String(error),
+        }),
         8000,
       );
     }
@@ -365,10 +369,10 @@ function customMarkdownHighlightRefreshRequested(update: ViewUpdate): boolean {
 export default class MvSenceAiIdePlugin extends Plugin {
   settings: BridgeSettings = { ...DEFAULT_SETTINGS };
   port = 0;
-  mcpStatus = "尚未检查";
-  codexMcpStatus = "Codex MCP 未启用";
-  universalMcpStatus = "mv-AIDE 协议未启用";
-  defaultFileOpenerStatus = "尚未检查";
+  mcpStatus = t("尚未检查");
+  codexMcpStatus = t("Codex MCP 未启用");
+  universalMcpStatus = t("mv-AIDE 协议未启用");
+  defaultFileOpenerStatus = t("尚未检查");
   claudeIdeError: string | null = null;
   codexIdeError: string | null = null;
   private server: BridgeServer | null = null;
@@ -397,7 +401,6 @@ export default class MvSenceAiIdePlugin extends Plugin {
   private codexMcpRegistrationInFlight: Promise<void> | null = null;
   private postLayoutStartup: PostLayoutStartupHandle | null = null;
   private fileTypeIconView: FileTypeIconView | null = null;
-  private universalMcpRuntimeModule: UniversalMcpRuntimeModule | null = null;
   private universalMcpServer: UniversalMcpServerInstance | null = null;
   private universalMcpDescriptor: UniversalMcpRuntimeDescriptor | null = null;
   private universalMcpIdleHandle: UniversalMcpIdleHandle | null = null;
@@ -414,6 +417,9 @@ export default class MvSenceAiIdePlugin extends Plugin {
   private registeredCustomMarkdownExtensions = new Set<string>();
   private ownedCustomMarkdownExtensions = new Set<string>();
   private readonly registeredCustomMarkdownCommandIds = new Set<string>();
+  private readonly registeredStaticCommandIds = new Set<string>();
+  private terminalRibbonIcon: HTMLElement | null = null;
+  private customMarkdownRibbonIcon: HTMLElement | null = null;
   private customMarkdownPrism: PrismLike | null = null;
   private customMarkdownPrismLoadStarted = false;
   private readonly customMarkdownHighlightEditorViews = new Set<EditorView>();
@@ -479,9 +485,10 @@ export default class MvSenceAiIdePlugin extends Plugin {
         },
       },
     });
+    setLanguage(this.settings.language ?? "zh");
     this.universalMcpStatus = this.settings.universalMcp.enabled
-      ? "等待 Obsidian 启动完成"
-      : "mv-AIDE 协议未启用";
+      ? t("等待 Obsidian 启动完成")
+      : t("mv-AIDE 协议未启用");
     if (!this.settings.externalFileOpener.openerToken) {
       this.settings.externalFileOpener.openerToken = randomUUID();
     }
@@ -529,7 +536,10 @@ export default class MvSenceAiIdePlugin extends Plugin {
           "[mv-aide] Managed-copy synchronization failed.",
           error,
         );
-        new Notice(`受管临时副本同步失败：${message}`, 8000);
+        new Notice(
+          t("受管临时副本同步失败：{message}", { message }),
+          8000,
+        );
       },
     });
     this.toolRegistry = new ToolRegistry(
@@ -582,7 +592,7 @@ export default class MvSenceAiIdePlugin extends Plugin {
         this.inlineCompletion?.tick();
         if (
           this.settings.activityTracking.supportAllActivePages ||
-          this.app.workspace.activeLeaf?.view.getViewType() === "webviewer"
+          this.app.workspace.getMostRecentLeaf()?.view.getViewType() === "webviewer"
         ) {
           this.scheduleBroadcast();
         }
@@ -605,61 +615,23 @@ export default class MvSenceAiIdePlugin extends Plugin {
       }),
     );
     void this.loadCustomMarkdownPrism();
-    this.addCommand({
-      id: "send-selection-to-claude-code",
-      name: "Send current selection to Claude Code",
-      editorCallback: () => {
-        const state = currentSelection(this.app);
-        if (state) {
-          const mention = atMentionedParams(state);
-          this.universalLatestMention = mention;
-          this.server?.broadcast({
-            jsonrpc: "2.0",
-            method: "at_mentioned",
-            params: mention,
-          });
-          this.universalMcpServer?.publishBridgeEvent("at_mentioned", mention);
-        }
+    this.registerStaticCommands();
+
+    this.terminalRibbonIcon = this.addRibbonIcon(
+      "terminal",
+      t("打开系统终端"),
+      () => {
+        this.activateTerminalView();
       },
-    });
+    );
 
-    this.addRibbonIcon("terminal", "打开系统终端", () => {
-      this.activateTerminalView();
-    });
-
-    this.addRibbonIcon("file-plus", "新建非 MD 源码文件", (evt) => {
-      this.activateCustomMarkdownFileCreation(Keymap.isModEvent(evt));
-    });
-
-    this.addCommand({
-      id: "open-system-terminal",
-      name: "Open System Terminal (打开系统终端)",
-      callback: () => this.activateTerminalView(),
-    });
-
-    this.addCommand({
-      id: "new-custom-markdown-file",
-      name: "新建非 MD 源码文件",
-      callback: () => this.activateCustomMarkdownFileCreation(false),
-    });
-
-    this.addCommand({
-      id: "open-external-file",
-      name: "打开电脑上的文件",
-      callback: () => void this.openExternalFileViaDialog(),
-    });
-
-    this.addCommand({
-      id: "open-external-file-by-path",
-      name: "通过路径打开电脑上的文件",
-      callback: () => this.openExternalFileByPath(),
-    });
-
-    this.addCommand({
-      id: "prune-external-file-links",
-      name: "清理外部文件链接",
-      callback: () => void this.pruneExternalFileLinks(),
-    });
+    this.customMarkdownRibbonIcon = this.addRibbonIcon(
+      "file-plus",
+      t("新建非 MD 源码文件"),
+      (evt) => {
+        this.activateCustomMarkdownFileCreation(Keymap.isModEvent(evt));
+      },
+    );
 
     this.llmFeature = new LlmFeature(this);
     this.llmFeature.registerCommands();
@@ -791,6 +763,130 @@ export default class MvSenceAiIdePlugin extends Plugin {
     await this.sourceAssist?.settingsChanged();
   }
 
+  private registerStaticCommands(): void {
+    for (const id of this.registeredStaticCommandIds) {
+      this.removeCommand(id);
+    }
+    this.registeredStaticCommandIds.clear();
+
+    this.addCommand({
+      id: "send-selection-to-claude-code",
+      name: t("发送当前选中内容到 Claude Code"),
+      editorCallback: () => {
+        const state = currentSelection(this.app);
+        if (state) {
+          const mention = atMentionedParams(state);
+          this.universalLatestMention = mention;
+          this.server?.broadcast({
+            jsonrpc: "2.0",
+            method: "at_mentioned",
+            params: mention,
+          });
+          this.universalMcpServer?.publishBridgeEvent("at_mentioned", mention);
+        }
+      },
+    });
+    this.registeredStaticCommandIds.add("send-selection-to-claude-code");
+
+    this.addCommand({
+      id: "open-system-terminal",
+      name: t("打开系统终端"),
+      callback: () => this.activateTerminalView(),
+    });
+    this.registeredStaticCommandIds.add("open-system-terminal");
+
+    this.addCommand({
+      id: "new-custom-markdown-file",
+      name: t("新建非 MD 源码文件"),
+      callback: () => this.activateCustomMarkdownFileCreation(false),
+    });
+    this.registeredStaticCommandIds.add("new-custom-markdown-file");
+
+    this.addCommand({
+      id: "open-external-file",
+      name: t("打开电脑上的文件"),
+      callback: () => void this.openExternalFileViaDialog(),
+    });
+    this.registeredStaticCommandIds.add("open-external-file");
+
+    this.addCommand({
+      id: "open-external-file-by-path",
+      name: t("通过路径打开电脑上的文件"),
+      callback: () => this.openExternalFileByPath(),
+    });
+    this.registeredStaticCommandIds.add("open-external-file-by-path");
+
+    this.addCommand({
+      id: "prune-external-file-links",
+      name: t("清理外部文件链接"),
+      callback: () => void this.pruneExternalFileLinks(),
+    });
+    this.registeredStaticCommandIds.add("prune-external-file-links");
+  }
+
+  /**
+   * Switch the plugin UI language. Only invoked when the user toggles the
+   * language in settings; re-registers commands and refreshes ribbon / view
+   * titles so the new language applies immediately.
+   */
+  async applyLanguage(lang: Language): Promise<void> {
+    if (this.settings.language === lang) {
+      await this.saveData(this.settings);
+      return;
+    }
+    this.settings.language = lang;
+    setLanguage(lang);
+    await this.saveData(this.settings);
+    this.refreshAllCommands();
+    this.refreshRibbonIcons();
+    this.llmFeature?.refreshRibbon();
+    this.inlineCompletion?.refreshRibbon();
+    this.refreshViewTitles();
+    this.refreshStatusTexts();
+  }
+
+  private refreshAllCommands(): void {
+    this.registerStaticCommands();
+    for (const id of Array.from(this.registeredCustomMarkdownCommandIds)) {
+      this.removeCommand(id);
+    }
+    this.registeredCustomMarkdownCommandIds.clear();
+    this.syncCustomMarkdownFileCommands();
+    this.llmFeature?.registerCommands();
+  }
+
+  private refreshRibbonIcons(): void {
+    const apply = (el: HTMLElement | null, title: string): void => {
+      if (!el) return;
+      el.setAttribute("aria-label", title);
+      el.setAttribute("data-tooltip", title);
+      el.setAttribute("title", title);
+    };
+    apply(this.terminalRibbonIcon, t("打开系统终端"));
+    apply(this.customMarkdownRibbonIcon, t("新建非 MD 源码文件"));
+  }
+
+  private refreshViewTitles(): void {
+    for (const leaf of this.app.workspace.getLeavesOfType(TERMINAL_VIEW_TYPE)) {
+      (leaf as unknown as { updateHeader?: () => void }).updateHeader?.();
+    }
+    for (const leaf of this.app.workspace.getLeavesOfType(DIFF_VIEW_TYPE)) {
+      (leaf as unknown as { updateHeader?: () => void }).updateHeader?.();
+      if (leaf.view instanceof ObsidianDiffView) leaf.view.refreshI18n();
+    }
+  }
+
+  private refreshStatusTexts(): void {
+    if (this.settings.ideIntegrations.claudeCode) {
+      this.scheduleMcpRegistration();
+    } else {
+      this.mcpStatus = t("Claude Code IDE 已关闭");
+    }
+    this.scheduleCodexMcpRegistrationIfReady();
+    this.scheduleUniversalMcpStart();
+    void this.checkDefaultFileOpener().catch(() => undefined);
+  }
+
   private customMarkdownExtensionRegistry(): MarkdownExtensionRegistry | null {
     return (this.app as unknown as { viewRegistry?: MarkdownExtensionRegistry }).viewRegistry ?? null;
   }
@@ -844,7 +940,7 @@ export default class MvSenceAiIdePlugin extends Plugin {
   ): void {
     const extensions = this.customMarkdownCreationExtensions();
     if (extensions.length === 0) {
-      new Notice("请先在“源码编写辅助”中添加源码类型。");
+      new Notice(t("请先在“源码编写辅助”中添加源码类型。"));
       return;
     }
 
@@ -881,7 +977,7 @@ export default class MvSenceAiIdePlugin extends Plugin {
         error,
       );
       const message = error instanceof Error ? error.message : String(error);
-      new Notice(`创建 .${extension} 文件失败：${message}`);
+      new Notice(t("创建 .{extension} 文件失败：{message}", { extension, message }));
     }
   }
 
@@ -892,7 +988,7 @@ export default class MvSenceAiIdePlugin extends Plugin {
   private async openExternalFileViaDialog(): Promise<void> {
     const dialog = this.nativeOpenDialog();
     if (!dialog) {
-      new Notice("当前 Obsidian 环境无法打开系统文件选择器，请改用路径打开。");
+      new Notice(t("当前 Obsidian 环境无法打开系统文件选择器，请改用路径打开。"));
       this.openExternalFileByPath();
       return;
     }
@@ -924,7 +1020,12 @@ export default class MvSenceAiIdePlugin extends Plugin {
   ): Promise<void> {
     const result = await this.openExternalFileWithConsent(filePath, makeFrontmost);
     if (!result.success) {
-      new Notice(`打开外部文件失败：${result.message ?? "未知错误"}`, 8000);
+      new Notice(
+        t("打开外部文件失败：{message}", {
+          message: result.message ?? t("未知错误"),
+        }),
+        8000,
+      );
     }
   }
 
@@ -938,7 +1039,7 @@ export default class MvSenceAiIdePlugin extends Plugin {
         success: false,
         externalPath: filePath,
         vaultPath: null,
-        message: "外部文件打开器尚未初始化。",
+        message: t("外部文件打开器尚未初始化。"),
       };
     }
     return await runExternalFileFallbackConsent({
@@ -986,8 +1087,8 @@ export default class MvSenceAiIdePlugin extends Plugin {
     const removed = await this.externalFileOpener?.pruneBrokenMappings();
     new Notice(
       removed && removed > 0
-        ? `已清理 ${removed} 个失效外部文件链接。`
-        : "没有需要清理的外部文件链接。",
+        ? t("已清理 {count} 个失效外部文件链接。", { count: removed })
+        : t("没有需要清理的外部文件链接。"),
     );
   }
 
@@ -1224,7 +1325,9 @@ export default class MvSenceAiIdePlugin extends Plugin {
       this.settings.claudeExecutable,
       getVaultRoot(this.app),
     );
-    this.mcpStatus = result.ok ? result.message : `清理失败：${result.message}`;
+    this.mcpStatus = result.ok
+      ? result.message
+      : t("清理失败：{message}", { message: result.message });
     if (result.ok) this.settings.registeredMcpUrl = null;
     await this.saveData(this.settings);
   }
@@ -1248,7 +1351,7 @@ export default class MvSenceAiIdePlugin extends Plugin {
       const result: DefaultOpenerOperationResult = {
         ok: false,
         status,
-        message: `${status.message} 如需更换 owner，请先清理默认打开方式。`,
+        message: `${status.message} ${t("如需更换 owner，请先清理默认打开方式。")}`,
         failureKind: "existing-owner",
       };
       this.defaultFileOpenerStatus = result.message;
@@ -1303,13 +1406,20 @@ export default class MvSenceAiIdePlugin extends Plugin {
       warnings: [],
     };
     if (summary.attempted === 0) {
-      new Notice("当前没有本机受管临时副本需要迁移。", 4000);
+      new Notice(t("当前没有本机受管临时副本需要迁移。"), 4000);
     } else if (summary.remaining === 0) {
-      new Notice(`已将 ${summary.migrated} 个受管临时副本安全迁移为真实符号链接。`, 5000);
+      new Notice(
+        t("已将 {count} 个受管临时副本安全迁移为真实符号链接。", {
+          count: summary.migrated,
+        }),
+        5000,
+      );
     } else {
       new Notice(
-        `已迁移 ${summary.migrated} 个；仍保留 ${summary.remaining} 个受管副本。` +
-          ` 未迁移项不会丢失内容，详情见控制台。`,
+        t("已迁移 {migrated} 个；仍保留 {remaining} 个受管副本。 未迁移项不会丢失内容，详情见控制台。", {
+          migrated: summary.migrated,
+          remaining: summary.remaining,
+        }),
         8000,
       );
       for (const failure of summary.failures) {
@@ -1325,11 +1435,11 @@ export default class MvSenceAiIdePlugin extends Plugin {
   async repairWindowsDeveloperMode(): Promise<boolean> {
     const result = await this.externalFileOpenerSystem.repairWindowsDeveloperMode();
     const messages = {
-      repaired: "已通过管理员权限启用并验证 Windows 开发者模式。",
-      "already-enabled": "Windows 开发者模式已经生效，将重新检测符号链接。",
-      "blocked-by-policy": "组织策略明确禁用了开发者模式，插件不会覆盖该策略。",
-      cancelled: "已取消管理员修复。",
-    } as const;
+      repaired: t("已通过管理员权限启用并验证 Windows 开发者模式。"),
+      "already-enabled": t("Windows 开发者模式已经生效，将重新检测符号链接。"),
+      "blocked-by-policy": t("组织策略明确禁用了开发者模式，插件不会覆盖该策略。"),
+      cancelled: t("已取消管理员修复。"),
+    };
     const message = messages[result.status as keyof typeof messages] ?? result.message;
     new Notice(message, result.ok ? 5000 : 8000);
     return result.ok;
@@ -1338,30 +1448,30 @@ export default class MvSenceAiIdePlugin extends Plugin {
   async openWindowsDeveloperSettings(): Promise<void> {
     try {
       await this.externalFileOpenerSystem.openWindowsDeveloperSettings();
-      new Notice("已打开 Windows 开发者设置。开启开发者模式后回到此处重新检测。");
+      new Notice(t("已打开 Windows 开发者设置。开启开发者模式后回到此处重新检测。"));
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      new Notice(`无法打开 Windows 开发者设置：${message}`, 8000);
+      new Notice(t("无法打开 Windows 开发者设置：{message}", { message }), 8000);
     }
   }
 
   async openWindowsDefaultAppsSettings(): Promise<void> {
     try {
       await this.externalFileOpenerSystem.openWindowsDefaultAppsSettings();
-      new Notice("已打开 Windows 默认应用设置，请为已注册后缀选择 MV AIDE File Opener。");
+      new Notice(t("已打开 Windows 默认应用设置，请为已注册后缀选择 MV AIDE File Opener。"));
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      new Notice(`无法打开 Windows 默认应用设置：${message}`, 8000);
+      new Notice(t("无法打开 Windows 默认应用设置：{message}", { message }), 8000);
     }
   }
 
   async openWindowsGenericDefaultAppsSettings(): Promise<void> {
     try {
       await this.externalFileOpenerSystem.openWindowsGenericDefaultAppsSettings();
-      new Notice("已打开 Windows 默认应用设置；如需更换已清理的默认项，请在系统界面选择其它应用。");
+      new Notice(t("已打开 Windows 默认应用设置；如需更换已清理的默认项，请在系统界面选择其它应用。"));
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      new Notice(`无法打开 Windows 默认应用设置：${message}`, 8000);
+      new Notice(t("无法打开 Windows 默认应用设置：{message}", { message }), 8000);
     }
   }
 
@@ -1448,8 +1558,8 @@ export default class MvSenceAiIdePlugin extends Plugin {
     } else {
       this.codexMcpStatus =
         this.settings.ideIntegrations.codex && this.settings.mcpEnabled
-          ? "Codex MCP 等待启动后初始化"
-          : "Codex MCP 未启用";
+          ? t("Codex MCP 等待启动后初始化")
+          : t("Codex MCP 未启用");
     }
     this.syncExternalFileOpenerRuntime();
   }
@@ -1460,7 +1570,7 @@ export default class MvSenceAiIdePlugin extends Plugin {
       if (this.bridgeHasClaudeLock && this.port) removeLockFile(this.port);
       this.bridgeHasClaudeLock = false;
       if (!this.settings.ideIntegrations.claudeCode) {
-        this.mcpStatus = "Claude Code IDE 已关闭";
+        this.mcpStatus = t("Claude Code IDE 已关闭");
         await this.restoreClaudeSettings();
       }
       return;
@@ -1499,7 +1609,9 @@ export default class MvSenceAiIdePlugin extends Plugin {
         );
         if (!result.success) {
           new Notice(
-            `打开外部文件失败：${result.message ?? "未知错误"}`,
+            t("打开外部文件失败：{message}", {
+              message: result.message ?? t("未知错误"),
+            }),
             8000,
           );
         }
@@ -1559,7 +1671,7 @@ export default class MvSenceAiIdePlugin extends Plugin {
     } catch (error) {
       console.warn("[mv-aide] Claude settings sync failed", error);
       if (notify) {
-        new Notice("Claude 设置同步失败，但插件已继续运行。详情见控制台。");
+        new Notice(t("Claude 设置同步失败，但插件已继续运行。详情见控制台。"));
       }
     }
   }
@@ -1669,13 +1781,13 @@ export default class MvSenceAiIdePlugin extends Plugin {
       this.settings.mcpEnabled &&
       this.settings.registeredMcpUrl === url
     ) {
-      this.mcpStatus = "MCP 已连接";
+      this.mcpStatus = t("MCP 已连接");
       return;
     }
 
     this.mcpStatus = this.settings.mcpEnabled
-      ? "MCP 后台检查中"
-      : "MCP 已关闭";
+      ? t("MCP 后台检查中")
+      : t("MCP 已关闭");
     this.mcpRegistrationTimer = activeWindow.setTimeout(() => {
       this.mcpRegistrationTimer = null;
       void this.runMcpRegistration(force);
@@ -1708,9 +1820,9 @@ export default class MvSenceAiIdePlugin extends Plugin {
       if (!this.unloaded) await this.saveData(this.settings);
     } catch (error) {
       console.warn("[mv-aide] MCP registration failed", error);
-      this.mcpStatus = `注册失败：${
-        error instanceof Error ? error.message : String(error)
-      }`;
+      this.mcpStatus = t("注册失败：{message}", {
+        message: error instanceof Error ? error.message : String(error),
+      });
       if (!this.unloaded) await this.saveData(this.settings);
     }
   }
@@ -1719,8 +1831,8 @@ export default class MvSenceAiIdePlugin extends Plugin {
     this.clearScheduledCodexMcpRegistration();
     this.codexMcpStatus =
       this.settings.ideIntegrations.codex && this.settings.mcpEnabled
-        ? "Codex MCP 后台检查中"
-        : "Codex MCP 未启用";
+        ? t("Codex MCP 后台检查中")
+        : t("Codex MCP 未启用");
     this.codexMcpRegistrationTimer = activeWindow.setTimeout(() => {
       this.codexMcpRegistrationTimer = null;
       void this.runCodexMcpRegistration();
@@ -1748,14 +1860,14 @@ export default class MvSenceAiIdePlugin extends Plugin {
     if (!this.settings.ideIntegrations.codex || !this.settings.mcpEnabled) {
       const result = await removeCodexMcpRegistration();
       this.codexMcpStatus = result.ok
-        ? "Codex MCP 未启用"
-        : `Codex MCP 清理失败：${result.message}`;
+        ? t("Codex MCP 未启用")
+        : t("Codex MCP 清理失败：{message}", { message: result.message });
       return;
     }
 
     const url = this.currentMcpUrl();
     if (!url) {
-      this.codexMcpStatus = "Codex MCP 等待本地服务";
+      this.codexMcpStatus = t("Codex MCP 等待本地服务");
       return;
     }
 
@@ -1765,7 +1877,7 @@ export default class MvSenceAiIdePlugin extends Plugin {
     );
     this.codexMcpStatus = result.ok
       ? result.message
-      : `Codex MCP 配置失败：${result.message}`;
+      : t("Codex MCP 配置失败：{message}", { message: result.message });
   }
 
   private currentMcpUrl(): string | null {
@@ -1792,14 +1904,15 @@ export default class MvSenceAiIdePlugin extends Plugin {
     return this.universalMcpDescriptor !== null;
   }
 
-  getUniversalMcpStdioConfig(): string | null {
+  async getUniversalMcpStdioConfig(): Promise<string | null> {
     if (!this.universalMcpDescriptor) return null;
+    const launcherPath = await this.ensureUniversalMcpStdioLauncher();
     const nodeCommand = this.resolveUniversalMcpNodeCommand();
     const config: Record<string, unknown> = {
       type: "stdio",
       command: nodeCommand ?? process.execPath,
       args: [
-        path.join(this.pluginInstallDirectory(), "universal-mcp-stdio.cjs"),
+        launcherPath,
         "--runtime",
         this.universalMcpRuntimeDescriptorPath(),
       ],
@@ -1826,15 +1939,6 @@ export default class MvSenceAiIdePlugin extends Plugin {
     this.scheduleUniversalMcpStart();
   }
 
-  private pluginInstallDirectory(): string {
-    return path.join(
-      getVaultRoot(this.app),
-      this.app.vault.configDir,
-      "plugins",
-      this.manifest.id,
-    );
-  }
-
   private universalMcpRuntimeDescriptorPath(): string {
     // 运行时生成物不得写入插件安装目录（官方行为检查会将"写自身插件
     // 目录"判为自更新，且插件更新/同步会覆盖该目录），放系统临时目录。
@@ -1845,14 +1949,34 @@ export default class MvSenceAiIdePlugin extends Plugin {
     );
   }
 
-  private loadUniversalMcpRuntime(): UniversalMcpRuntimeModule {
-    if (this.universalMcpRuntimeModule) return this.universalMcpRuntimeModule;
-    const pluginDirectory = this.pluginInstallDirectory();
-    const requireFromPlugin = createRequire(path.join(pluginDirectory, "main.js"));
-    this.universalMcpRuntimeModule = requireFromPlugin(
-      path.join(pluginDirectory, "universal-mcp.cjs"),
-    ) as UniversalMcpRuntimeModule;
-    return this.universalMcpRuntimeModule;
+  private universalMcpStdioLauncherPath(): string {
+    return path.join(
+      path.dirname(this.universalMcpRuntimeDescriptorPath()),
+      "stdio-launcher.cjs",
+    );
+  }
+
+  /**
+   * 发布只随包 3 个标准文件（main.js/manifest.json/styles.css），stdio 启动
+   * 器以文本内嵌在 main.js 中，首次使用时物化到系统临时目录（规范三：不
+   * 得写入插件安装目录）。内容一致则直接复用。
+   */
+  private async ensureUniversalMcpStdioLauncher(): Promise<string> {
+    const launcherPath = this.universalMcpStdioLauncherPath();
+    try {
+      const existing = await fs.promises.readFile(launcherPath, "utf8");
+      if (existing === stdioLauncherSource) return launcherPath;
+    } catch {
+      // 不存在或不可读则重写。
+    }
+    await fs.promises.mkdir(path.dirname(launcherPath), {
+      recursive: true,
+      mode: 0o700,
+    });
+    const temporary = `${launcherPath}.${process.pid}.tmp`;
+    await fs.promises.writeFile(temporary, stdioLauncherSource, { mode: 0o755 });
+    await fs.promises.rename(temporary, launcherPath);
+    return launcherPath;
   }
 
   private async applyUniversalMcpSetting(): Promise<void> {
@@ -1866,20 +1990,22 @@ export default class MvSenceAiIdePlugin extends Plugin {
   private scheduleUniversalMcpStart(): void {
     this.cancelUniversalMcpIdleStart();
     if (!this.settings.universalMcp.enabled) {
-      this.universalMcpStatus = "mv-AIDE 协议未启用";
+      this.universalMcpStatus = t("mv-AIDE 协议未启用");
       return;
     }
     if (!this.universalMcpLayoutReady) {
-      this.universalMcpStatus = "等待 Obsidian 启动完成";
+      this.universalMcpStatus = t("等待 Obsidian 启动完成");
       return;
     }
     if (this.universalMcpServer?.isRunning) {
-      this.universalMcpStatus = `运行中：${this.universalMcpDescriptor?.httpUrl ?? "本机"}`;
+      this.universalMcpStatus = t("运行中：{url}", {
+        url: this.universalMcpDescriptor?.httpUrl ?? t("本机"),
+      });
       return;
     }
 
     const generation = ++this.universalMcpStartGeneration;
-    this.universalMcpStatus = "等待 Obsidian 空闲后启动";
+    this.universalMcpStatus = t("等待 Obsidian 空闲后启动");
     const run = () => {
       this.universalMcpIdleHandle = null;
       if (
@@ -1945,8 +2071,8 @@ export default class MvSenceAiIdePlugin extends Plugin {
         return;
       }
 
-      this.universalMcpStatus = "正在启动 mv-AIDE 协议服务";
-      const runtime = this.loadUniversalMcpRuntime();
+      this.universalMcpStatus = t("正在启动 mv-AIDE 协议服务");
+      await this.ensureUniversalMcpStdioLauncher();
       const vaultRoot = getVaultRoot(this.app);
       const preferredOffset = stablePortSeed(vaultRoot) % UNIVERSAL_MCP_PORT_SPAN;
       let lastPortError: unknown = null;
@@ -1955,7 +2081,7 @@ export default class MvSenceAiIdePlugin extends Plugin {
         const port =
           UNIVERSAL_MCP_PORT_BASE +
           ((preferredOffset + offset) % UNIVERSAL_MCP_PORT_SPAN);
-        const candidate = new runtime.UniversalMcpServer({
+        const candidate = new UniversalMcpServer({
           authToken: this.settings.universalMcp.authToken,
           runtimeDescriptorPath: this.universalMcpRuntimeDescriptorPath(),
           port,
@@ -2012,17 +2138,17 @@ export default class MvSenceAiIdePlugin extends Plugin {
               this.universalLatestMention,
             );
           }
-          this.universalMcpStatus = `运行中：${descriptor.httpUrl}`;
+          this.universalMcpStatus = t("运行中：{url}", { url: descriptor.httpUrl });
           return;
         } catch (error) {
           if ((error as NodeJS.ErrnoException).code !== "EADDRINUSE") throw error;
           lastPortError = error;
         }
       }
-      throw lastPortError ?? new Error("没有可用的本机 mv-AIDE 协议端口。");
+      throw lastPortError ?? new Error(t("没有可用的本机 mv-AIDE 协议端口。"));
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      this.universalMcpStatus = `启动失败：${message}`;
+      this.universalMcpStatus = t("启动失败：{message}", { message });
       console.error("[mv-aide] Universal MCP start failed", error);
     }
   }
@@ -2043,8 +2169,8 @@ export default class MvSenceAiIdePlugin extends Plugin {
       this.universalEditorsSignature = null;
       if (server) await server.stop();
       this.universalMcpStatus = this.settings.universalMcp.enabled
-        ? "等待 Obsidian 空闲后启动"
-        : "mv-AIDE 协议未启用";
+        ? t("等待 Obsidian 空闲后启动")
+        : t("mv-AIDE 协议未启用");
     };
     const inFlight = stop();
     this.universalMcpStopInFlight = inFlight;
@@ -2181,7 +2307,7 @@ export default class MvSenceAiIdePlugin extends Plugin {
     }).catch((error) => {
       if (this.unloaded) return;
       const message = error instanceof Error ? error.message : String(error);
-      this.defaultFileOpenerStatus = `Windows 打开器自动迁移失败：${message}`;
+      this.defaultFileOpenerStatus = t("Windows 打开器自动迁移失败：{message}", { message });
       console.warn("[mv-aide] Windows file opener migration failed", error);
       new Notice(this.defaultFileOpenerStatus, 8000);
     });
@@ -2189,7 +2315,7 @@ export default class MvSenceAiIdePlugin extends Plugin {
 
   private scheduleCodexMcpRegistrationIfReady(): void {
     if (this.settings.ideIntegrations.codex && this.codexIdeError) {
-      this.codexMcpStatus = "Codex MCP 等待启动后初始化";
+      this.codexMcpStatus = t("Codex MCP 等待启动后初始化");
       return;
     }
     this.scheduleCodexMcpRegistration();
@@ -2226,7 +2352,7 @@ export default class MvSenceAiIdePlugin extends Plugin {
       const code = (error as NodeJS.ErrnoException | undefined)?.code;
       this.codexIdeError =
         process.platform === "win32" && code === "EADDRINUSE"
-          ? "Codex IDE 通道已被其它 IDE 或仓库占用。"
+          ? t("Codex IDE 通道已被其它 IDE 或仓库占用。")
           : error instanceof Error
             ? error.message
             : String(error);
@@ -2349,7 +2475,7 @@ export default class MvSenceAiIdePlugin extends Plugin {
 
   private async syncMcpRegistration(force = false): Promise<void> {
     if (!this.settings.ideIntegrations.claudeCode) {
-      this.mcpStatus = "Claude Code IDE 已关闭";
+      this.mcpStatus = t("Claude Code IDE 已关闭");
       return;
     }
     if (!this.port) return;
@@ -2357,14 +2483,14 @@ export default class MvSenceAiIdePlugin extends Plugin {
       if (force || this.settings.registeredMcpUrl) {
         await this.cleanMcpRegistration();
       } else {
-        this.mcpStatus = "已关闭";
+        this.mcpStatus = t("已关闭");
       }
       return;
     }
     const url = this.currentMcpUrl();
     if (!url) return;
     if (!force && this.settings.registeredMcpUrl === url) {
-      this.mcpStatus = "MCP 已连接";
+      this.mcpStatus = t("MCP 已连接");
       return;
     }
     const result = await ensureMcpRegistration(
@@ -2373,7 +2499,9 @@ export default class MvSenceAiIdePlugin extends Plugin {
       this.settings.mcpAuthToken,
       getVaultRoot(this.app),
     );
-    this.mcpStatus = result.ok ? result.message : `注册失败：${result.message}`;
+    this.mcpStatus = result.ok
+      ? result.message
+      : t("注册失败：{message}", { message: result.message });
     if (result.ok) {
       this.settings.registeredMcpUrl = url;
       if (!this.settings.claudeExecutable && result.executable) {

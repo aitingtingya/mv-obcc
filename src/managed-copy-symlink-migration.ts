@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { t } from "./i18n";
 import fs from "node:fs";
 import path from "node:path";
 import {
@@ -86,7 +87,7 @@ export async function migrateManagedCopyToSymlink(
       status: "not-ready",
       state,
       synchronization,
-      reason: "副本尚未安全收敛，未尝试替换为符号链接。",
+      reason: t("副本尚未安全收敛，未尝试替换为符号链接。"),
     };
   }
 
@@ -106,7 +107,7 @@ export async function migrateManagedCopyToSymlink(
       status: "not-ready",
       state,
       synchronization,
-      reason: "外部文件或受管副本不是可安全迁移的普通文件。",
+      reason: t("外部文件或受管副本不是可安全迁移的普通文件。"),
     };
   }
 
@@ -119,7 +120,7 @@ export async function migrateManagedCopyToSymlink(
       status: "not-ready",
       state,
       synchronization,
-      reason: "迁移提交前文件又发生变化，未替换任何路径。",
+      reason: t("迁移提交前文件又发生变化，未替换任何路径。"),
     };
   }
 
@@ -145,8 +146,8 @@ export async function migrateManagedCopyToSymlink(
       state,
       synchronization,
       reason: restored
-        ? "迁移提交时文件发生变化，已恢复受管副本。"
-        : `迁移提交时文件发生变化；安全备份保留在 ${backupPath}。`,
+        ? t("迁移提交时文件发生变化，已恢复受管副本。")
+        : t("迁移提交时文件发生变化；安全备份保留在 {v0}。", { v0: backupPath }),
     };
   }
 
@@ -195,7 +196,7 @@ export async function migrateManagedCopyToSymlink(
   try {
     fs.unlinkSync(backupPath);
   } catch {
-    warning = `符号链接已生效，但旧副本备份未能删除：${backupPath}`;
+    warning = t("符号链接已生效，但旧副本备份未能删除：{v0}", { v0: backupPath });
   }
   return { status: "migrated", state, synchronization, warning };
 }

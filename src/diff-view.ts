@@ -3,6 +3,7 @@ import { EditorState } from "@codemirror/state";
 import { EditorView, lineNumbers } from "@codemirror/view";
 import { ItemView, Notice, WorkspaceLeaf } from "obsidian";
 import { DIFF_VIEW_TYPE } from "./constants";
+import { t } from "./i18n";
 import type { DiffPayload } from "./types";
 
 export class ObsidianDiffView extends ItemView {
@@ -22,7 +23,12 @@ export class ObsidianDiffView extends ItemView {
   }
 
   getDisplayText(): string {
-    return this.payload?.tabName ?? "Claude Code 差异审核";
+    return this.payload?.tabName ?? t("Claude Code 差异审核");
+  }
+
+  /** Re-render action button / conflict copy after a language switch. */
+  refreshI18n(): void {
+    if (this.payload) this.render();
   }
 
   getIcon(): string {
@@ -66,16 +72,16 @@ export class ObsidianDiffView extends ItemView {
     header.createSpan({ cls: "mv-senceai-diff-title", text: this.payload.tabName });
     const actions = header.createDiv({ cls: "mv-senceai-diff-actions" });
     this.rejectButton = actions.createEl("button", {
-      text: "拒绝",
+      text: t("拒绝"),
       cls: "mod-warning",
     });
     this.acceptButton = actions.createEl("button", {
-      text: "接受",
+      text: t("接受"),
       cls: "mod-cta",
     });
     this.conflictElement = this.contentEl.createDiv({
       cls: "mv-senceai-diff-conflict",
-      text: "打开差异后源文件发生了变化。请重新执行编辑后再接受。",
+      text: t("打开差异后源文件发生了变化。请重新执行编辑后再接受。"),
     });
     const host = this.contentEl.createDiv({ cls: "mv-senceai-merge-host" });
 
@@ -117,7 +123,7 @@ export class ObsidianDiffView extends ItemView {
 
     if (decision === "accept" && !(await this.payload.validateOriginal())) {
       this.conflictElement?.addClass("is-visible");
-      new Notice("mv-AIDE IDE：源文件已变化，本次差异未被接受。");
+      new Notice(t("mv-AIDE IDE：源文件已变化，本次差异未被接受。"));
       return;
     }
 

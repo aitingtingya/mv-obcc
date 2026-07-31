@@ -320,7 +320,7 @@ export class SelectionHighlightController {
     }
     this.refreshDocumentWatchers(leaves);
 
-    const activeLeaf = this.app.workspace.activeLeaf;
+    const activeLeaf = this.app.workspace.getMostRecentLeaf();
     if (activeLeaf?.view.getViewType() === "webviewer") {
       void this.installWebHighlight(activeLeaf, forceWeb);
     }
@@ -359,7 +359,7 @@ export class SelectionHighlightController {
 
   private capturePdfSelection(document: Document): void {
     if (!this.enabled) return;
-    const leaf = this.app.workspace.activeLeaf;
+    const leaf = this.app.workspace.getMostRecentLeaf();
     if (
       !leaf ||
       leaf.view.getViewType() !== "pdf" ||

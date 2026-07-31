@@ -85,7 +85,15 @@ export class ToolRegistry {
     if (!file) return { success: false, message: `File not found: ${requestedPath}` };
 
     const makeFrontmost = args.makeFrontmost !== false;
-    const leaf = this.app.workspace.getLeaf(false);
+    // 打开文件只新开标签或复用已在显示该文件的标签，绝不导航当前活跃叶子：
+    // 活跃标签可能是网页/终端等被导航后无法恢复的用户页面。
+    let existing: WorkspaceLeaf | undefined;
+    this.app.workspace.iterateAllLeaves((candidate) => {
+      if (!existing && (candidate.view as { file?: TFile | null }).file?.path === file.path) {
+        existing = candidate;
+      }
+    });
+    const leaf = existing ?? this.app.workspace.getLeaf("tab");
     let line = typeof args.line === "number" ? Math.max(0, Math.floor(args.line)) : undefined;
     let startCharacter = 0;
     let endLine: number | undefined;

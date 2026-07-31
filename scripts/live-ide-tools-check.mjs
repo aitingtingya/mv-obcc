@@ -93,15 +93,6 @@ function tabKey(tab) {
   return `${tab.viewType}:${uri.replace(/^(obsidian:\/\/view\/[^/]+)\/\d+$/, "$1")}`;
 }
 
-function fileUriToVaultPath(uri) {
-  const decoded = decodeURIComponent(String(uri));
-  const prefix = "file:///";
-  if (!decoded.startsWith(prefix)) return null;
-  const absolute = decoded.slice(prefix.length).replace(/\//g, "/");
-  const rootForward = vaultRoot.replace(/\\/g, "/");
-  return absolute.startsWith(`${rootForward}/`) ? absolute.slice(rootForward.length + 1) : null;
-}
-
 let descriptor;
 let requestCounter = 0;
 async function modernRequest(method, params = {}, timeoutMs = 10_000) {
@@ -181,8 +172,8 @@ async function settleDiffSweep() {
 }
 
 async function stdioSpotCheck() {
-  const pluginDir = path.resolve(path.dirname(runtimePath), "..", "..");
-  const launcher = path.join(pluginDir, "universal-mcp-stdio.cjs");
+  // 启动器由插件物化到 runtime.json 同目录（os.tmpdir()/mv-aide-universal-mcp-<seed>/）。
+  const launcher = path.join(path.dirname(runtimePath), "stdio-launcher.cjs");
   if (!fs.existsSync(launcher)) {
     return check(false, "stdio 通道", `启动器不存在: ${launcher}`);
   }
@@ -319,15 +310,11 @@ async function main() {
     return;
   }
 
-  // Baseline of the user's open tabs; the scratch file is the only thing we add.
+  // Baseline of the user's open tabs; the scratch file is the only thing we
+  // add. openFile opens a new tab (or reuses one already showing the file)
+  // and never navigates the user's existing tabs, so no restore is needed.
   const baseline = await getOpenTabs();
   const baselineKeys = new Set(baseline.tabs.map(tabKey));
-  // openFile reuses the current leaf, so it may navigate the active markdown
-  // tab away; remember it and put it back before comparing baselines.
-  const displacedTab = baseline.tabs.find(
-    (tab) => tab.isActive && tab.viewType === "markdown" && String(tab.uri ?? "").startsWith("file://"),
-  );
-  const displacedPath = displacedTab ? fileUriToVaultPath(displacedTab.uri) : null;
 
   try {
     // 0. Discovery and the full tool surface.
@@ -439,19 +426,21 @@ async function main() {
     // 10. stdio launcher against the live descriptor.
     await stdioSpotCheck();
 
-    // 11. Restore the tab our openFile navigated away, then verify the user's
-    // own tabs are untouched.
-    if (displacedPath) {
-      await callTool("openFile", { filePath: displacedPath });
-      await waitFor(async () => {
-        const snapshot = await getOpenTabs();
-        return snapshot.tabs.some((tab) => String(tab.uri ?? "") === String(displacedTab.uri)) ? snapshot : null;
-      }, 10_000);
-    }
-    const final = await getOpenTabs();
-    const finalKeys = new Set(final.tabs.map(tabKey));
-    const missing = [...baselineKeys].filter((key) => !finalKeys.has(key));
-    check(missing.length === 0, "用户标签页零变化", missing.join(", ") || "基线一致");
+    // 11. Verify the user's own tabs are untouched. The scratch tab we opened
+    // is ours — close_tab only closes diff tabs, so Obsidian reaps it when the
+    // scratch file is deleted below; exclude it from the comparison.
+    let lastGone = [...baselineKeys];
+    const settledBaseline = await waitFor(async () => {
+      const snapshot = await getOpenTabs();
+      const presentKeys = new Set(
+        snapshot.tabs
+          .filter((tab) => !String(tab.uri ?? tab.label).includes("mv-obcc-live-check-scratch"))
+          .map(tabKey),
+      );
+      lastGone = [...baselineKeys].filter((key) => !presentKeys.has(key));
+      return lastGone.length === 0 ? true : null;
+    }, 10_000);
+    check(settledBaseline === true, "用户标签页零变化", settledBaseline === true ? "基线一致" : lastGone.join(", "));
   } finally {
     await settleDiffSweep();
     await fsp.rm(scratchPath, { force: true });

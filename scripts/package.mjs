@@ -18,8 +18,6 @@ fs.rmSync(releaseDirectory, { recursive: true, force: true });
 fs.mkdirSync(releaseDirectory, { recursive: true });
 for (const [source, destination] of [
   ["dist/main.js", "main.js"],
-  ["dist/universal-mcp.cjs", "universal-mcp.cjs"],
-  ["dist/universal-mcp-stdio.cjs", "universal-mcp-stdio.cjs"],
   ["manifest.json", "manifest.json"],
   ["styles.css", "styles.css"],
 ]) {
@@ -68,8 +66,6 @@ const checksumPaths = [
   sourceZipPath,
   ...[
     "main.js",
-    "universal-mcp.cjs",
-    "universal-mcp-stdio.cjs",
     "manifest.json",
     "styles.css",
   ].map((fileName) =>

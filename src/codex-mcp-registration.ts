@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { t } from "./i18n";
 import os from "node:os";
 import path from "node:path";
 
@@ -76,7 +77,7 @@ export async function ensureCodexMcpRegistration(
     const configPath = runtime.configPath ?? defaultCodexConfigPath();
     const current = readIfExists(configPath);
     writeFileAtomic(configPath, upsertManagedBlock(current, managedBlock(url, authToken)));
-    return { ok: true, message: "Codex MCP 已配置" };
+    return { ok: true, message: t("Codex MCP 已配置") };
   } catch (error) {
     return {
       ok: false,
@@ -93,7 +94,7 @@ export async function removeCodexMcpRegistration(
     const current = readIfExists(configPath);
     const next = stripManagedBlock(current);
     if (next !== current) writeFileAtomic(configPath, next);
-    return { ok: true, message: "Codex MCP 已移除" };
+    return { ok: true, message: t("Codex MCP 已移除") };
   } catch (error) {
     return {
       ok: false,

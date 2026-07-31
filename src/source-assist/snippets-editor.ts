@@ -2,6 +2,7 @@ import {
   EditorState,
   type Extension,
 } from "@codemirror/state";
+import { t } from "../i18n";
 import {
   drawSelection,
   dropCursor,
@@ -69,7 +70,7 @@ export function createSourceAssistSnippetsEditor({
     validityIndicator.extraSettingsEl.removeClass(success ? "invalid" : "valid");
     validityIndicator.extraSettingsEl.addClass(success ? "valid" : "invalid");
     validityText.setText(
-      success ? "已保存" : message ?? "语法无效，已保留上一次合法 snippets",
+      success ? t("已保存") : message ?? t("语法无效，已保留上一次合法 snippets"),
     );
   };
 

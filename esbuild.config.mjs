@@ -122,19 +122,6 @@ const mainContext = await esbuild.context({
   plugins: [inlineImportPlugin, latexSuiteStartupPatchPlugin],
 });
 
-const universalMcpContext = await esbuild.context({
-  entryPoints: ["src/universal-mcp.ts"],
-  bundle: true,
-  external: [...builtinModules],
-  format: "cjs",
-  target: "es2022",
-  platform: "node",
-  sourcemap: production ? false : "inline",
-  treeShaking: true,
-  outfile: "dist/universal-mcp.cjs",
-  logLevel: "info",
-});
-
 const universalMcpStdioContext = await esbuild.context({
   entryPoints: ["scripts/universal-mcp-stdio.ts"],
   bundle: true,
@@ -148,15 +135,18 @@ const universalMcpStdioContext = await esbuild.context({
   logLevel: "info",
 });
 
-const contexts = [
-  mainContext,
-  universalMcpContext,
-  universalMcpStdioContext,
-];
-
+// 构建顺序：stdio 启动器必须先于 main 构建，main 通过 inline: 导入把
+// dist/universal-mcp-stdio.cjs 以文本内嵌（发布只随包 3 个标准文件）。
+// watch 模式下 stdio 改动不会自动触发 main 重新内嵌，需重启 dev。
 if (production) {
-  await Promise.all(contexts.map((context) => context.rebuild()));
-  await Promise.all(contexts.map((context) => context.dispose()));
+  await universalMcpStdioContext.rebuild();
+  await mainContext.rebuild();
+  await Promise.all(
+    [mainContext, universalMcpStdioContext].map((context) => context.dispose()),
+  );
 } else {
-  await Promise.all(contexts.map((context) => context.watch()));
+  await universalMcpStdioContext.rebuild();
+  await Promise.all(
+    [mainContext, universalMcpStdioContext].map((context) => context.watch()),
+  );
 }

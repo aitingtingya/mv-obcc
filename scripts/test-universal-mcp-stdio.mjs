@@ -121,13 +121,22 @@ let UNIVERSAL_MCP_RESOURCE_URIS;
 let server;
 let temporaryDirectory;
 let toolsBundle;
+let universalBundlePath;
 try {
-  const universalBundlePath = path.join(root, "dist", "universal-mcp.cjs");
-  for (const artifact of [universalBundlePath, path.join(root, "dist", "universal-mcp-stdio.cjs")]) {
-    if (!fs.existsSync(artifact)) {
-      throw new Error(`Missing ${artifact}. Run npm run build first.`);
-    }
+  const stdioLauncherPath = path.join(root, "dist", "universal-mcp-stdio.cjs");
+  if (!fs.existsSync(stdioLauncherPath)) {
+    throw new Error(`Missing ${stdioLauncherPath}. Run npm run build first.`);
   }
+  // universal-mcp 不再单独构建（已静态打进 main.js），按需临时打包。
+  universalBundlePath = path.join(os.tmpdir(), `mv-obcc-universal-${process.pid}.cjs`);
+  await esbuild.build({
+    entryPoints: [path.join(root, "src", "universal-mcp.ts")],
+    bundle: true,
+    platform: "node",
+    format: "cjs",
+    outfile: universalBundlePath,
+    logLevel: "silent",
+  });
   const universalBundle = require(universalBundlePath);
   const { UniversalMcpServer } = universalBundle;
   UNIVERSAL_MCP_RESOURCE_URIS = universalBundle.UNIVERSAL_MCP_RESOURCE_URIS;
@@ -233,4 +242,5 @@ try {
   if (server) await server.stop();
   if (temporaryDirectory) await fsp.rm(temporaryDirectory, { recursive: true, force: true });
   if (toolsBundle) fs.rmSync(toolsBundle, { force: true });
+  if (universalBundlePath) fs.rmSync(universalBundlePath, { force: true });
 }

@@ -8,6 +8,7 @@ import {
   type WorkspaceContainer,
   type WorkspaceLeaf,
 } from "obsidian";
+import { t } from "./i18n";
 import { ensureTempFile } from "./llm-temp-file";
 import type { LlmWindowGeometry } from "./types";
 
@@ -246,7 +247,7 @@ export class LlmResultSurface implements LlmResultSink {
     if (this.state === "closed") return;
     this.state = "done";
     if (!this.getCurrentText().trim()) {
-      this.setCurrentText("(模型返回为空)");
+      this.setCurrentText(t("(模型返回为空)"));
     }
     this.renderStatus();
   }
@@ -324,8 +325,8 @@ export class LlmResultSurface implements LlmResultSink {
   private renderPinIcon(el: HTMLElement, pinned: boolean): void {
     setIcon(el, pinned ? "pin" : "pin-off");
     el.classList.toggle("is-pinned", pinned);
-    el.title = pinned ? "已固定：点击取消" : "点击固定悬浮窗";
-    el.setAttribute("aria-label", pinned ? "取消固定悬浮窗" : "固定悬浮窗");
+    el.title = pinned ? t("已固定：点击取消") : t("点击固定悬浮窗");
+    el.setAttribute("aria-label", pinned ? t("取消固定悬浮窗") : t("固定悬浮窗"));
   }
 
   private buildWindow(): void {
@@ -335,7 +336,7 @@ export class LlmResultSurface implements LlmResultSink {
       "popover hover-popover mv-senceai-llm-popover",
     );
     root.setAttribute("role", "dialog");
-    root.setAttribute("aria-label", "LLM 结果");
+    root.setAttribute("aria-label", t("LLM 结果"));
     const viewport = viewportSize(this.doc);
     const geo = this.options.geometry;
     const width = geo
@@ -369,7 +370,7 @@ export class LlmResultSurface implements LlmResultSink {
       this.doc,
       "div",
       "mv-senceai-llm-title",
-      "LLM 结果",
+      t("LLM 结果"),
     );
     const status = createElement(
       this.doc,
@@ -394,7 +395,7 @@ export class LlmResultSurface implements LlmResultSink {
       "×",
     );
     close.type = "button";
-    close.setAttribute("aria-label", "关闭");
+    close.setAttribute("aria-label", t("关闭"));
     close.addEventListener("click", () => this.close());
     titlebar.append(pin, title, close);
 
@@ -423,20 +424,20 @@ export class LlmResultSurface implements LlmResultSink {
       "mv-senceai-llm-toolbar",
     );
     toolbar.appendChild(
-      this.actionButton("复制", async () => {
+      this.actionButton(t("复制"), async () => {
         try {
           await this.doc.defaultView?.navigator.clipboard.writeText(
             this.getCurrentText(),
           );
-          new Notice("已复制到剪贴板");
+          new Notice(t("已复制到剪贴板"));
         } catch {
-          new Notice("复制失败，请手动选中复制");
+          new Notice(t("复制失败，请手动选中复制"));
         }
       }, true),
     );
     if (this.options.onReplace) {
       toolbar.appendChild(
-        this.actionButton("替换选区", () => {
+        this.actionButton(t("替换选区"), () => {
           this.options.onReplace?.(this.getCurrentText());
           if (!this.pinned) this.close();
         }),
@@ -444,14 +445,14 @@ export class LlmResultSurface implements LlmResultSink {
     }
     if (this.options.onInsert) {
       toolbar.appendChild(
-        this.actionButton("插入到光标处", () => {
+        this.actionButton(t("插入到光标处"), () => {
           this.options.onInsert?.(this.getCurrentText());
           if (!this.pinned) this.close();
         }),
       );
     }
     toolbar.appendChild(
-      this.actionButton("关闭", () => this.close()),
+      this.actionButton(t("关闭"), () => this.close()),
     );
     return toolbar;
   }
@@ -507,7 +508,7 @@ export class LlmResultSurface implements LlmResultSink {
 
     const view = leaf.view;
     if (!(view instanceof MarkdownView)) {
-      throw new Error("临时文件未以 Markdown 视图打开");
+      throw new Error(t("临时文件未以 Markdown 视图打开"));
     }
     this.editor = view.editor;
     this.editor.setValue(this.buffer);
@@ -535,7 +536,7 @@ export class LlmResultSurface implements LlmResultSink {
     );
     area.value = this.buffer;
     area.spellcheck = false;
-    area.setAttribute("aria-label", "LLM 结果文本编辑器");
+    area.setAttribute("aria-label", t("LLM 结果文本编辑器"));
     area.addEventListener("input", () => {
       this.buffer = area.value;
     });
@@ -579,16 +580,16 @@ export class LlmResultSurface implements LlmResultSink {
     const status = this.statusEl;
     if (!status) return;
     status.className = "mv-senceai-llm-status";
-    const fallback = this.textarea ? " · 文本兜底" : "";
+    const fallback = this.textarea ? t(" · 文本兜底") : "";
     if (this.state === "opening") {
-      status.textContent = "准备编辑器…";
+      status.textContent = t("准备编辑器…");
     } else if (this.state === "streaming") {
-      status.textContent = `生成中…${fallback}`;
+      status.textContent = t("生成中…{v0}", { v0: fallback });
     } else if (this.state === "done") {
-      status.textContent = `可编辑${fallback}`;
+      status.textContent = t("可编辑{v0}", { v0: fallback });
       status.classList.add("mv-senceai-llm-status-done");
     } else if (this.state === "error") {
-      status.textContent = `调用失败${fallback}`;
+      status.textContent = t("调用失败{v0}", { v0: fallback });
       status.classList.add("mv-senceai-llm-status-error");
     }
     if (this.fallbackReason) {

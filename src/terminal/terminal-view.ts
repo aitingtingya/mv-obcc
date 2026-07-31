@@ -7,6 +7,7 @@ import * as path from "path";
 import * as child_process from "child_process";
 import { StringDecoder } from "string_decoder";
 import { TERMINAL_VIEW_TYPE } from "../constants";
+import { t } from "../i18n";
 import {
   resolveTerminalTheme,
   terminalThemeSignature,
@@ -30,6 +31,10 @@ export class TerminalView extends ItemView {
   private _fitInProgress = false;
   private debounceFitTimer: NodeJS.Timeout | null = null;
   private appliedThemeSignature = "";
+  // 用户是否把视图钉在底部。xterm 内部的跟随状态会被 reflow/转义序列带歪
+  // 且不自愈（表现为输出时视图瞬移到顶部），所以由我们自己跟踪：只在用户
+  // 通过滚轮/触控板/Shift+PageUp/Down 主动滚动后重新采样。
+  private followPinned = true;
 
   constructor(leaf: WorkspaceLeaf, plugin: MvSenceAiIdePlugin) {
     super(leaf);
@@ -49,7 +54,7 @@ export class TerminalView extends ItemView {
   }
 
   getDisplayText(): string {
-    return "系统终端";
+    return t("系统终端");
   }
 
   getIcon(): string {
@@ -149,12 +154,17 @@ export class TerminalView extends ItemView {
       { capture: true },
     );
 
+    // 滚轮/触控板滚动是用户翻历史的主要途径，滚动结束后重新采样钉住状态。
+    this.registerDomEvent(this.termHost, "wheel", () => this.scheduleFollowSync(), {
+      passive: true,
+    });
+
     this.registerDomEvent(this.termHost, "contextmenu", (event) => {
       event.preventDefault();
       const menu = new Menu();
       if (this.term?.hasSelection()) {
         menu.addItem((item) =>
-          item.setTitle("复制").onClick(() => {
+          item.setTitle(t("复制")).onClick(() => {
             const selection = this.term?.getSelection() ?? "";
             if (selection) void navigator.clipboard.writeText(selection);
             this.term?.clearSelection();
@@ -162,14 +172,14 @@ export class TerminalView extends ItemView {
         );
       }
       menu.addItem((item) =>
-        item.setTitle("粘贴").onClick(() => {
+        item.setTitle(t("粘贴")).onClick(() => {
           void navigator.clipboard.readText().then((text) => {
             if (text) this.term?.paste(text);
           });
         }),
       );
       menu.addItem((item) =>
-        item.setTitle("全选").onClick(() => this.term?.selectAll()),
+        item.setTitle(t("全选")).onClick(() => this.term?.selectAll()),
       );
       menu.showAtMouseEvent(event);
     });
@@ -273,7 +283,15 @@ export class TerminalView extends ItemView {
     const encoded = encodeTerminalKey(event, {
       applicationCursorKeys: term.modes.applicationCursorKeysMode,
     });
-    if (encoded === null) return;
+    if (encoded === null) {
+      // Shift+PageUp/Down 走 xterm 默认的滚动缓冲翻页（见 terminal-keys.ts），
+      // 翻页结束后重新采样钉住状态。
+      if (event.shiftKey && !event.ctrlKey && !event.altKey &&
+          (event.key === "PageUp" || event.key === "PageDown")) {
+        this.scheduleFollowSync();
+      }
+      return;
+    }
     // The encoded bytes go straight to the PTY; xterm must not see the key
     // a second time, and Obsidian must not trigger a hotkey for it.
     event.preventDefault();
@@ -388,32 +406,38 @@ export class TerminalView extends ItemView {
 
       this.proc.stdout?.on("data", (data) => {
         if (this.term && this.stdoutDecoder) {
-          this.term.write(this.stdoutDecoder.write(data));
+          this.term.write(this.stdoutDecoder.write(data), () => {
+            // 写完每个输出块后若用户钉在底部则强制回底：无论 xterm 内部跟随
+            // 状态被 reflow/转义序列带歪成什么样，下一个输出块都会扶正。
+            if (this.followPinned) this.term?.scrollToBottom();
+          });
         }
       });
 
       this.proc.stderr?.on("data", (data) => {
         if (this.term && this.stderrDecoder) {
-          this.term.write(this.stderrDecoder.write(data));
+          this.term.write(this.stderrDecoder.write(data), () => {
+            if (this.followPinned) this.term?.scrollToBottom();
+          });
         }
       });
 
       this.proc.on("exit", (code, signal) => {
         if (isWindows && code === 9009) {
-          this.term?.writeln("\r\n[Python 解释器未找到]");
-          this.term?.writeln("请在设置中配置 Python 可执行文件路径，或者安装 Python 到系统。");
+          this.term?.writeln(t("\r\n[Python 解释器未找到]"));
+          this.term?.writeln(t("请在设置中配置 Python 可执行文件路径，或者安装 Python 到系统。"));
         } else {
-          this.term?.writeln(`\r\n[终端进程已退出: ${code ?? signal}]`);
+          this.term?.writeln(t("\r\n[终端进程已退出: {code}]", { code: String(code ?? signal ?? "") }));
         }
         this.proc = null;
       });
 
       this.proc.on("error", (err) => {
         if (isWindows && err.message.includes("ENOENT")) {
-          this.term?.writeln("\r\n[Python 执行失败 - Python 未找到]");
-          this.term?.writeln("请检查 Python 是否已安装且在 PATH 中，或在设置中手动指定。");
+          this.term?.writeln(t("\r\n[Python 执行失败 - Python 未找到]"));
+          this.term?.writeln(t("请检查 Python 是否已安装且在 PATH 中，或在设置中手动指定。"));
         } else {
-          this.term?.writeln(`\r\n[错误: ${err.message}]`);
+          this.term?.writeln(t("\r\n[错误: {message}]", { message: err.message }));
         }
       });
 
@@ -432,7 +456,7 @@ export class TerminalView extends ItemView {
       }, 300);
 
     } catch (e) {
-      this.term?.writeln(`\r\n[启动终端错误: ${(e as any).message}]`);
+      this.term?.writeln(t("\r\n[启动终端错误: {message}]", { message: (e as any).message }));
     }
   }
 
@@ -482,6 +506,19 @@ export class TerminalView extends ItemView {
     }, 100);
   }
 
+  private isAtBottom(): boolean {
+    const buffer = this.term?.buffer.active;
+    // 1 行容差吸收平滑滚动带来的小数位置。
+    return !!buffer && buffer.viewportY >= buffer.baseY - 1;
+  }
+
+  private scheduleFollowSync(): void {
+    // 等 xterm 处理完本次滚动输入再采样，否则读到的还是滚动前的位置。
+    setTimeout(() => {
+      this.followPinned = this.isAtBottom();
+    }, 0);
+  }
+
   private fit() {
     if (!this.term || !this.fitAddon) return;
     if (this._fitInProgress) return;
@@ -491,10 +528,15 @@ export class TerminalView extends ItemView {
 
     const dimensions = this.fitAddon.proposeDimensions();
     if (!dimensions || dimensions.cols < 10 || dimensions.rows < 3) return;
+    // 尺寸没变就不 resize：避免无谓的 PTY SIGWINCH 引发 TUI 全屏重绘和
+    // buffer reflow（滚动瞬移的主要诱因之一）。
+    if (dimensions.cols === this.term.cols && dimensions.rows === this.term.rows) return;
 
     this._fitInProgress = true;
     try {
       this.fitAddon.fit();
+      // 无输出期间发生的 reflow 跳转也要自愈。
+      if (this.followPinned) this.term.scrollToBottom();
     } finally {
       this._fitInProgress = false;
     }

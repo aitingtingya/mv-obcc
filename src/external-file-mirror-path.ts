@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { t } from "./i18n";
 import path from "node:path";
 
 export interface ResolvedExternalFileVaultPath {
@@ -32,12 +33,12 @@ export function ensureContainedVaultDirectory(
   create: boolean,
 ): string {
   if (!isContainedPath(realVaultRoot, directoryPath)) {
-    throw new Error("外部文件镜像目录解析到了 vault 外部。");
+    throw new Error(t("外部文件镜像目录解析到了 vault 外部。"));
   }
   if (!create) {
     const realDirectory = fs.realpathSync.native(directoryPath);
     if (!isContainedPath(realVaultRoot, realDirectory)) {
-      throw new Error("外部文件镜像父目录通过链接离开了 vault。");
+      throw new Error(t("外部文件镜像父目录通过链接离开了 vault。"));
     }
     return realDirectory;
   }
@@ -48,7 +49,7 @@ export function ensureContainedVaultDirectory(
     try {
       const stat = fs.statSync(existingAncestor);
       if (!stat.isDirectory()) {
-        throw new Error("外部文件镜像父路径不是目录。");
+        throw new Error(t("外部文件镜像父路径不是目录。"));
       }
       break;
     } catch (error) {
@@ -63,7 +64,7 @@ export function ensureContainedVaultDirectory(
 
   const realExistingAncestor = fs.realpathSync.native(existingAncestor);
   if (!isContainedPath(realVaultRoot, realExistingAncestor)) {
-    throw new Error("外部文件镜像父目录通过链接离开了 vault。");
+    throw new Error(t("外部文件镜像父目录通过链接离开了 vault。"));
   }
 
   let current = existingAncestor;
@@ -72,7 +73,7 @@ export function ensureContainedVaultDirectory(
     // mkdir here: it can traverse an unchecked junction and create outside.
     const realCurrent = fs.realpathSync.native(current);
     if (!isContainedPath(realVaultRoot, realCurrent)) {
-      throw new Error("外部文件镜像父目录通过链接离开了 vault。");
+      throw new Error(t("外部文件镜像父目录通过链接离开了 vault。"));
     }
     const next = path.join(current, segment);
     try {
@@ -84,11 +85,11 @@ export function ensureContainedVaultDirectory(
     }
     const nextStat = fs.statSync(next);
     if (!nextStat.isDirectory()) {
-      throw new Error("外部文件镜像父路径不是目录。");
+      throw new Error(t("外部文件镜像父路径不是目录。"));
     }
     const realNext = fs.realpathSync.native(next);
     if (!isContainedPath(realVaultRoot, realNext)) {
-      throw new Error("外部文件镜像父目录通过链接离开了 vault。");
+      throw new Error(t("外部文件镜像父目录通过链接离开了 vault。"));
     }
     current = next;
   }
@@ -106,7 +107,7 @@ export function normalizeExternalFileVaultPath(value: string): string {
     /^[a-zA-Z]:\//u.test(replaced) ||
     replaced.split("/").some((segment) => segment === "..")
   ) {
-    throw new Error("外部文件镜像路径必须是 vault 内、不含 .. 的相对路径。");
+    throw new Error(t("外部文件镜像路径必须是 vault 内、不含 .. 的相对路径。"));
   }
 
   const normalized = path.posix.normalize(replaced);
@@ -115,7 +116,7 @@ export function normalizeExternalFileVaultPath(value: string): string {
     normalized === ".." ||
     normalized.startsWith("../")
   ) {
-    throw new Error("外部文件镜像路径不能离开 vault。");
+    throw new Error(t("外部文件镜像路径不能离开 vault。"));
   }
   return normalized;
 }
@@ -135,13 +136,13 @@ export function resolveExternalFileVaultPath(
   options: { createParent?: boolean } = {},
 ): ResolvedExternalFileVaultPath {
   if (!path.isAbsolute(vaultRoot)) {
-    throw new Error("vault 根目录必须是绝对路径。");
+    throw new Error(t("vault 根目录必须是绝对路径。"));
   }
   const normalized = normalizeExternalFileVaultPath(vaultPath);
   const realVaultRoot = fs.realpathSync.native(vaultRoot);
   const absolutePath = path.join(realVaultRoot, ...normalized.split("/"));
   if (!isContainedPath(realVaultRoot, absolutePath)) {
-    throw new Error("外部文件镜像路径解析到了 vault 外部。");
+    throw new Error(t("外部文件镜像路径解析到了 vault 外部。"));
   }
 
   const parent = path.dirname(absolutePath);

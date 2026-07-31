@@ -1,5 +1,6 @@
 import { type App, MarkdownView, Notice } from "obsidian";
 import type { Text } from "@codemirror/state";
+import { t } from "../i18n";
 import { EditorView, type ViewUpdate } from "@codemirror/view";
 
 import type MvSenceAiIdePlugin from "../../main";
@@ -138,12 +139,14 @@ export class InlineCompletionFeature {
 
   // ---- Ribbon button (mirrors LlmFeature's ribbon pattern) ----
 
-  private refreshRibbon(): void {
+  refreshRibbon(): void {
     if (!this.settings.enabled) {
       this.removeRibbon();
       return;
     }
-    const tooltip = `行内补全（点击${this.armed ? "关闭" : "开启"}）`;
+    const tooltip = t(
+      this.armed ? "行内补全（点击关闭）" : "行内补全（点击开启）",
+    );
     if (this.ribbonIconEl) {
       this.ribbonIconEl.setAttribute("aria-label", tooltip);
       this.ribbonIconEl.setAttribute("data-tooltip", tooltip);
@@ -152,7 +155,7 @@ export class InlineCompletionFeature {
     }
     this.ribbonIconEl = this.plugin.addRibbonIcon(
       "sparkles",
-      "行内补全",
+      t("行内补全"),
       () => this.toggleArmed(),
     );
     this.ribbonIconEl.addClass("mv-senceai-inline-completion-ribbon");
@@ -175,8 +178,10 @@ export class InlineCompletionFeature {
     if (!this.armed) {
       this.cancelAll();
     }
-    new Notice(this.armed ? "已开启行内补全" : "已关闭行内补全", 2000);
-    const tooltip = `行内补全（点击${this.armed ? "关闭" : "开启"}）`;
+    new Notice(this.armed ? t("已开启行内补全") : t("已关闭行内补全"), 2000);
+    const tooltip = t(
+      this.armed ? "行内补全（点击关闭）" : "行内补全（点击开启）",
+    );
     this.ribbonIconEl?.setAttribute("aria-label", tooltip);
     this.ribbonIconEl?.setAttribute("data-tooltip", tooltip);
   }
@@ -232,7 +237,7 @@ export class InlineCompletionFeature {
     if (!this.settings.enabled) return false;
     if (requireArmed && !this.armed) return false;
     // Only the active Markdown editor participates.
-    const leaf = this.app.workspace.activeLeaf;
+    const leaf = this.app.workspace.getMostRecentLeaf();
     if (!leaf || !(leaf.view instanceof MarkdownView)) return false;
     if (!view) return true;
     const activeEditorView = editorViewFromMarkdown(leaf.view);
@@ -249,7 +254,7 @@ export class InlineCompletionFeature {
     options: { requireArmed: boolean },
   ): Promise<void> {
     if (this.disposed || !this.shouldRespond(view, options)) return;
-    const active = this.app.workspace.activeLeaf?.view;
+    const active = this.app.workspace.getMostRecentLeaf()?.view;
     if (!(active instanceof MarkdownView)) return;
     // Only proceed if this view is the active editor's CodeMirror view.
     if (editorViewFromMarkdown(active) !== view) return;
@@ -315,7 +320,12 @@ export class InlineCompletionFeature {
     } catch (e) {
       if ((e as Error)?.name === "AbortError") return; // normal cancel
       this.controller.clearSuggestion(view);
-      new Notice(`行内补全失败：${e instanceof Error ? e.message : String(e)}`, 4000);
+      new Notice(
+        t("行内补全失败：{message}", {
+          message: e instanceof Error ? e.message : String(e),
+        }),
+        4000,
+      );
     } finally {
       if (this.abortControllers.get(view) === abort) {
         this.abortControllers.delete(view);
@@ -409,7 +419,12 @@ export class InlineCompletionFeature {
     } catch (e) {
       if ((e as Error)?.name === "AbortError") return;
       this.controller.clearSuggestion(view);
-      new Notice(`行内补全重新生成失败：${e instanceof Error ? e.message : String(e)}`, 4000);
+      new Notice(
+        t("行内补全重新生成失败：{message}", {
+          message: e instanceof Error ? e.message : String(e),
+        }),
+        4000,
+      );
     } finally {
       if (this.abortControllers.get(view) === abort) {
         this.abortControllers.delete(view);

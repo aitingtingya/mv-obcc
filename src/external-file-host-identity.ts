@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { t } from "./i18n";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -14,11 +15,11 @@ function readExistingHostId(filePath: string): string | null {
   try {
     const stat = fs.lstatSync(filePath);
     if (!stat.isFile() || stat.isSymbolicLink()) {
-      throw new Error(`本机标识路径不是安全的普通文件：${filePath}`);
+      throw new Error(t("本机标识路径不是安全的普通文件：{v0}", { v0: filePath }));
     }
     const value = fs.readFileSync(filePath, "utf8").trim();
     if (!HOST_ID_PATTERN.test(value)) {
-      throw new Error(`本机标识文件内容无效：${filePath}`);
+      throw new Error(t("本机标识文件内容无效：{v0}", { v0: filePath }));
     }
     return value.toLowerCase();
   } catch (error) {
@@ -43,6 +44,6 @@ export function readOrCreateExternalFileHostId(): string {
     if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
     const concurrent = readExistingHostId(filePath);
     if (concurrent) return concurrent;
-    throw new Error(`并发创建本机标识后无法读取：${filePath}`);
+    throw new Error(t("并发创建本机标识后无法读取：{v0}", { v0: filePath }));
   }
 }
