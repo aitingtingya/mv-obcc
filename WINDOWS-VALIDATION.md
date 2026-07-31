@@ -16,19 +16,19 @@
 ## 构建与安装
 
 1. 在源码目录运行 `npm ci`。
-2. 运行 `npm run verify`，确认类型检查、65 项测试及生产构建全部通过。
+2. 运行 `npm run verify`，确认类型检查、全部自动测试及生产构建通过。
 3. 运行 `npm run package`。
 4. 在 `release` 目录运行以下命令，并与 `SHA256SUMS` 逐项比较：
 
    ```powershell
-   Get-FileHash -Algorithm SHA256 .\mv-obcc-ide-0.2.7.zip
-   Get-FileHash -Algorithm SHA256 .\mv-obcc-ide-0.2.7-source.zip
-   Get-FileHash -Algorithm SHA256 .\mv-obcc-ide-0.2.7\main.js
-   Get-FileHash -Algorithm SHA256 .\mv-obcc-ide-0.2.7\manifest.json
-   Get-FileHash -Algorithm SHA256 .\mv-obcc-ide-0.2.7\styles.css
+   Get-FileHash -Algorithm SHA256 .\mv-obcc-0.8.1.zip
+   Get-FileHash -Algorithm SHA256 .\mv-obcc-0.8.1-source.zip
+   Get-FileHash -Algorithm SHA256 .\mv-obcc-0.8.1\main.js
+   Get-FileHash -Algorithm SHA256 .\mv-obcc-0.8.1\manifest.json
+   Get-FileHash -Algorithm SHA256 .\mv-obcc-0.8.1\styles.css
    ```
 
-5. 将 `release\mv-obcc-ide-0.2.7\` 复制到 `<vault>\.obsidian\plugins\mv-obcc-ide\`。
+5. 将 `release\mv-obcc-0.8.1\` 复制到 `<vault>\.obsidian\plugins\mv-obcc\`。
 6. 只启用 `MV OBCC IDE`，关闭其他 Claude Code IDE 桥接插件。
 7. 检查 `%USERPROFILE%\.claude\ide\` 中生成了对应端口的 lock 文件。
 
@@ -42,6 +42,30 @@
 6. 逐一关闭和开启主动工具，重新启动 Claude Code，确认工具清单同步变化。
 7. 关闭“启用 MCP 主动工具”，确认 local MCP 注册被删除；重新开启后确认恢复。
 8. 检查 MCP 只监听 `127.0.0.1`，且无 Bearer token 时返回 401。
+
+## Codex IDE 与默认文件打开器
+
+1. 打开 Codex IDE 支持，确认不会再出现对 vault 内 `ipc-*.sock` 的 `listen EACCES`；Windows 应使用命名管道，不应尝试在 vault 中创建 socket 文件。
+2. 分别在两个 vault 启用 Codex IDE 支持，确认第二个 vault 显示明确的通道占用提示，且第一个 vault 仍可正常提供 IDE 上下文。
+3. 如果“检查”提示旧版、残缺或无 owner 的注册，点击“清理”。即使磁盘上仍是旧版检查助手，清理也必须成功；清理后再次检查应显示没有 AIDE 注册。
+4. 点击“注入”。Windows 注入前必须在配置的镜像目录完成 symlink 预检；权限失败时点击“打开开发者设置”，开启开发者模式后重新检测。注册过程不应弹出 UAC，也不需要管理员权限。
+5. 注入后执行以下命令，导出 Explorer 候选值。文件中必须出现精确的 `"MV.AIDE.FileOpener"=hex(0):`；`hex(0):00,00`、2 字节空终止符或缺失都算失败。
+
+   ```powershell
+   reg.exe export "HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\.md\OpenWithProgids" "$env:TEMP\mv-aide-openwith.reg" /y
+   Get-Content "$env:TEMP\mv-aide-openwith.reg" | Select-String '"MV\.AIDE\.FileOpener"=hex\(0\):'
+   ```
+
+6. 确认 `HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\.md\UserChoice` 在用户确认前没有被插件创建或修改；插件只应写 `HKCU` 下的 ProgID、Capabilities、RegisteredApplications 和 OpenWithProgids。
+7. 注入完成后确认出现“Windows 默认应用确认”窗口，并能直接打开 `MV AIDE File Opener` 的系统设置页。用户确认前，“检查”必须显示“已注册但尚未确认”，不能显示本仓库已经是默认打开器。
+8. 右键 `.md` 选择“打开方式”，确认列表显示 `MV AIDE File Opener`，名称和图标不能显示成 Windows PowerShell。为 `.md`、`.markdown` 和已启用的 `.tex` 分别完成系统确认。
+9. 再次点击“检查”，确认全部后缀生效后才显示“本仓库是系统默认打开器”；只确认部分后缀时必须列出已确认和待确认后缀。人为把 Explorer 候选值改成 2 字节 `REG_NONE` 后，检查必须明确报告类型/字节长度不符，不能误报注入成功。
+10. 使用本地 NTFS vault 双击 `.md` 和已启用的 `.tex` 文件：Obsidian 关闭时应只被唤醒一次，启动后打开目标文件；Obsidian 已运行时应直接打开并前置窗口。不要出现 CMD 或 PowerShell 终端窗口。
+11. 在另一个 vault 检查和注入，确认能识别其它 vault owner，且注入不会覆盖或隐式清理现有注册。
+12. 清理当前注册，确认所有后缀中的 AIDE OpenWith 值、Capabilities、RegisteredApplications、ProgID 和 wrapper 被移除；扩展名原有默认值以及 Visual Studio Code 等其它应用关联必须保持不变。
+13. 用不支持的后缀或人为制造 symlink 失败，确认不会反复输出 `Processed URI`，会显示一次具体错误；检查 `%USERPROFILE%\\.mv-aide\\file-opener-last-error.json` 包含失败阶段和脱敏后的复现信息。
+14. 在映射盘或网络 vault 重复注入，若 symlink 不受支持，确认注入被拒绝且 Windows 默认打开方式没有被修改。
+15. 重启 Obsidian 和 Windows，确认候选注册、wrapper 和用户确认的默认关联仍然存在。
 
 ## 上游自动解析
 

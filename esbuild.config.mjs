@@ -7,9 +7,21 @@ const production = process.argv[2] === "production";
 const latexSuiteSource = path.resolve("src/vendor/latex-suite/src");
 const licenseBanner = [
   "/*!",
-  " * mv-SenceAI bundles portions of obsidian-latex-suite 1.11.5.",
+  " * mv-AIDE bundles portions of obsidian-latex-suite 1.11.5.",
   " * obsidian-latex-suite is MIT licensed; see THIRD_PARTY_NOTICES.md and src/vendor/latex-suite/LICENSE.md.",
   " */",
+].join("\n");
+const startupTimingBanner = [
+  "var __mvSenceAiStartupNow = () => {",
+  "  var measured = globalThis.performance?.now?.();",
+  "  return typeof measured === 'number' && Number.isFinite(measured) ? measured : Date.now();",
+  "};",
+  "globalThis.__mvSenceAiModuleEvaluationTiming = { startedAt: __mvSenceAiStartupNow() };",
+].join("\n");
+const startupTimingFooter = [
+  "if (globalThis.__mvSenceAiModuleEvaluationTiming) {",
+  "  globalThis.__mvSenceAiModuleEvaluationTiming.endedAt = __mvSenceAiStartupNow();",
+  "}",
 ].join("\n");
 const external = [
   "obsidian",
@@ -87,7 +99,7 @@ const latexSuiteStartupPatchPlugin = {
   },
 };
 
-const context = await esbuild.context({
+const mainContext = await esbuild.context({
   entryPoints: ["main.ts"],
   bundle: true,
   alias: {
@@ -100,14 +112,51 @@ const context = await esbuild.context({
   sourcemap: production ? false : "inline",
   treeShaking: true,
   outfile: "dist/main.js",
-  banner: production ? { js: licenseBanner } : undefined,
+  banner: {
+    js: production
+      ? `${licenseBanner}\n${startupTimingBanner}`
+      : startupTimingBanner,
+  },
+  footer: { js: startupTimingFooter },
   logLevel: "info",
   plugins: [inlineImportPlugin, latexSuiteStartupPatchPlugin],
 });
 
+const universalMcpContext = await esbuild.context({
+  entryPoints: ["src/universal-mcp.ts"],
+  bundle: true,
+  external: [...builtinModules],
+  format: "cjs",
+  target: "es2022",
+  platform: "node",
+  sourcemap: production ? false : "inline",
+  treeShaking: true,
+  outfile: "dist/universal-mcp.cjs",
+  logLevel: "info",
+});
+
+const universalMcpStdioContext = await esbuild.context({
+  entryPoints: ["scripts/universal-mcp-stdio.ts"],
+  bundle: true,
+  external: [...builtinModules],
+  format: "cjs",
+  target: "es2022",
+  platform: "node",
+  sourcemap: production ? false : "inline",
+  treeShaking: true,
+  outfile: "dist/universal-mcp-stdio.cjs",
+  logLevel: "info",
+});
+
+const contexts = [
+  mainContext,
+  universalMcpContext,
+  universalMcpStdioContext,
+];
+
 if (production) {
-  await context.rebuild();
-  await context.dispose();
+  await Promise.all(contexts.map((context) => context.rebuild()));
+  await Promise.all(contexts.map((context) => context.dispose()));
 } else {
-  await context.watch();
+  await Promise.all(contexts.map((context) => context.watch()));
 }

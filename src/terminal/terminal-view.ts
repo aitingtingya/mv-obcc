@@ -1,4 +1,4 @@
-import { ItemView, WorkspaceLeaf, TFile } from "obsidian";
+import { ItemView, WorkspaceLeaf, TFile, Menu, Platform } from "obsidian";
 import { Terminal } from "xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import * as os from "os";
@@ -12,6 +12,8 @@ import {
   terminalThemeSignature,
   type ResolvedTerminalTheme,
 } from "./terminal-themes";
+import { resolveTerminalKeyAction } from "./terminal-clipboard";
+import { encodeTerminalKey } from "./terminal-keys";
 import { TERMINAL_PTY_PY_BASE64, TERMINAL_WIN_PY_BASE64 } from "./terminal-scripts";
 import MvSenceAiIdePlugin from "../../main";
 
@@ -137,6 +139,41 @@ export class TerminalView extends ItemView {
     this.term.parser?.registerCsiHandler({ final: "I" }, () => true);
     this.term.parser?.registerCsiHandler({ final: "O" }, () => true);
 
+    // Single key pipeline on the window capture phase: it runs before both
+    // Obsidian's hotkey system and xterm's own textarea handler, so a focused
+    // terminal receives keys exactly like a real terminal would.
+    this.registerDomEvent(
+      activeWindow,
+      "keydown",
+      (event) => this.handleTerminalKeydown(event),
+      { capture: true },
+    );
+
+    this.registerDomEvent(this.termHost, "contextmenu", (event) => {
+      event.preventDefault();
+      const menu = new Menu();
+      if (this.term?.hasSelection()) {
+        menu.addItem((item) =>
+          item.setTitle("复制").onClick(() => {
+            const selection = this.term?.getSelection() ?? "";
+            if (selection) void navigator.clipboard.writeText(selection);
+            this.term?.clearSelection();
+          }),
+        );
+      }
+      menu.addItem((item) =>
+        item.setTitle("粘贴").onClick(() => {
+          void navigator.clipboard.readText().then((text) => {
+            if (text) this.term?.paste(text);
+          });
+        }),
+      );
+      menu.addItem((item) =>
+        item.setTitle("全选").onClick(() => this.term?.selectAll()),
+      );
+      menu.showAtMouseEvent(event);
+    });
+
     this.term.registerLinkProvider?.({
       provideLinks: (y, callback) => {
         const line = this.term?.buffer.active.getLine(y - 1);
@@ -198,6 +235,50 @@ export class TerminalView extends ItemView {
         this.proc.stdin.write(`\x1b]RESIZE;${c};${r}\x07`);
       }
     });
+  }
+
+  private handleTerminalKeydown(event: KeyboardEvent): void {
+    const term = this.term;
+    // Only when the terminal itself has focus; everywhere else Obsidian
+    // hotkeys and editor behavior stay untouched.
+    if (!term || term.textarea !== activeDocument.activeElement) return;
+
+    const action = resolveTerminalKeyAction(event, {
+      isMac: Platform.isMacOS,
+      hasSelection: term.hasSelection(),
+    });
+    if (action === "copy") {
+      const selection = term.getSelection();
+      if (selection) void navigator.clipboard.writeText(selection);
+      term.clearSelection();
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      return;
+    }
+    if (action === "paste") {
+      // term.paste() applies bracketed-paste wrapping, so pasting multiple
+      // lines into a TUI does not execute them line by line. preventDefault
+      // keeps xterm's own paste-event handler from pasting a second copy.
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      void navigator.clipboard.readText().then((text) => {
+        if (text) this.term?.paste(text);
+      });
+      return;
+    }
+
+    if (this.plugin.settings.terminalKeyPassthrough === false) return;
+    if (!this.proc?.stdin || this.proc.killed) return;
+
+    const encoded = encodeTerminalKey(event, {
+      applicationCursorKeys: term.modes.applicationCursorKeysMode,
+    });
+    if (encoded === null) return;
+    // The encoded bytes go straight to the PTY; xterm must not see the key
+    // a second time, and Obsidian must not trigger a hotkey for it.
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    this.proc.stdin.write(encoded);
   }
 
   private resolveVaultPath(candidate: string): TFile | null {
@@ -336,6 +417,13 @@ export class TerminalView extends ItemView {
         }
       });
 
+      // Fit/focus immediately when the container already has a real size
+      // instead of always waiting a fixed delay; keep one delayed refit as
+      // a fallback for late-finishing layouts.
+      if (this.containerEl.clientWidth > 0 && this.containerEl.clientHeight > 0) {
+        this.fit();
+        this.term?.focus();
+      }
       setTimeout(() => {
         if (this.term && this.fitAddon) {
           this.fit();

@@ -25,12 +25,24 @@ const CODEX_TUI_CLIENT_ID = "codex-tui";
 const DEFAULT_CLIENT_ID = "mv-senceai-obsidian";
 const MAX_FRAME_BYTES = 256 * 1024 * 1024;
 
-export function defaultCodexIdeSocketPath(): string {
-  if (process.platform === "win32") {
+export function defaultCodexIdeSocketPath(
+  platform: NodeJS.Platform = process.platform,
+  temporaryDirectory: string = os.tmpdir(),
+  uid: number = typeof process.getuid === "function" ? process.getuid() : 0,
+): string {
+  if (platform === "win32") {
     return "\\\\.\\pipe\\codex-ipc";
   }
-  const uid = typeof process.getuid === "function" ? process.getuid() : 0;
-  return path.join(os.tmpdir(), "codex-ipc", `ipc-${uid}.sock`);
+  return path.posix.join(temporaryDirectory, "codex-ipc", `ipc-${uid}.sock`);
+}
+
+export function codexIdeSocketPathForRuntime(
+  runtimeDirectory: string,
+  platform: NodeJS.Platform = process.platform,
+  uid: number = typeof process.getuid === "function" ? process.getuid() : 0,
+): string {
+  if (platform === "win32") return defaultCodexIdeSocketPath(platform);
+  return path.posix.join(runtimeDirectory, "codex-ipc", `ipc-${uid}.sock`);
 }
 
 export function encodeCodexIdeFrame(message: unknown): Buffer {

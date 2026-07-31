@@ -19,6 +19,11 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run verify
+      - name: Verify native Windows registry integration
+        if: runner.os == 'Windows'
+        run: npm test -- tests/windows-registry.integration.test.ts
+        env:
+          MV_AIDE_WINDOWS_REGISTRY_INTEGRATION: '1'
 
   package:
     needs: verify

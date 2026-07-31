@@ -84,7 +84,7 @@ export function createSourceAssistSnippetsEditor({
       if (run !== validationRun) return;
       if (!silent) {
         updateValidityIndicator(false);
-        console.error("[mv-senceai-ide] Invalid source assist snippets.", error);
+        console.error("[mv-aide] Invalid source assist snippets.", error);
       }
     }
   };

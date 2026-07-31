@@ -1,12 +1,13 @@
 export const DIFF_VIEW_TYPE = "mv-senceai-ide-diff";
 export const TERMINAL_VIEW_TYPE = "mv-terminal-view";
-export const PLUGIN_ID = "mv-senceai-ide";
 export const IDE_NAME = "Obsidian";
 export const SERVER_HOST = "127.0.0.1";
 export const PORT_BASE = 47000;
 export const PORT_SPAN = 1500;
-export const MCP_SERVER_NAME = "mv-senceai-ide";
-export const TERMINAL_MARKER_PREFIX = "mv-senceai-ide:";
+export const UNIVERSAL_MCP_PORT_BASE = 48500;
+export const UNIVERSAL_MCP_PORT_SPAN = 1500;
+export const MCP_SERVER_NAME = "mv-aide";
+export const TERMINAL_MARKER_PREFIX = "mv-aide:";
 export const MANAGED_HOOK_MARKER = "mv-senceai-ide-terminal-marker-v1";
 export const WINDOWS_MCP_REGISTRATION_VERSION = 1;
 
@@ -72,6 +73,10 @@ export const DEFAULT_SETTINGS = {
   ideIntegrations: {
     claudeCode: true,
     codex: false,
+  },
+  universalMcp: {
+    enabled: false,
+    authToken: null,
   },
   llm: {
     enabled: false,
@@ -173,9 +178,10 @@ export const DEFAULT_SETTINGS = {
   externalFileOpener: {
     enabled: false,
     extensionMode: "markdown-only" as const,
-    mirrorFolder: "senceai-external-files/mirror",
+    mirrorFolder: "mv-aide-external-files/mirror",
     mappings: {},
     openerToken: "",
+    fileTypeIcons: true,
   },
   mcpEnabled: true,
   mcpAuthToken: "",
@@ -190,6 +196,7 @@ export const DEFAULT_SETTINGS = {
   terminalPythonPath: "",
   terminalFontFamily: "",
   terminalFontSize: "",
+  terminalKeyPassthrough: true,
   terminalOpenPosition: "right",
   terminalThemeMode: "obsidian" as const,
   terminalCustomThemeId: "",

@@ -1,6 +1,6 @@
-# MV OBCC IDE 0.2.7 测试报告
+# mv-SenceAI 0.8.1 测试报告
 
-日期：2026-06-13
+最近更新：2026-07-26
 
 ## 环境
 
@@ -13,7 +13,7 @@
 ## 自动验证
 
 - TypeScript strict 类型检查：通过
-- Vitest：65/65 通过
+- Vitest：359/359 通过；仅 Windows CI 真实注册表用例在当前 macOS 跳过
 - 生产 esbuild：通过
 - `npm audit`：0 个漏洞
 - 从源码 ZIP 全新执行 `npm ci` 和 `npm run verify`：通过
@@ -96,6 +96,61 @@
 - jsdom 真实 EditorView 测试验证：非空选择产生实际高亮 DOM、CodeMirror exception sink 无异常、外部元素取得焦点后真实 selection 保持不变。
 - 开关关闭后停止记录并清除范围；重新开启时从当前真实 selection 恢复。PDF、Web、IDE、MCP 和最近选区逻辑未修改。
 - 本节完成类型检查、自动测试和生产构建；最终视觉效果仍由 Obsidian 真机验收。
+
+## Windows 注册表 v4 修复验证（2026-07-26）
+
+- Explorer `FileExts\\.<ext>\\OpenWithProgids` 不再通过 `reg.exe /d ""` 写入；新版助手调用 `RegSetValueExW(..., REG_NONE, IntPtr.Zero, 0)` 创建真正的零字节值。
+- 写入和检查统一走结构化的原生注册表助手，逐项校验值类型、原始字节长度和字符串内容；读取失败不会再被误判为“未注册”。
+- Shell 变更通知使用 `SHCNE_ASSOCCHANGED`、`SHCNF_IDLIST` 和同步刷新；候选项刷新完成后才结束注入。
+- 清理会全局枚举 SenceAI 的 OpenWith 和旧默认值引用，只删除本插件拥有的 ProgID、Capabilities、RegisteredApplications 与命名值，保留其它应用和扩展名原有默认值。
+- 清理始终临时生成当前版助手，因此 owner 指向 v3 助手、助手缺失或没有 owner 的残留注册也能进入同一清理路径；注入仍不会隐式清理或覆盖现有注册。
+- 自动测试覆盖零字节写入、2 字节伪空值、访问拒绝、额外后缀残留、部分写入回滚、旧版迁移和非 SenceAI 默认值保留。
+- Windows CI 增加真实 `HKCU` 注册表往返用例，并通过 `reg.exe export` 断言导出结果为精确的 `hex(0):`；该用例仅在 Windows CI 且显式开启时运行，结束后清理测试键。
+- macOS app bundle、LaunchServices 注入与清理代码没有修改。本节不声称 Windows 实机“打开方式”界面和双击文件已经验收，最终结果仍按 `WINDOWS-VALIDATION.md` 由 Windows 实机确认。
+
+## 三项隔离整改收尾验证（2026-07-30）
+
+收尾内容：响应式符号链接弹窗、通用 MCP 适配层、启动性能治理三块的剩余缺口。
+
+- 弹窗 CSS：≤480px 全宽规则补上 `mv-senceai-universal-mcp-setting` 文本输入框；测试补长中文错误、长本地路径与 UNC 路径的 DOM 渲染断言、设置页弹窗五按钮顺序契约、低高度（`max-height`/`overflow-y`）与宽屏（`flex-wrap`）CSS 契约。
+- 启动性能：轮询回退间隔新增按 storageKey 哈希派生的确定性错峰（`managedCopyPollInterval`，2000–3000ms），与 heartbeat 错峰（30000–35000ms）使用不同哈希域；新增测试固定错峰边界/确定性以及 watcher 以恢复结果播种指纹、启动期零全文重读的行为。
+- Windows 修复脚本拆分判定：`node scripts/measure-repair-script-eval.mjs` 实测模块求值中位数 0.21ms、p95 0.37ms（24KB 独立打包，30 次采样），远低于 50ms / 20% 阈值，**不拆分**，该条按测量记录收尾。
+- 构建隔离：`scripts/check-bundle-isolation.mjs` 断言 `dist/main.js` 不含通用 MCP 协议标记、独立产物齐全，已接入 `npm run verify`。
+- 协议端到端：`npm run test:protocol`（`scripts/test-universal-mcp-stdio.mjs`）用真实构建产物经 stdio 代理对 2026-07-28 / 2025-11-25 / 2025-03-26 三版本跑发现、完整 8 工具 `tools/list`、4 资源 `resources/read` 及陈旧描述文件拒退，共 45 项断言通过。
+- 官方 MCP Inspector 对真实客户端的验证、真实视口布局与真实 Obsidian 回归不在自动化范围内，按下方清单人工验收。
+
+### 真实 Obsidian 实测（2026-07-30，`scripts/live-ide-tools-check.mjs`）
+
+对正在运行的插件（通用 MCP 已开启）逐工具实测，自动化 23/23 通过 + 人工配合 3 项通过：
+
+- 全部 8 个 IDE 工具逐一调通：`getLatestSelection`（无选区时返回设计内响应）、`getOpenEditors`（真实标签列表）、`openFile`（打开并定位行）、`readCurrentWebPage`（无前台网页时明确提示）、`openDiff`（任务创建、diff 标签真实出现）、`close_tab`（按名关闭并以 DIFF_REJECTED 了结任务）、`closeAllDiffTabs`（清空无残留）、`getDiagnostics`（`[]`）。
+- 三版本 `server/discover`、`tools/list` 精确等于 8 个 `IDE_TOOL_DEFINITIONS`、4 个资源实时反映工作区、stdio 启动器对真实服务 `tools/list` 通过。
+- 人工配合：网页标签前台时 `readCurrentWebPage` 返回 19872 字符正文（title/url/markdown 齐全）；用户点「接受」后 `openDiff` 回执 `FILE_SAVED` 且返回内容与提交一致（按契约由调用方写盘，插件不写文件）；选中文字并执行 `Send current selection to Claude Code` 后 `latest-mention` 资源实时更新（lineStart/lineEnd 正确），`latest-selection` 随选区/标签切换实时更新。
+- 实测全程未触碰用户文件与标签页：临时 scratch 笔记自清理，`openFile` 复用叶子挤走的用户标签已自动恢复，基线比对一致。
+
+### 人工验收清单（真实 Obsidian，部署后逐项确认）
+
+弹窗与设置页（设置 → mv-SenceAI，触发符号链接失败弹窗）：
+
+- [ ] 视口 1024 / 700 / 480 / 360px 宽度下弹窗无横向溢出，按钮依次为多列换行 / 两列 / 单列全宽，取消按钮始终最后。
+- [ ] 100% / 150% / 200% 界面缩放下布局不破。
+- [ ] 低高度窗口中弹窗纵向滚动、内容不裁剪。
+- [ ] 五按钮全量场景（权限拒绝 + 开发者设置可用）按钮齐全且顺序正确。
+- [ ] 超长无空格中文错误、长本地路径、UNC 路径均任意位置换行，不撑破弹窗。
+- [ ] 窄侧栏下外部镜像与通用 MCP 设置项输入框、按钮换行正常。
+
+通用 MCP：
+
+- [ ] 开关默认关闭：无监听端口、无运行描述文件，`dist/main.js` 加载路径不含通用 MCP（启动计时可佐证）。
+- [x] 开启后设置页显示运行状态与协议版本；复制 HTTP / stdio 配置到 Claude Code 或其他 Agent，三版本握手、8 工具、资源订阅通知（选区/提及变化）可用。（2026-07-30 已实测，Inspector 对真实桌面客户端的验证除外）
+- [ ] 令牌轮换后旧令牌失效、新令牌可用；错误令牌与非本机 Origin 被拒绝。
+- [ ] 关闭开关或卸载插件后连接、订阅、diff 待决与描述文件全部清理。
+
+回归与启动：
+
+- [x] Claude 选区广播、`at_mentioned`、Codex `/ide` 与 MCP 自动注册行为与整改前一致。（2026-07-30 实测：`Send current selection to Claude Code` 正常执行，原广播代码路径未改动、单测全绿；Codex 注册文件未变化）
+- [ ] 启动计时（开发者工具 console）显示普通符号链接启动无子进程 / 注册表 / 哈希峰值；受管副本恢复在空闲队列分片执行。
+- [ ] macOS / Linux 不进入 Windows 修复路径（如可测）。
 
 ## Windows 状态
 

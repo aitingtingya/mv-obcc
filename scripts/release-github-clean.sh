@@ -96,6 +96,9 @@ done
 
 cd "$CLEAN_ROOT"
 rm -rf tests vitest.config.ts node_modules dist release .obsidian .DS_Store
+# 清理嵌套目录里的本机产物，防止随 scripts/ 的整目录拷贝混入 GitHub 仓库。
+find "$CLEAN_ROOT" -type d -name "__pycache__" -prune -exec rm -rf {} +
+find "$CLEAN_ROOT" -type f \( -name "*.pyc" -o -name ".DS_Store" \) -delete
 
 node <<'NODE'
 const fs = require("node:fs");
@@ -230,7 +233,7 @@ if [[ $lookup_status -eq 0 && -n "$release_lookup" ]]; then
   fi
 fi
 
-release_payload="$(node -e 'const version = process.argv[1]; process.stdout.write(JSON.stringify({ tag_name: version, target_commitish: "main", name: version, body: `mv-SenceAI ${version}`, draft: false, prerelease: false }));' "$VERSION")"
+release_payload="$(node -e 'const version = process.argv[1]; process.stdout.write(JSON.stringify({ tag_name: version, target_commitish: "main", name: version, body: `mv-AIDE ${version}`, draft: false, prerelease: false }));' "$VERSION")"
 release_json="$(
   curl -fsS -X POST \
     -H "Authorization: Bearer $GITHUB_TOKEN_RESOLVED" \

@@ -1079,6 +1079,129 @@
 	margin-top: 16px;
 }
 
+.modal.mv-senceai-symlink-modal {
+	box-sizing: border-box;
+	max-height: calc(100vh - 32px);
+	max-width: calc(100vw - 32px);
+	overflow-x: hidden;
+	overflow-y: auto;
+	width: min(720px, calc(100vw - 32px));
+}
+
+.mv-senceai-symlink-modal .modal-content,
+.mv-senceai-symlink-modal .modal-content > * {
+	min-width: 0;
+}
+
+.mv-senceai-symlink-modal .setting-item-description,
+.mv-senceai-symlink-modal .mv-senceai-status-error {
+	overflow-wrap: anywhere;
+	word-break: break-word;
+}
+
+.mv-senceai-symlink-modal .mv-senceai-modal-button-row {
+	flex-wrap: wrap;
+	min-width: 0;
+}
+
+.mv-senceai-symlink-modal .mv-senceai-modal-button-row > button {
+	flex: 0 1 auto;
+	max-width: 100%;
+	min-height: 44px;
+	min-width: 0;
+	overflow-wrap: anywhere;
+	white-space: normal;
+}
+
+@media (max-width: 700px) {
+	.mv-senceai-symlink-modal .mv-senceai-modal-button-row {
+		display: grid;
+		grid-template-columns: repeat(2, minmax(0, 1fr));
+		justify-content: stretch;
+	}
+
+	.mv-senceai-symlink-modal .mv-senceai-modal-button-row > button {
+		width: 100%;
+	}
+}
+
+@media (max-width: 480px) {
+	.mv-senceai-symlink-modal .mv-senceai-modal-button-row {
+		grid-template-columns: minmax(0, 1fr);
+	}
+}
+
+@media (max-width: 700px) {
+	.setting-item.mv-senceai-external-mirror-setting,
+	.setting-item.mv-senceai-universal-mcp-setting {
+		align-items: flex-start;
+		flex-wrap: wrap;
+		min-width: 0;
+	}
+
+	.setting-item.mv-senceai-external-mirror-setting > .setting-item-info,
+	.setting-item.mv-senceai-universal-mcp-setting > .setting-item-info {
+		flex: 1 1 240px;
+		min-width: 0;
+		overflow-wrap: anywhere;
+	}
+
+	.setting-item.mv-senceai-external-mirror-setting > .setting-item-control,
+	.setting-item.mv-senceai-universal-mcp-setting > .setting-item-control {
+		flex: 1 1 280px;
+		flex-wrap: wrap;
+		gap: 8px;
+		justify-content: flex-end;
+		min-width: 0;
+	}
+
+	.setting-item.mv-senceai-external-mirror-setting .setting-item-control input:not([type="checkbox"]) {
+		flex: 1 1 180px;
+		max-width: 100%;
+		min-width: 0;
+		width: auto;
+	}
+
+	.setting-item.mv-senceai-external-mirror-setting .setting-item-control button,
+	.setting-item.mv-senceai-universal-mcp-setting .setting-item-control button {
+		height: auto;
+		max-width: 100%;
+		min-height: 36px;
+		min-width: 0;
+		overflow-wrap: anywhere;
+		white-space: normal;
+	}
+}
+
+@media (max-width: 480px) {
+	.setting-item.mv-senceai-external-mirror-setting,
+	.setting-item.mv-senceai-universal-mcp-setting {
+		align-items: stretch;
+		flex-direction: column;
+	}
+
+	.setting-item.mv-senceai-external-mirror-setting > .setting-item-info,
+	.setting-item.mv-senceai-external-mirror-setting > .setting-item-control,
+	.setting-item.mv-senceai-universal-mcp-setting > .setting-item-info,
+	.setting-item.mv-senceai-universal-mcp-setting > .setting-item-control {
+		flex: 1 1 auto;
+		width: 100%;
+	}
+
+	.setting-item.mv-senceai-external-mirror-setting > .setting-item-control,
+	.setting-item.mv-senceai-universal-mcp-setting > .setting-item-control {
+		justify-content: stretch;
+	}
+
+	.setting-item.mv-senceai-external-mirror-setting .setting-item-control input:not([type="checkbox"]),
+	.setting-item.mv-senceai-external-mirror-setting .setting-item-control button,
+	.setting-item.mv-senceai-universal-mcp-setting .setting-item-control input:not([type="checkbox"]),
+	.setting-item.mv-senceai-universal-mcp-setting .setting-item-control button {
+		flex: 1 1 100%;
+		width: 100%;
+	}
+}
+
 .mv-senceai-tex-math-preview {
 	cursor: text;
 }
@@ -1092,4 +1215,19 @@
 
 .mv-senceai-tex-math-preview-inline {
 	display: inline;
+}
+
+/*
+ * 文件类型图标：标签页显示后缀文字徽标。
+ * Obsidian 原生样式会隐藏 markdown 笔记的标签页图标槽
+ * （.mod-root .workspace-tab-header[data-type="markdown"] ... display:none），
+ * 这里仅在插件开关开启（body.mv-fti-tabs）时解除隐藏，不影响其他视图类型。
+ */
+body.mv-fti-tabs .mod-root .workspace-tab-header[data-type="markdown"] .workspace-tab-header-inner-icon {
+	display: flex;
+}
+
+body.mv-fti-tabs .workspace-tab-header-inner-icon svg.svg-icon[class*="mv-fti-"] {
+	--icon-size: 16px;
+	margin-right: 2px;
 }

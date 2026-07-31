@@ -2,3 +2,7 @@ node_modules/
 dist/
 release/
 *.log
+__pycache__/
+*.pyc
+.DS_Store
+scripts_tmp_*

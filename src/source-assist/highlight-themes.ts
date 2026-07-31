@@ -563,7 +563,7 @@ function detectThemeFormat(
 ): SourceHighlightThemeFormat {
   const lowerName = fileName?.toLowerCase() ?? "";
   if (lowerName.endsWith(".tmtheme")) {
-    throw new Error("第一版暂不支持 .tmTheme plist/XML 主题。请使用 Prism CSS、highlight.js CSS、VS Code/Shiki JSON 或 mv-SenceAI JSON。");
+    throw new Error("第一版暂不支持 .tmTheme plist/XML 主题。请使用 Prism CSS、highlight.js CSS、VS Code/Shiki JSON 或 mv-AIDE JSON。");
   }
   if (/^\s*\{/.test(content)) {
     const parsed = JSON.parse(content) as unknown;
@@ -583,7 +583,7 @@ function parseMvSenceAiJsonTheme(content: string): {
 } {
   const parsed = JSON.parse(content) as unknown;
   if (!isRecord(parsed) || !isRecord(parsed.palette)) {
-    throw new Error("mv-SenceAI JSON 需要包含 palette 对象。");
+    throw new Error("mv-AIDE JSON 需要包含 palette 对象。");
   }
   return {
     name: typeof parsed.name === "string" ? parsed.name.trim() : "",
