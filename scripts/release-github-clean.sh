@@ -59,7 +59,12 @@ GIT_AUTH_HEADER="Authorization: Basic ${BASIC_AUTH}"
 
 echo "Preparing clean release ${VERSION} from ${SOURCE_ROOT}"
 rm -rf "$CLEAN_ROOT"
-git clone "$REPO_URL" "$CLEAN_ROOT"
+if ! git clone "$REPO_URL" "$CLEAN_ROOT" 2>/dev/null; then
+  echo "Remote clone failed, initializing clean repo locally..."
+  mkdir -p "$CLEAN_ROOT"
+  git -C "$CLEAN_ROOT" init -b main
+  git -C "$CLEAN_ROOT" remote add origin "$REPO_URL"
+fi
 
 find "$CLEAN_ROOT" -mindepth 1 -maxdepth 1 ! -name ".git" -exec rm -rf {} +
 
