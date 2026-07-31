@@ -1,3 +1,5 @@
+import { t } from "../i18n";
+
 const PURE_MODIFIER_KEYS = new Set([
   "Alt",
   "Control",
@@ -135,10 +137,10 @@ export function eventToCodeMirrorKey(
 
 export function formatInlineHotkeyLabel(value: string): string {
   const trimmed = value.trim();
-  if (!trimmed) return "未绑定";
+  if (!trimmed) return t("未绑定");
 
   const parts = splitHotkey(trimmed);
-  if (parts.length === 0) return "未绑定";
+  if (parts.length === 0) return t("未绑定");
   const key = parts.at(-1);
   if (!key) return trimmed;
 

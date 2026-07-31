@@ -10,6 +10,7 @@ import {
 } from "obsidian";
 import type MvSenceAiIdePlugin from "../main";
 import { callLlmStream, resolveProvider } from "./llm-client";
+import { t } from "./i18n";
 import { getCommandHotkeys } from "./llm-hotkey-reader";
 import { LlmResultSurface } from "./llm-result-surface";
 import { registerTempIgnoreFilter } from "./llm-temp-file";
@@ -193,6 +194,7 @@ export class LlmFeature {
   /** Prevent concurrent executeJavaScript polls for the same webview. */
   private readonly autoTriggerPollInFlight = new WeakSet<WorkspaceLeaf>();
   private autoTriggerPollTimer: number | null = null;
+  private readonly registeredLlmCommandIds = new Set<string>();
 
   constructor(private readonly plugin: MvSenceAiIdePlugin) {}
 
@@ -209,13 +211,21 @@ export class LlmFeature {
    * `editorCallback`) so the command also fires inside PDF and webviewer leaves.
    */
   registerCommands(): void {
+    // Idempotent: remove previously registered ids first so re-registering
+    // (e.g. after a language switch) never duplicates commands.
+    for (const id of this.registeredLlmCommandIds) {
+      this.plugin.removeCommand(id);
+    }
+    this.registeredLlmCommandIds.clear();
     for (const template of this.settings.templates) {
       if (!template.enabled) continue; // disabled templates expose no command
+      const id = `llm-${template.id}`;
       this.plugin.addCommand({
-        id: `llm-${template.id}`,
+        id,
         name: `LLM: ${template.label}`,
         callback: () => this.runTemplate(template),
       });
+      this.registeredLlmCommandIds.add(id);
     }
   }
 
@@ -383,7 +393,7 @@ export class LlmFeature {
 
   private hasSelectionNow(): boolean {
     const sel =
-      this.app.workspace.activeLeaf?.view?.containerEl?.ownerDocument?.getSelection();
+      this.app.workspace.getMostRecentLeaf()?.view?.containerEl?.ownerDocument?.getSelection();
     return !!sel && sel.toString().trim().length > 0;
   }
 
@@ -567,7 +577,7 @@ export class LlmFeature {
 
   private pollWebMenus(): void {
     if (!this.settings.enabled || !this.settings.webContextMenu) return;
-    const active = this.app.workspace.activeLeaf;
+    const active = this.app.workspace.getMostRecentLeaf();
     if (!active || active.view.getViewType() !== "webviewer") return;
     const view = active.view as WebViewerLike;
     const webview = view.webview;
@@ -770,7 +780,7 @@ export class LlmFeature {
 
   private pollWebHotkeys(): void {
     if (!this.settings.enabled) return;
-    const active = this.app.workspace.activeLeaf;
+    const active = this.app.workspace.getMostRecentLeaf();
     if (!active || active.view.getViewType() !== "webviewer") return;
     if (this.hotkeyPollInFlight.has(active)) return;
     const view = active.view as WebViewerLike;
@@ -928,7 +938,12 @@ export class LlmFeature {
       this.removeRibbon();
       return;
     }
-    const tooltip = `划词自动触发：${tpl.label}（点击${this.autoTriggerActive ? "关闭" : "开启"}）`;
+    const tooltip = t(
+      this.autoTriggerActive
+        ? "划词自动触发：{label}（点击关闭）"
+        : "划词自动触发：{label}（点击开启）",
+      { label: tpl.label },
+    );
     if (this.ribbonIconEl) {
       this.ribbonIconEl.setAttribute("aria-label", tooltip);
       this.ribbonIconEl.setAttribute("data-tooltip", tooltip);
@@ -937,7 +952,7 @@ export class LlmFeature {
     }
     this.ribbonIconEl = this.plugin.addRibbonIcon(
       "wand-2",
-      "划词自动触发",
+      t("划词自动触发"),
       () => this.toggleAutoTrigger(),
     );
     this.ribbonIconEl.setAttribute("aria-label", tooltip);
@@ -959,7 +974,7 @@ export class LlmFeature {
       // The configured template is disabled: refuse to arm, explain.
       this.autoTriggerActive = false;
       this.ribbonIconEl?.classList.remove("is-active");
-      new Notice("所选模板已被关闭，请先在设置里启用它或另选一个。", 4000);
+      new Notice(t("所选模板已被关闭，请先在设置里启用它或另选一个。"), 4000);
       return;
     }
     // Re-sync the webview injection + polling whenever the toggle flips.
@@ -967,14 +982,19 @@ export class LlmFeature {
     new Notice(
       this.autoTriggerActive
         ? tpl
-          ? `已开启划词自动触发：${tpl.label}`
-          : "已开启划词自动触发"
-        : "已关闭划词自动触发",
+          ? t("已开启划词自动触发：{label}", { label: tpl.label })
+          : t("已开启划词自动触发")
+        : t("已关闭划词自动触发"),
       3000,
     );
     const tooltip = tpl
-      ? `划词自动触发：${tpl.label}（点击${this.autoTriggerActive ? "关闭" : "开启"}）`
-      : "划词自动触发";
+      ? t(
+          this.autoTriggerActive
+            ? "划词自动触发：{label}（点击关闭）"
+            : "划词自动触发：{label}（点击开启）",
+          { label: tpl.label },
+        )
+      : t("划词自动触发");
     this.ribbonIconEl?.setAttribute("aria-label", tooltip);
     this.ribbonIconEl?.setAttribute("data-tooltip", tooltip);
   }
@@ -1111,7 +1131,7 @@ export class LlmFeature {
     requestedLeaf?: WorkspaceLeaf | null,
   ): Promise<void> {
     if (!this.settings.enabled) {
-      new Notice("LLM 功能未启用，请在设置中开启。");
+      new Notice(t("LLM 功能未启用，请在设置中开启。"));
       return;
     }
     const leaf =
@@ -1119,7 +1139,7 @@ export class LlmFeature {
     const editTarget = this.captureMarkdownTarget(leaf);
     const state = await currentWorkspaceContext(this.app, leaf);
     if (!state || !state.selection.text.trim()) {
-      new Notice("请先选中文本再调用。");
+      new Notice(t("请先选中文本再调用。"));
       return;
     }
     await this.invokeWithText(
@@ -1248,7 +1268,7 @@ export class LlmFeature {
       }
       const message = error instanceof Error ? error.message : String(error);
       surface.setError(message);
-      new Notice(`LLM 调用失败：${message}`, 8000);
+      new Notice(t("LLM 调用失败：{message}", { message }), 8000);
     } finally {
       if (
         generation === this.invocationGeneration &&
@@ -1281,7 +1301,7 @@ export class LlmFeature {
     label: string,
   ): void {
     target.editor.replaceRange(text + "\n", target.cursor);
-    new Notice(`已插入：${label}`);
+    new Notice(t("已插入：{label}", { label }));
   }
 
   private replaceInEditor(
@@ -1291,10 +1311,10 @@ export class LlmFeature {
   ): void {
     if (target.hadSelection) {
       target.editor.replaceRange(text, target.from, target.to);
-      new Notice(`已替换：${label}`);
+      new Notice(t("已替换：{label}", { label }));
     } else {
       target.editor.replaceRange(text, target.cursor);
-      new Notice(`已插入：${label}`);
+      new Notice(t("已插入：{label}", { label }));
     }
   }
 

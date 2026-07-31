@@ -11,6 +11,7 @@
 //   <svg> document here would nest and render nothing).
 
 import { deflateSync } from "node:zlib";
+import { t } from "./i18n";
 
 /** Uppercase short label for an extension ("md" -> "MD"), null when empty. */
 export function labelForExtension(extension: string): string | null {
@@ -190,7 +191,7 @@ export function encodePng(
   height: number,
 ): Buffer {
   if (width < 1 || height < 1 || rgba.length !== width * height * 4) {
-    throw new Error("PNG 像素数据与尺寸不匹配。");
+    throw new Error(t("PNG 像素数据与尺寸不匹配。"));
   }
   const ihdr = Buffer.alloc(13);
   ihdr.writeUInt32BE(width, 0);
@@ -220,7 +221,7 @@ export function encodePng(
 // ---------------------------------------------------------------------------
 
 export function packIco(images: { size: number; data: Buffer }[]): Buffer {
-  if (images.length === 0) throw new Error("ICO 至少需要一个图像。");
+  if (images.length === 0) throw new Error(t("ICO 至少需要一个图像。"));
   const header = Buffer.alloc(6);
   header.writeUInt16LE(1, 2); // resource type: icon
   header.writeUInt16LE(images.length, 4);
@@ -229,7 +230,7 @@ export function packIco(images: { size: number; data: Buffer }[]): Buffer {
   const payloads: Buffer[] = [];
   for (const { size, data } of images) {
     if (!Number.isInteger(size) || size < 1 || size > 256) {
-      throw new Error(`非法 ICO 尺寸：${size}`);
+      throw new Error(t("非法 ICO 尺寸：{v0}", { v0: size }));
     }
     const entry = Buffer.alloc(16);
     entry[0] = size === 256 ? 0 : size; // 0 means 256
@@ -257,10 +258,10 @@ const ICNS_TYPE_BY_SIZE: Record<number, string> = {
 };
 
 export function packIcns(images: { size: number; data: Buffer }[]): Buffer {
-  if (images.length === 0) throw new Error("ICNS 至少需要一个图像。");
+  if (images.length === 0) throw new Error(t("ICNS 至少需要一个图像。"));
   const chunks = images.map(({ size, data }) => {
     const type = ICNS_TYPE_BY_SIZE[size];
-    if (!type) throw new Error(`不支持的 ICNS 尺寸：${size}`);
+    if (!type) throw new Error(t("不支持的 ICNS 尺寸：{v0}", { v0: size }));
     const head = Buffer.alloc(8);
     head.write(type, 0, "ascii");
     head.writeUInt32BE(data.length + 8, 4);

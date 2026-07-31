@@ -49,6 +49,7 @@ export const DEFAULT_INLINE_SYSTEM_PROMPT =
   DEFAULT_INLINE_SYSTEM_PROMPT_BODY + "\n" + DEFAULT_INLINE_NO_COMPLETION_PROMPT;
 
 export const DEFAULT_SETTINGS = {
+  language: "zh" as const,
   upstreamMode: "native" as const,
   upstreamBaseUrl: "",
   autoManageClaudeSettings: true,

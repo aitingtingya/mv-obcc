@@ -328,6 +328,7 @@ export interface BridgeSettings {
   terminalThemeMode: TerminalThemeMode;
   terminalCustomThemeId: string;
   terminalCustomThemes: TerminalThemePreset[];
+  language: "zh" | "en";
 }
 
 export interface BridgeClientContext {

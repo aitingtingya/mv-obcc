@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { t } from "./i18n";
 import os from "node:os";
 import path from "node:path";
 import {
@@ -51,7 +52,7 @@ function failureDetails(failure: FileSymlinkFailure): string {
   } else if (failure.errorCode) {
     details.push(failure.errorCode);
   }
-  details.push(`阶段：${failure.stage}`);
+  details.push(t("阶段：{v0}", { v0: failure.stage }));
   return details.join("，");
 }
 
@@ -62,19 +63,19 @@ export function describeFileSymlinkFailure(
   const details = failureDetails(failure);
   if (platform === "win32") {
     if (failure.win32Error === 1314) {
-      return `Windows 拒绝创建符号链接（${details}）：当前 Obsidian 进程没有有效的符号链接权限。开发者模式可能未真正生效，或权限被系统策略限制。`;
+      return t("Windows 拒绝创建符号链接（{v0}）：当前 Obsidian 进程没有有效的符号链接权限。开发者模式可能未真正生效，或权限被系统策略限制。", { v0: details });
     }
     if (failure.win32Error === 5 || failure.reason === "permission-denied") {
-      return `Windows 拒绝创建符号链接（${details}）：请检查 vault 目录权限、开发者模式和组织策略。`;
+      return t("Windows 拒绝创建符号链接（{v0}）：请检查 vault 目录权限、开发者模式和组织策略。", { v0: details });
     }
     if (failure.reason === "remote-unavailable") {
-      return `Windows 无法在当前本地/网络路径组合上建立符号链接（${details}），请检查网络提供程序及远程符号链接策略。`;
+      return t("Windows 无法在当前本地/网络路径组合上建立符号链接（{v0}），请检查网络提供程序及远程符号链接策略。", { v0: details });
     }
     if (failure.reason === "filesystem-unsupported") {
-      return `当前 Windows 文件系统或存储提供程序不支持该符号链接（${details}）。`;
+      return t("当前 Windows 文件系统或存储提供程序不支持该符号链接（{v0}）。", { v0: details });
     }
   }
-  return `无法创建并验证文件符号链接（${details}）：${failure.message}`;
+  return t("无法创建并验证文件符号链接（{v0}）：{v1}", { v0: details, v1: failure.message });
 }
 
 function writeThroughFailure(
@@ -131,7 +132,7 @@ export async function preflightExternalFileSymlink(
     failure.stage = "validate-input";
     return {
       ok: false,
-      message: `镜像目录无效：${failure.message}`,
+      message: t("镜像目录无效：{v0}", { v0: failure.message }),
       failure,
       fallbackEligible: false,
     };
@@ -166,7 +167,7 @@ export async function preflightExternalFileSymlink(
       return {
         ok: false,
         message: fallbackEligible
-          ? `${description} 可选择使用受管临时副本继续；后续仍会优先使用真实符号链接。`
+          ? t("{v0} 可选择使用受管临时副本继续；后续仍会优先使用真实符号链接。", { v0: description })
           : description,
         failure: result,
         fallbackEligible,
@@ -177,7 +178,7 @@ export async function preflightExternalFileSymlink(
       fs.writeFileSync(linkPath, "written-through-link", "utf8");
       if (fs.readFileSync(sourcePath, "utf8") !== "written-through-link") {
         throw Object.assign(
-          new Error("符号链接没有保持双向写穿行为。"),
+          new Error(t("符号链接没有保持双向写穿行为。")),
           { code: "EVERIFY" },
         );
       }
@@ -185,14 +186,14 @@ export async function preflightExternalFileSymlink(
       const failure = writeThroughFailure(sourcePath, linkPath, error);
       return {
         ok: false,
-        message: `${describeFileSymlinkFailure(failure, platform)} 可选择使用受管临时副本继续；后续仍会优先使用真实符号链接。`,
+        message: t("{v0} 可选择使用受管临时副本继续；后续仍会优先使用真实符号链接。", { v0: describeFileSymlinkFailure(failure, platform) }),
         failure,
         fallbackEligible: true,
       };
     }
     return {
       ok: true,
-      message: `${platform === "win32" ? "Windows " : ""}符号链接预检通过。`,
+      message: t("{v0}符号链接预检通过。", { v0: platform === "win32" ? "Windows " : "" }),
     };
   } finally {
     fs.rmSync(linkPath, { force: true });

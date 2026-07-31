@@ -1,4 +1,5 @@
 import { Modal, type App } from "obsidian";
+import { t } from "./i18n";
 import type { FileSymlinkFailure } from "./file-symlink-service";
 
 export type ExternalFileSymlinkFallbackDecision =
@@ -47,8 +48,8 @@ export class ExternalFileSymlinkFallbackModal extends Modal {
     contentEl.empty();
     contentEl.createEl("h3", {
       text: platform === "win32"
-        ? "Windows 符号链接创建失败"
-        : "符号链接创建失败",
+        ? t("Windows 符号链接创建失败")
+        : t("符号链接创建失败"),
     });
     const statusEl = contentEl.createEl("p", {
       text: this.options.message,
@@ -58,14 +59,14 @@ export class ExternalFileSymlinkFallbackModal extends Modal {
     statusEl.setAttribute("aria-live", "polite");
     statusEl.setAttribute("aria-atomic", "true");
     contentEl.createEl("p", {
-      text: "插件仍会优先重试真实符号链接。只有您明确选择后，才会为本机启用独立的受管临时副本；启用后的日常打开和同步保持静默，仅在双方同时编辑冲突时询问。",
+      text: t("插件仍会优先重试真实符号链接。只有您明确选择后，才会为本机启用独立的受管临时副本；启用后的日常打开和同步保持静默，仅在双方同时编辑冲突时询问。"),
       cls: "setting-item-description",
     });
 
     const buttonRow = contentEl.createDiv({ cls: "mv-senceai-modal-button-row" });
     if (platform === "win32" && this.options.failure.reason === "permission-denied") {
       const repairButton = buttonRow.createEl("button", {
-        text: "管理员修复并重试",
+        text: t("管理员修复并重试"),
       });
       repairButton.addClass("mod-cta");
       repairButton.addEventListener("click", () => {
@@ -74,7 +75,7 @@ export class ExternalFileSymlinkFallbackModal extends Modal {
     }
     if (platform === "win32" && this.options.openDeveloperSettings) {
       const settingsButton = buttonRow.createEl("button", {
-        text: "打开开发者设置",
+        text: t("打开开发者设置"),
       });
       settingsButton.addEventListener("click", () => {
         settingsButton.disabled = true;
@@ -88,15 +89,15 @@ export class ExternalFileSymlinkFallbackModal extends Modal {
         });
       });
     }
-    const retryButton = buttonRow.createEl("button", { text: "重新检测" });
+    const retryButton = buttonRow.createEl("button", { text: t("重新检测") });
     retryButton.addEventListener("click", () => this.finish("retry"));
 
     const fallbackButton = buttonRow.createEl("button", {
-      text: "使用受管临时副本并打开",
+      text: t("使用受管临时副本并打开"),
     });
     fallbackButton.addEventListener("click", () => this.finish("managed-copy"));
 
-    const cancelButton = buttonRow.createEl("button", { text: "取消" });
+    const cancelButton = buttonRow.createEl("button", { text: t("取消") });
     cancelButton.addEventListener("click", () => this.finish("cancel"));
   }
 

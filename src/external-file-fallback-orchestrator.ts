@@ -1,4 +1,5 @@
 import type { ExternalFileOpenResult } from "./external-file-opener";
+import { t } from "./i18n";
 import type { ExternalFileSymlinkFallbackDecision } from "./external-file-symlink-fallback-modal";
 
 export interface ExternalFileFallbackOrchestratorOptions {
@@ -31,7 +32,7 @@ export async function openExternalFileWithFallbackConsent(
 
   const decision = await options.requestDecision(
     first.symlinkFailure,
-    first.message ?? "符号链接创建失败。",
+    first.message ?? t("符号链接创建失败。"),
   );
   if (decision === "cancel") return first;
   if (decision === "repair-and-retry") {

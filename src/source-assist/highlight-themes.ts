@@ -6,6 +6,7 @@ import type {
   SourceHighlightThemeFormat,
   SourceHighlightTokenStyle,
 } from "../types";
+import { t } from "../i18n";
 
 export const SOURCE_HIGHLIGHT_FOLLOW_GLOBAL = "follow-global";
 export const SOURCE_HIGHLIGHT_OBSIDIAN = "builtin:obsidian";
@@ -46,7 +47,7 @@ export interface SourceHighlightImportResult {
 const BUILT_IN_SOURCE_HIGHLIGHT_THEMES: SourceHighlightThemeDefinition[] = [
   {
     id: SOURCE_HIGHLIGHT_OBSIDIAN,
-    name: "跟随 Obsidian",
+    name: t("跟随 Obsidian"),
     format: "builtin",
     palette: {},
   },
@@ -498,7 +499,7 @@ export function importSourceHighlightTheme(
     palette: parsed.palette,
   };
   if (!paletteHasAnyStyle(theme.palette)) {
-    throw new Error("未能从主题文件中提取可用的 token 配色。");
+    throw new Error(t("未能从主题文件中提取可用的 token 配色。"));
   }
   return { theme, warnings: parsed.warnings };
 }
@@ -531,7 +532,7 @@ function parseThemeContent(
   warnings: string[];
 } {
   const trimmed = content.trim();
-  if (!trimmed) throw new Error("主题文件为空。");
+  if (!trimmed) throw new Error(t("主题文件为空。"));
   const detected = format === "auto" ? detectThemeFormat(trimmed, fileName) : format;
   switch (detected) {
     case "mv-senceai-json":
@@ -543,7 +544,7 @@ function parseThemeContent(
         name: themeNameFromFile(fileName),
         format: "highlight-js-css",
         palette: parseCssTheme(trimmed, HLJS_SELECTOR_MAP),
-        warnings: ["highlight.js CSS 会转换为 Prism token 配色，效果为近似还原。"],
+        warnings: [t("highlight.js CSS 会转换为 Prism token 配色，效果为近似还原。")],
       };
     case "prism-css":
       return {
@@ -553,7 +554,7 @@ function parseThemeContent(
         warnings: [],
       };
     default:
-      throw new Error("不支持该主题格式。");
+      throw new Error(t("不支持该主题格式。"));
   }
 }
 
@@ -563,7 +564,7 @@ function detectThemeFormat(
 ): SourceHighlightThemeFormat {
   const lowerName = fileName?.toLowerCase() ?? "";
   if (lowerName.endsWith(".tmtheme")) {
-    throw new Error("第一版暂不支持 .tmTheme plist/XML 主题。请使用 Prism CSS、highlight.js CSS、VS Code/Shiki JSON 或 mv-AIDE JSON。");
+    throw new Error(t("第一版暂不支持 .tmTheme plist/XML 主题。请使用 Prism CSS、highlight.js CSS、VS Code/Shiki JSON 或 mv-AIDE JSON。"));
   }
   if (/^\s*\{/.test(content)) {
     const parsed = JSON.parse(content) as unknown;
@@ -572,7 +573,7 @@ function detectThemeFormat(
   }
   if (content.includes(".hljs")) return "highlight-js-css";
   if (content.includes(".token")) return "prism-css";
-  throw new Error("无法自动识别主题格式。请手动选择 Prism CSS、highlight.js CSS 或 VS Code/Shiki JSON。");
+  throw new Error(t("无法自动识别主题格式。请手动选择 Prism CSS、highlight.js CSS 或 VS Code/Shiki JSON。"));
 }
 
 function parseMvSenceAiJsonTheme(content: string): {
@@ -583,7 +584,7 @@ function parseMvSenceAiJsonTheme(content: string): {
 } {
   const parsed = JSON.parse(content) as unknown;
   if (!isRecord(parsed) || !isRecord(parsed.palette)) {
-    throw new Error("mv-AIDE JSON 需要包含 palette 对象。");
+    throw new Error(t("mv-AIDE JSON 需要包含 palette 对象。"));
   }
   return {
     name: typeof parsed.name === "string" ? parsed.name.trim() : "",
@@ -603,7 +604,7 @@ function parseTextmateJsonTheme(
   warnings: string[];
 } {
   const parsed = JSON.parse(content) as unknown;
-  if (!isRecord(parsed)) throw new Error("无效 JSON 主题。");
+  if (!isRecord(parsed)) throw new Error(t("无效 JSON 主题。"));
   const tokenColors = Array.isArray(parsed.tokenColors) ? parsed.tokenColors : [];
   const weighted = new Map<SourceHighlightPaletteKey, { score: number; style: SourceHighlightTokenStyle }>();
 
@@ -635,7 +636,7 @@ function parseTextmateJsonTheme(
         : themeNameFromFile(fileName),
     format: "textmate-json",
     palette: result,
-    warnings: ["VS Code / TextMate / Shiki JSON 会提取主色并转换为 Prism token 配色，不能完全还原原主题。"],
+    warnings: [t("VS Code / TextMate / Shiki JSON 会提取主色并转换为 Prism token 配色，不能完全还原原主题。")],
   };
 }
 

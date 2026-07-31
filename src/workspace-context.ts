@@ -1,4 +1,5 @@
 import path from "node:path";
+import { t } from "./i18n";
 import {
   FileView,
   MarkdownView,
@@ -73,7 +74,8 @@ function viewSelection(view: View): string {
 }
 
 export function activeWorkspaceLeaf(app: App): WorkspaceLeaf | null {
-  return app.workspace.activeLeaf ?? app.workspace.getMostRecentLeaf();
+  // activeLeaf 已废弃（官方规范禁止直接使用），getMostRecentLeaf 为官方替代。
+  return app.workspace.getMostRecentLeaf();
 }
 
 export function applyBottomTerminalSplitRatio(
@@ -332,8 +334,8 @@ export async function readCurrentWebPage(
     return {
       success: false,
       message: latestWebLeaf
-        ? "最近追踪的 Obsidian Web Viewer 页面已经关闭，无法读取。"
-        : "尚未追踪到可读取的 Obsidian Web Viewer 页面。",
+        ? t("最近追踪的 Obsidian Web Viewer 页面已经关闭，无法读取。")
+        : t("尚未追踪到可读取的 Obsidian Web Viewer 页面。"),
     };
   }
   const view = leaf.view as WebViewerView;
@@ -381,7 +383,7 @@ export async function readCurrentWebPage(
         title,
         url,
         message:
-          "当前页面没有可提取文本，可能使用了 Canvas、图片、跨域 iframe 或封闭 Shadow DOM。",
+          t("当前页面没有可提取文本，可能使用了 Canvas、图片、跨域 iframe 或封闭 Shadow DOM。"),
       };
     }
     const markdown = text.replace(/\n{3,}/g, "\n\n");
@@ -409,8 +411,8 @@ export async function readCurrentWebPage(
       url: fallback.url,
       message:
         error instanceof Error
-          ? `无法读取当前网页：${error.message}`
-          : "无法读取当前网页。",
+          ? t("无法读取当前网页：{v0}", { v0: error.message })
+          : t("无法读取当前网页。"),
     };
   }
 }

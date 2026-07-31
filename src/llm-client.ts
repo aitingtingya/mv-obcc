@@ -1,4 +1,5 @@
 import { requestUrl } from "obsidian";
+import { t } from "./i18n";
 import type {
   InlineCompletionSettings,
   LlmFeatureSettings,
@@ -57,7 +58,7 @@ async function readError(response: Response): Promise<string> {
   } catch {
     // ignore body read failures
   }
-  return `LLM 请求失败 (HTTP ${response.status})${detail}`;
+  return t("LLM 请求失败 (HTTP {status}){detail}", { status: response.status, detail });
 }
 
 function extractOpenAiContent(json: unknown): string {
@@ -151,10 +152,12 @@ export function resolveThinkingParams(
       if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
         return parsed as Record<string, unknown>;
       }
-      throw new Error("自定义思考参数必须是 JSON 对象");
+      throw new Error(t("自定义思考参数必须是 JSON 对象"));
     } catch (error) {
       throw new Error(
-        `自定义思考参数不是合法 JSON：${error instanceof Error ? error.message : String(error)}`,
+        t("自定义思考参数不是合法 JSON：{error}", {
+          error: error instanceof Error ? error.message : String(error),
+        }),
       );
     }
   }
@@ -169,22 +172,22 @@ export function resolveProvider(
   template: LlmPromptTemplate,
 ): LlmRequestTarget {
   if (!template.providerId) {
-    throw new Error(`模板「${template.label}」尚未选择模型，请在设置中为其指定提供商与模型。`);
+    throw new Error(t("模板「{label}」尚未选择模型，请在设置中为其指定提供商与模型。", { label: template.label }));
   }
   const provider = settings.providers.find((p) => p.id === template.providerId);
   if (!provider) {
-    throw new Error(`模板「${template.label}」引用的提供商已不存在，请在设置中重新选择模型。`);
+    throw new Error(t("模板「{label}」引用的提供商已不存在，请在设置中重新选择模型。", { label: template.label }));
   }
   if (!template.modelId) {
-    throw new Error(`模板「${template.label}」尚未选择模型。`);
+    throw new Error(t("模板「{label}」尚未选择模型。", { label: template.label }));
   }
   const model = provider.models.find((m) => m.id === template.modelId);
   if (!model) {
-    throw new Error(`模板「${template.label}」引用的模型已不存在，请在设置中重新选择。`);
+    throw new Error(t("模板「{label}」引用的模型已不存在，请在设置中重新选择。", { label: template.label }));
   }
   // API Key 可选：适配 Ollama / LM Studio 等本地无鉴权服务。仅 Base URL 必填。
   if (!provider.baseUrl.trim()) {
-    throw new Error(`提供商「${provider.name}」未配置 API Base URL。`);
+    throw new Error(t("提供商「{name}」未配置 API Base URL。", { name: provider.name }));
   }
   return {
     type: provider.type,
@@ -275,11 +278,11 @@ export async function callLlm(
   userMessage: string,
 ): Promise<string> {
   if (!userMessage.trim()) {
-    throw new Error("没有可发送的内容（选区为空）。");
+    throw new Error(t("没有可发送的内容（选区为空）。"));
   }
   const model = target.model.trim();
-  if (!model) throw new Error("未配置模型名称。");
-  if (!target.baseUrl.trim()) throw new Error("未配置 API Base URL。");
+  if (!model) throw new Error(t("未配置模型名称。"));
+  if (!target.baseUrl.trim()) throw new Error(t("未配置 API Base URL。"));
 
   const { url, headers, body } = buildRequest(target, model, userMessage, false);
 
@@ -292,7 +295,12 @@ export async function callLlm(
       throw: false,
     });
     if (response.status < 200 || response.status >= 300) {
-      throw new Error(`LLM 请求失败 (HTTP ${response.status})${response.text ? `: ${response.text}` : ""}`);
+      throw new Error(
+        t("LLM 请求失败 (HTTP {status}){detail}", {
+          status: response.status,
+          detail: response.text ? `: ${response.text}` : "",
+        }),
+      );
     }
     return target.type === "anthropic"
       ? extractAnthropicContent(response.json)
@@ -322,11 +330,11 @@ export async function callLlmStream(
 ): Promise<string> {
   throwIfAborted(signal);
   if (!userMessage.trim()) {
-    throw new Error("没有可发送的内容（选区为空）。");
+    throw new Error(t("没有可发送的内容（选区为空）。"));
   }
   const model = target.model.trim();
-  if (!model) throw new Error("未配置模型名称。");
-  if (!target.baseUrl.trim()) throw new Error("未配置 API Base URL。");
+  if (!model) throw new Error(t("未配置模型名称。"));
+  if (!target.baseUrl.trim()) throw new Error(t("未配置 API Base URL。"));
 
   const extractDelta = target.type === "anthropic" ? extractAnthropicDelta : extractOpenAiDelta;
 
@@ -341,7 +349,12 @@ export async function callLlmStream(
     });
     throwIfAborted(signal);
     if (response.status < 200 || response.status >= 300) {
-      throw new Error(`LLM 请求失败 (HTTP ${response.status})${response.text ? `: ${response.text}` : ""}`);
+      throw new Error(
+        t("LLM 请求失败 (HTTP {status}){detail}", {
+          status: response.status,
+          detail: response.text ? `: ${response.text}` : "",
+        }),
+      );
     }
     const text = response.text ?? "";
     if (text.includes("data:")) {
@@ -404,11 +417,11 @@ export async function callLlmStreamMessages(
   throwIfAborted(signal);
   const cleaned = messages.filter((m) => m.content.trim().length > 0);
   if (cleaned.length === 0) {
-    throw new Error("没有可发送的内容（消息为空）。");
+    throw new Error(t("没有可发送的内容（消息为空）。"));
   }
   const model = target.model.trim();
-  if (!model) throw new Error("未配置模型名称。");
-  if (!target.baseUrl.trim()) throw new Error("未配置 API Base URL。");
+  if (!model) throw new Error(t("未配置模型名称。"));
+  if (!target.baseUrl.trim()) throw new Error(t("未配置 API Base URL。"));
 
   const extractDelta = target.type === "anthropic" ? extractAnthropicDelta : extractOpenAiDelta;
 
@@ -423,7 +436,12 @@ export async function callLlmStreamMessages(
     });
     throwIfAborted(signal);
     if (response.status < 200 || response.status >= 300) {
-      throw new Error(`LLM 请求失败 (HTTP ${response.status})${response.text ? `: ${response.text}` : ""}`);
+      throw new Error(
+        t("LLM 请求失败 (HTTP {status}){detail}", {
+          status: response.status,
+          detail: response.text ? `: ${response.text}` : "",
+        }),
+      );
     }
     const text = response.text ?? "";
     if (text.includes("data:")) {
@@ -478,21 +496,21 @@ export function resolveInlineProvider(
   inline: InlineCompletionSettings,
 ): LlmRequestTarget {
   if (!inline.providerId) {
-    throw new Error("行内补全尚未选择模型，请在设置中为其指定提供商与模型。");
+    throw new Error(t("行内补全尚未选择模型，请在设置中为其指定提供商与模型。"));
   }
   const provider = settings.providers.find((p) => p.id === inline.providerId);
   if (!provider) {
-    throw new Error("行内补全引用的提供商已不存在，请在设置中重新选择。");
+    throw new Error(t("行内补全引用的提供商已不存在，请在设置中重新选择。"));
   }
   if (!provider.baseUrl.trim()) {
-    throw new Error(`提供商「${provider.name}」未配置 API Base URL。`);
+    throw new Error(t("提供商「{name}」未配置 API Base URL。", { name: provider.name }));
   }
   if (!inline.modelId) {
-    throw new Error("行内补全尚未选择模型。");
+    throw new Error(t("行内补全尚未选择模型。"));
   }
   const model = provider.models.find((m) => m.id === inline.modelId);
   if (!model) {
-    throw new Error("行内补全引用的模型已不存在，请在设置中重新选择。");
+    throw new Error(t("行内补全引用的模型已不存在，请在设置中重新选择。"));
   }
   return {
     type: provider.type,

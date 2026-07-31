@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { t } from "./i18n";
 import os from "node:os";
 import path from "node:path";
 import { execFile } from "node:child_process";
@@ -94,7 +95,7 @@ function executableCandidates(
 
 function quoteWindowsCmdArgument(value: string): string {
   if (/[\r\n\0]/.test(value)) {
-    throw new Error("Claude CLI 参数包含不支持的控制字符。");
+    throw new Error(t("Claude CLI 参数包含不支持的控制字符。"));
   }
   // cmd.exe expands percent variables even inside quotes. Doubling percent
   // preserves the literal value; quotes are escaped with a caret.
@@ -232,7 +233,7 @@ async function runClaude(
   throw new Error(
     errors.length > 0
       ? errors.join("\n\n")
-      : "找不到 Claude Code 可执行文件。",
+      : t("找不到 Claude Code 可执行文件。"),
   );
 }
 
@@ -246,9 +247,9 @@ function verificationFailure(
   return {
     ok: false,
     message: [
-      "MCP 注册命令已执行，但复验失败。",
-      `预期 URL: ${url}`,
-      output ? `claude mcp get 输出:\n${redactSensitive(output)}` : "",
+      t("MCP 注册命令已执行，但复验失败。"),
+      t("预期 URL: {v0}", { v0: url }),
+      output ? t("claude mcp get 输出:\n{v0}", { v0: redactSensitive(output) }) : "",
     ]
       .filter(Boolean)
       .join("\n"),
@@ -280,7 +281,7 @@ export async function ensureMcpRegistration(
     ) {
       return {
         ok: true,
-        message: "MCP 已连接",
+        message: t("MCP 已连接"),
         executable: current.executable,
       };
     }
@@ -311,7 +312,7 @@ export async function ensureMcpRegistration(
     if (runtime.platform !== "win32") {
       return {
         ok: true,
-        message: "MCP 已注册；重新启动 Claude Code 后生效",
+        message: t("MCP 已注册；重新启动 Claude Code 后生效"),
         executable: added.executable,
       };
     }
@@ -326,7 +327,7 @@ export async function ensureMcpRegistration(
     }
     return {
       ok: true,
-      message: "MCP 已注册并验证；重新启动 Claude Code 后生效",
+      message: t("MCP 已注册并验证；重新启动 Claude Code 后生效"),
       executable: verification.executable,
     };
   } catch (error) {
@@ -351,7 +352,7 @@ export async function removeMcpRegistration(
     );
     return {
       ok: true,
-      message: "已移除 MCP 注册",
+      message: t("已移除 MCP 注册"),
       executable: result.executable,
     };
   } catch (error) {

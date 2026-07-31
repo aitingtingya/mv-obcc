@@ -8,6 +8,7 @@ import {
   packIcns,
   packIco,
 } from "./file-type-icons";
+import { t } from "./i18n";
 
 export const ICO_ICON_SIZES = [16, 32, 48, 256] as const;
 export const ICNS_ICON_SIZES = [128, 256, 512, 1024] as const;
@@ -21,7 +22,7 @@ async function rasterizeSvg(
   const image = new Image();
   const loaded = new Promise<void>((resolve, reject) => {
     image.onload = () => resolve();
-    image.onerror = () => reject(new Error("文件类型图标 SVG 光栅化失败。"));
+    image.onerror = () => reject(new Error(t("文件类型图标 SVG 光栅化失败。")));
   });
   image.src = url;
   await loaded;
@@ -30,7 +31,7 @@ async function rasterizeSvg(
   canvas.width = width;
   canvas.height = height;
   const context = canvas.getContext("2d");
-  if (!context) throw new Error("无法创建图标光栅化画布。");
+  if (!context) throw new Error(t("无法创建图标光栅化画布。"));
   context.clearRect(0, 0, width, height);
   context.drawImage(image, 0, 0, width, height);
   return new Uint8Array(

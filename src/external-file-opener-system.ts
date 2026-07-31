@@ -1,4 +1,5 @@
 import childProcess from "node:child_process";
+import { t } from "./i18n";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -194,7 +195,7 @@ export function defaultOpenerStatusFromOwner(
   if (!owner) {
     return {
       kind: "not-default",
-      message: "AIDE 不是系统默认打开器。",
+      message: t("AIDE 不是系统默认打开器。"),
       owner: null,
     };
   }
@@ -206,8 +207,8 @@ export function defaultOpenerStatusFromOwner(
     return {
       kind: "not-default",
       message: sameVaultRoot(owner.vaultRoot, currentVaultRoot)
-        ? "AIDE 的本仓库存在旧版 Windows 注册；请先清理再重新注入。"
-        : `AIDE 存在其它仓库的旧版 Windows 注册：${owner.vaultRoot}；请先清理再重新注入。`,
+        ? t("AIDE 的本仓库存在旧版 Windows 注册；请先清理再重新注入。")
+        : t("AIDE 存在其它仓库的旧版 Windows 注册：{v0}；请先清理再重新注入。", { v0: owner.vaultRoot }),
       owner,
       requiresReinstall: true,
     };
@@ -215,13 +216,13 @@ export function defaultOpenerStatusFromOwner(
   if (sameVaultRoot(owner.vaultRoot, currentVaultRoot)) {
     return {
       kind: "current-vault",
-      message: "AIDE 的本仓库是系统默认打开器。",
+      message: t("AIDE 的本仓库是系统默认打开器。"),
       owner,
     };
   }
   return {
     kind: "other-vault",
-    message: `AIDE 是系统默认打开器，但 owner 是：${owner.vaultRoot}`,
+    message: t("AIDE 是系统默认打开器，但 owner 是：{v0}", { v0: owner.vaultRoot }),
     owner,
   };
 }
@@ -233,7 +234,7 @@ function normalizedExtensionSet(extensions: string[]): string[] {
 }
 
 function formatExtensions(extensions: string[]): string {
-  return extensions.map((extension) => `.${extension}`).join("、") || "无";
+  return extensions.map((extension) => `.${extension}`).join("、") || t("无");
 }
 
 function windowsInspectionSummary(
@@ -242,7 +243,7 @@ function windowsInspectionSummary(
   const visibleIssues = inspection.issues.slice(0, 3);
   const details = describeWindowsRegistryIssues(visibleIssues);
   const remaining = inspection.issues.length - visibleIssues.length;
-  return `${details}${remaining > 0 ? `；另有 ${remaining} 项` : ""}`;
+  return details + (remaining > 0 ? t("；另有 {n} 项", { n: remaining }) : "");
 }
 
 export function windowsDefaultOpenerStatus(
@@ -264,8 +265,8 @@ export function windowsDefaultOpenerStatus(
     return {
       kind: "not-default",
       message:
-        `当前设置后缀（${formatExtensions(configured)}）与已注入后缀` +
-        `（${formatExtensions(registered)}）不一致；请先清理再重新注入。`,
+        t("当前设置后缀（{v0}）与已注入后缀", { v0: formatExtensions(configured) }) +
+        t("（{v0}）不一致；请先清理再重新注入。", { v0: formatExtensions(registered) }),
       owner,
       requiresReinstall: true,
     };
@@ -276,8 +277,8 @@ export function windowsDefaultOpenerStatus(
       kind: "not-default",
       message:
         inspection.state === "absent"
-          ? "AIDE owner 记录存在，但 Windows 候选打开器注册已丢失；请先清理再重新注入。"
-          : `AIDE Windows 候选打开器注册不完整：${windowsInspectionSummary(inspection)}。请先清理再重新注入。`,
+          ? t("AIDE owner 记录存在，但 Windows 候选打开器注册已丢失；请先清理再重新注入。")
+          : t("AIDE Windows 候选打开器注册不完整：{v0}。请先清理再重新注入。", { v0: windowsInspectionSummary(inspection) }),
       owner,
       requiresReinstall: true,
     };
@@ -287,9 +288,11 @@ export function windowsDefaultOpenerStatus(
   if (queryErrors.length > 0) {
     return {
       kind: "not-default",
-      message: `Windows 默认打开方式检查失败：${queryErrors
-        .map(([extension, message]) => `.${extension}：${message}`)
-        .join("；")}`,
+      message: t("Windows 默认打开方式检查失败：{v0}", {
+        v0: queryErrors
+          .map(([extension, message]) => `.${extension}：${message}`)
+          .join("；"),
+      }),
       owner,
       checkFailed: true,
       requiresWindowsConfirmation: true,
@@ -313,19 +316,19 @@ export function windowsDefaultOpenerStatus(
   );
   const pending = registered.filter((extension) => !confirmed.includes(extension));
   const genericIconAdvice = genericIcon.length > 0
-    ? ` ${formatExtensions(genericIcon)} 仍关联旧版通用图标；在系统默认应用中重新选择一次 ` +
-      "MV AIDE File Opener（认准它，不要选 Windows Based Script Host）即可按类型显示专属图标。"
+    ? t(" {v0} 仍关联旧版通用图标；在系统默认应用中重新选择一次 ", { v0: formatExtensions(genericIcon) }) +
+      t("MV AIDE File Opener（认准它，不要选 Windows Based Script Host）即可按类型显示专属图标。")
     : "";
   if (pending.length > 0) {
     const ownerDescription = sameVaultRoot(owner.vaultRoot, currentVaultRoot)
-      ? "本仓库"
-      : `其它仓库 ${owner.vaultRoot}`;
+      ? t("本仓库")
+      : t("其它仓库 {v0}", { v0: owner.vaultRoot });
     return {
       kind: "not-default",
       message:
-        `AIDE 已注册给${ownerDescription}，但 Windows 尚未确认全部默认后缀。` +
-        `已确认：${formatExtensions(confirmed)}；待确认：${formatExtensions(pending)}。` +
-        "在系统默认应用设置中请认准 MV AIDE File Opener，不要选 Windows Based Script Host。" +
+        t("AIDE 已注册给{v0}，但 Windows 尚未确认全部默认后缀。", { v0: ownerDescription }) +
+        t("已确认：{v0}；待确认：{v1}。", { v0: formatExtensions(confirmed), v1: formatExtensions(pending) }) +
+        t("在系统默认应用设置中请认准 MV AIDE File Opener，不要选 Windows Based Script Host。") +
         genericIconAdvice,
       owner,
       requiresWindowsConfirmation: true,
@@ -339,8 +342,8 @@ export function windowsDefaultOpenerStatus(
       ? "current-vault"
       : "other-vault",
     message: (sameVaultRoot(owner.vaultRoot, currentVaultRoot)
-      ? `AIDE 的本仓库是系统默认打开器（${formatExtensions(confirmed)}）。`
-      : `AIDE 是系统默认打开器，但 owner 是：${owner.vaultRoot}`) +
+      ? t("AIDE 的本仓库是系统默认打开器（{v0}）。", { v0: formatExtensions(confirmed) })
+      : t("AIDE 是系统默认打开器，但 owner 是：{v0}", { v0: owner.vaultRoot })) +
       genericIconAdvice,
     owner,
     requiresWindowsConfirmation: genericIcon.length > 0,
@@ -394,15 +397,15 @@ function writeManagedFileAtomically(
   contents: Buffer,
 ): { created: boolean } {
   if (!windowsStateOwnedPath(filePath)) {
-    throw new Error(`Windows 打开器文件路径越界或包含符号链接：${filePath}`);
+    throw new Error(t("Windows 打开器文件路径越界或包含符号链接：{v0}", { v0: filePath }));
   }
   try {
     const stat = fs.lstatSync(filePath);
     if (!stat.isFile() || stat.isSymbolicLink()) {
-      throw new Error(`拒绝覆盖非普通文件：${filePath}`);
+      throw new Error(t("拒绝覆盖非普通文件：{v0}", { v0: filePath }));
     }
     if (!fs.readFileSync(filePath).equals(contents)) {
-      throw new Error(`拒绝覆盖内容未知的 Windows 打开器文件：${filePath}`);
+      throw new Error(t("拒绝覆盖内容未知的 Windows 打开器文件：{v0}", { v0: filePath }));
     }
     return { created: false };
   } catch (error) {
@@ -411,7 +414,7 @@ function writeManagedFileAtomically(
 
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   if (!windowsStateOwnedPath(filePath)) {
-    throw new Error(`Windows 打开器目录包含符号链接：${filePath}`);
+    throw new Error(t("Windows 打开器目录包含符号链接：{v0}", { v0: filePath }));
   }
   const temporary = `${filePath}.${process.pid}.${Date.now()}.tmp`;
   try {
@@ -443,7 +446,7 @@ export function preflightWindowsSymlink(
 ): WindowsSymlinkPreflightResult {
   const platform = runtime.platform ?? process.platform;
   if (platform !== "win32") {
-    return { ok: true, message: "当前系统不需要 Windows 符号链接预检。" };
+    return { ok: true, message: t("当前系统不需要 Windows 符号链接预检。") };
   }
 
   const randomId = runtime.randomId?.() ??
@@ -477,7 +480,7 @@ export function preflightWindowsSymlink(
         code: "ENOTSUP",
       });
     }
-    return { ok: true, message: "Windows 符号链接预检通过。" };
+    return { ok: true, message: t("Windows 符号链接预检通过。") };
   } catch (error) {
     const failureKind = classifyWindowsSymlinkError(error);
     const code = (error as NodeJS.ErrnoException | undefined)?.code;
@@ -486,8 +489,8 @@ export function preflightWindowsSymlink(
       failureKind,
       message:
         failureKind === "symlink-permission"
-          ? "无法在当前 vault 创建符号链接。请开启 Windows 开发者模式后重新检测；网络盘仍可能不支持。"
-          : `当前 vault 文件系统不支持外部文件符号链接${code ? `（${code}）` : ""}。请改用支持符号链接的本地文件系统。`,
+          ? t("无法在当前 vault 创建符号链接。请开启 Windows 开发者模式后重新检测；网络盘仍可能不支持。")
+          : t("当前 vault 文件系统不支持外部文件符号链接{code}。请改用支持符号链接的本地文件系统。", { code: code ? `（${code}）` : "" }),
     };
   } finally {
     fs.rmSync(linkDir, { recursive: true, force: true });
@@ -507,7 +510,7 @@ export async function preflightWindowsLauncher(
 ): Promise<WindowsSymlinkPreflightResult> {
   const platform = runtime.platform ?? process.platform;
   if (platform !== "win32") {
-    return { ok: true, message: "当前系统不需要 Windows 启动器预检。" };
+    return { ok: true, message: t("当前系统不需要 Windows 启动器预检。") };
   }
 
   const powerShellPath = runtime.powerShellPath ?? windowsPowerShellExecutable();
@@ -519,7 +522,7 @@ export async function preflightWindowsLauncher(
     return {
       ok: false,
       message:
-        `Windows 启动器依赖不可用：${error instanceof Error ? error.message : String(error)}`,
+        t("Windows 启动器依赖不可用：{v0}", { v0: error instanceof Error ? error.message : String(error) }),
     };
   }
 
@@ -575,12 +578,12 @@ exit 0
       launcherPath,
       powerShellPath,
     ]);
-    return { ok: true, message: "Windows 启动器预检通过。" };
+    return { ok: true, message: t("Windows 启动器预检通过。") };
   } catch (error) {
     return {
       ok: false,
       message:
-        `Windows Script Host 无法运行：${error instanceof Error ? error.message : String(error)}`,
+        t("Windows Script Host 无法运行：{v0}", { v0: error instanceof Error ? error.message : String(error) }),
     };
   } finally {
     fs.rmSync(temporaryDirectory, { recursive: true, force: true });
@@ -1348,7 +1351,7 @@ async function prepareWindowsFileTypeIcons(
 ): Promise<PreparedFileTypeIcons> {
   const iconsDirectory = windowsStateOwnedPath(fileTypeIconsDirectory());
   if (!iconsDirectory) {
-    throw new Error("Windows 文件类型图标目录越界或包含符号链接。");
+    throw new Error(t("Windows 文件类型图标目录越界或包含符号链接。"));
   }
   fs.mkdirSync(iconsDirectory, { recursive: true });
 
@@ -1359,7 +1362,7 @@ async function prepareWindowsFileTypeIcons(
       path.join(iconsDirectory, `${extension}.ico`),
     );
     if (!ownedIconPath) {
-      throw new Error(`Windows 文件类型图标路径越界：${extension}`);
+      throw new Error(t("Windows 文件类型图标路径越界：{v0}", { v0: extension }));
     }
     if (overwrite || !fs.existsSync(ownedIconPath)) {
       fs.writeFileSync(
@@ -1373,7 +1376,7 @@ async function prepareWindowsFileTypeIcons(
     path.join(iconsDirectory, "generic.ico"),
   );
   if (!genericIconPath) {
-    throw new Error("Windows 通用文件类型图标路径越界。");
+    throw new Error(t("Windows 通用文件类型图标路径越界。"));
   }
   if (overwrite || !fs.existsSync(genericIconPath)) {
     fs.writeFileSync(genericIconPath, await renderFileTypeIco(null, logoDataUrl));
@@ -1402,7 +1405,7 @@ async function windowsRegistrationOptions(
     // Icon cosmetics must never block opener installation: without a DOM
     // (or a failed canvas) fall back to the shared exe-icon registration.
     console.warn(
-      "[mv-aide] 文件类型图标渲染失败，退回共享图标注册。",
+      t("[mv-aide] 文件类型图标渲染失败，退回共享图标注册。"),
       error,
     );
     return base;
@@ -1434,7 +1437,7 @@ async function installWindowsOpener(owner: ExternalFileOpenerOwner): Promise<voi
     owner.registrationVersion = WINDOWS_FILE_OPENER_REGISTRATION_VERSION;
     const ownerPath = externalFileOpenerOwnerPath();
     if (!windowsStateOwnedPath(ownerPath)) {
-      throw new Error("Windows 打开器 owner 路径越界或包含符号链接。");
+      throw new Error(t("Windows 打开器 owner 路径越界或包含符号链接。"));
     }
     writeJson(ownerPath, owner);
     ownerWritten = true;
@@ -1466,7 +1469,7 @@ async function cleanupWindowsOpener(): Promise<{
 }> {
   const knownLauncherPath = windowsStateOwnedPath(windowsV4LauncherPath());
   if (!knownLauncherPath) {
-    throw new Error("Windows 打开器状态目录越界或包含符号链接，拒绝清理。");
+    throw new Error(t("Windows 打开器状态目录越界或包含符号链接，拒绝清理。"));
   }
   const registryCleanup = await withTemporaryWindowsAssociationHelper((helperPath) =>
     windowsFileAssociations().cleanup(helperPath),
@@ -1483,7 +1486,7 @@ async function cleanupWindowsOpener(): Promise<{
     const removalError = await removeTemporaryPathBestEffort(filePath, false);
     if (removalError) {
       registryCleanup.warnings.push(
-        `Windows 打开器文件将在下次清理时重试：${filePath}（${removalError}）`,
+        t("Windows 打开器文件将在下次清理时重试：{v0}（{v1}）", { v0: filePath, v1: removalError }),
       );
     }
   }
@@ -1495,7 +1498,7 @@ async function cleanupWindowsOpener(): Promise<{
     );
     if (iconRemovalError) {
       registryCleanup.warnings.push(
-        `Windows 文件类型图标将在下次清理时重试：${iconsDirectory}（${iconRemovalError}）`,
+        t("Windows 文件类型图标将在下次清理时重试：{v0}（{v1}）", { v0: iconsDirectory, v1: iconRemovalError }),
       );
     }
   }
@@ -1578,7 +1581,7 @@ async function installPlatformOpener(owner: ExternalFileOpenerOwner): Promise<vo
   } else if (process.platform === "linux") {
     await installLinuxOpener(owner);
   } else {
-    throw new Error(`暂不支持当前平台：${process.platform}`);
+    throw new Error(t("暂不支持当前平台：{v0}", { v0: process.platform }));
   }
 }
 
@@ -1664,21 +1667,21 @@ async function performWindowsFileOpenerMigration(
     migrated: false,
     message,
   });
-  if (process.platform !== "win32") return skipped("当前系统不需要 Windows 打开器迁移。");
+  if (process.platform !== "win32") return skipped(t("当前系统不需要 Windows 打开器迁移。"));
 
   const owner = readExternalFileOpenerOwner();
   if (!owner || owner.platform !== "win32") {
-    return skipped("没有需要迁移的 Windows 打开器 owner。");
+    return skipped(t("没有需要迁移的 Windows 打开器 owner。"));
   }
   if (!sameVaultRoot(owner.vaultRoot, currentVaultRoot)) {
-    return skipped("Windows 打开器属于其它 vault，不自动迁移。");
+    return skipped(t("Windows 打开器属于其它 vault，不自动迁移。"));
   }
   if (owner.wrapperVersion !== LEGACY_WINDOWS_FILE_OPENER_WRAPPER_VERSION ||
       owner.registrationVersion !== WINDOWS_FILE_OPENER_REGISTRATION_VERSION) {
-    return skipped("Windows 打开器版本不属于可原地迁移范围。");
+    return skipped(t("Windows 打开器版本不属于可原地迁移范围。"));
   }
   if (!sameNormalizedExtensions(owner.extensions, configuredExtensions)) {
-    return skipped("Windows 打开器后缀设置已漂移，不自动迁移。");
+    return skipped(t("Windows 打开器后缀设置已漂移，不自动迁移。"));
   }
 
   const legacyCommandPath = windowsStateOwnedPath(
@@ -1686,15 +1689,15 @@ async function performWindowsFileOpenerMigration(
   );
   if (!legacyCommandPath ||
       !sameWindowsCommandPath(legacyCommandPath, legacyWindowsPowerShellPath())) {
-    return skipped("Windows v3 打开器路径不是受管默认路径，不自动迁移。");
+    return skipped(t("Windows v3 打开器路径不是受管默认路径，不自动迁移。"));
   }
   try {
     const stat = fs.lstatSync(legacyCommandPath);
     if (!stat.isFile() || stat.isSymbolicLink()) {
-      return skipped("Windows v3 打开器不是受管普通文件，不自动迁移。");
+      return skipped(t("Windows v3 打开器不是受管普通文件，不自动迁移。"));
     }
   } catch {
-    return skipped("Windows v3 打开器文件缺失，不自动迁移。");
+    return skipped(t("Windows v3 打开器文件缺失，不自动迁移。"));
   }
 
   const ownerPath = externalFileOpenerOwnerPath();
@@ -1702,14 +1705,14 @@ async function performWindowsFileOpenerMigration(
   try {
     const ownerStat = fs.lstatSync(ownerPath);
     if (!ownerStat.isFile() || ownerStat.isSymbolicLink()) {
-      return skipped("Windows 打开器 owner 不是受管普通文件，不自动迁移。");
+      return skipped(t("Windows 打开器 owner 不是受管普通文件，不自动迁移。"));
     }
     originalOwnerText = fs.readFileSync(ownerPath, "utf8");
   } catch (error) {
     return {
       attempted: true,
       migrated: false,
-      message: "无法读取 Windows 打开器 owner，未执行迁移。",
+      message: t("无法读取 Windows 打开器 owner，未执行迁移。"),
       error: error instanceof Error ? error.message : String(error),
     };
   }
@@ -1755,7 +1758,7 @@ async function performWindowsFileOpenerMigration(
         openCommand: nextCommand,
       }, helperPath);
       if (recoveryInspection.state !== "complete") {
-        return skipped("Windows v3 注册存在漂移，不自动迁移。");
+        return skipped(t("Windows v3 注册存在漂移，不自动迁移。"));
       }
       recovering = true;
     }
@@ -1769,7 +1772,7 @@ async function performWindowsFileOpenerMigration(
       return {
         attempted: true,
         migrated: false,
-        message: "Windows 默认值无法验证，未执行迁移。",
+        message: t("Windows 默认值无法验证，未执行迁移。"),
         error: beforeError,
       };
     }
@@ -1778,7 +1781,7 @@ async function performWindowsFileOpenerMigration(
       return {
         attempted: true,
         migrated: false,
-        message: "Windows 启动器环境预检失败，未执行迁移。",
+        message: t("Windows 启动器环境预检失败，未执行迁移。"),
         error: preflight.message,
       };
     }
@@ -1808,7 +1811,7 @@ async function performWindowsFileOpenerMigration(
       );
       commandPointsToNew = exchange.currentCommand === nextCommand;
       if (exchange.currentCommand !== nextCommand) {
-        throw new Error("Windows 打开命令在迁移期间被其它进程修改。");
+        throw new Error(t("Windows 打开命令在迁移期间被其它进程修改。"));
       }
 
       const verified = await associations.inspect({
@@ -1817,7 +1820,7 @@ async function performWindowsFileOpenerMigration(
       }, helperPath);
       if (verified.state !== "complete") {
         throw new Error(
-          `Windows v4 注册验证失败：${windowsInspectionSummary(verified)}`,
+          t("Windows v4 注册验证失败：{v0}", { v0: windowsInspectionSummary(verified) }),
         );
       }
       const after = await associations.queryCurrentDefaults(
@@ -1826,13 +1829,13 @@ async function performWindowsFileOpenerMigration(
       );
       const afterError = windowsQueryErrorMessage(after);
       if (afterError) {
-        throw new Error(`Windows 默认值迁移后无法验证：${afterError}`);
+        throw new Error(t("Windows 默认值迁移后无法验证：{v0}", { v0: afterError }));
       }
       if (!windowsDefaultsAreEqual(owner.extensions, before, after)) {
-        throw new Error("Windows 有效默认打开方式在迁移期间发生变化。");
+        throw new Error(t("Windows 有效默认打开方式在迁移期间发生变化。"));
       }
       if (fs.readFileSync(ownerPath, "utf8") !== originalOwnerText) {
-        throw new Error("Windows 打开器 owner 在迁移期间被其它进程修改。");
+        throw new Error(t("Windows 打开器 owner 在迁移期间被其它进程修改。"));
       }
 
       const migratedOwner: ExternalFileOpenerOwner = {
@@ -1849,7 +1852,7 @@ async function performWindowsFileOpenerMigration(
       try {
         await associations.notifyAssociationChanged(helperPath);
       } catch (error) {
-        notifyWarning = `；Shell 刷新将在下次检查时重试：${error instanceof Error ? error.message : String(error)}`;
+        notifyWarning = t("；Shell 刷新将在下次检查时重试：{v0}", { v0: error instanceof Error ? error.message : String(error) });
       }
 
       let cleanupWarning = "";
@@ -1861,13 +1864,17 @@ async function performWindowsFileOpenerMigration(
         try {
           fs.rmSync(filePath, { force: true });
         } catch (error) {
-          cleanupWarning = `；旧文件将在清理时重试：${error instanceof Error ? error.message : String(error)}`;
+          cleanupWarning = t("；旧文件将在清理时重试：{v0}", { v0: error instanceof Error ? error.message : String(error) });
         }
       }
       return {
         attempted: true,
         migrated: true,
-        message: `${recovering ? "已恢复并完成" : "已完成"} Windows v4 隐藏启动器迁移${notifyWarning}${cleanupWarning}`,
+        message:
+          t(recovering ? "已恢复并完成" : "已完成") +
+          t(" Windows v4 隐藏启动器迁移") +
+          notifyWarning +
+          cleanupWarning,
       };
     } catch (error) {
       let rollbackError = "";
@@ -1886,15 +1893,15 @@ async function performWindowsFileOpenerMigration(
             commandState = "legacy";
           } else if (rollback.currentCommand === nextCommand) {
             commandState = "v4";
-            rollbackError = "；旧打开命令未能恢复";
+            rollbackError = t("；旧打开命令未能恢复");
           } else {
             commandState = "unknown";
-            rollbackError = "；当前打开命令无法确认";
+            rollbackError = t("；当前打开命令无法确认");
           }
         } catch (rollbackFailure) {
           commandState = await inspectCommandState();
           if (commandState !== "legacy") {
-            rollbackError = `；恢复旧打开命令失败：${rollbackFailure instanceof Error ? rollbackFailure.message : String(rollbackFailure)}`;
+            rollbackError = t("；恢复旧打开命令失败：{v0}", { v0: rollbackFailure instanceof Error ? rollbackFailure.message : String(rollbackFailure) });
           }
         }
       }
@@ -1904,13 +1911,13 @@ async function performWindowsFileOpenerMigration(
         }
         for (const filePath of createdPaths) fs.rmSync(filePath, { force: true });
       } else if (!ownerCommitted && createdPaths.length > 0) {
-        rollbackError += "；为避免注册指向缺失入口，已保留 v4 启动文件";
+        rollbackError += t("；为避免注册指向缺失入口，已保留 v4 启动文件");
       }
       const details = error instanceof Error ? error.message : String(error);
       return {
         attempted: true,
         migrated: false,
-        message: `Windows 打开器自动迁移失败，未修改默认应用选择${rollbackError}。`,
+        message: t("Windows 打开器自动迁移失败，未修改默认应用选择{v0}。", { v0: rollbackError }),
         error: details,
       };
     }
@@ -1941,7 +1948,7 @@ export class ExternalFileOpenerSystem {
     ).catch((error): WindowsFileOpenerMigrationResult => ({
       attempted: true,
       migrated: false,
-      message: "Windows 打开器自动迁移失败，现有注册保持不变。",
+      message: t("Windows 打开器自动迁移失败，现有注册保持不变。"),
       error: error instanceof Error ? error.message : String(error),
     }));
     this.windowsMigrationInFlight = migration;
@@ -1974,14 +1981,14 @@ export class ExternalFileOpenerSystem {
     if (owner && !ownerAppBundleIsUsable(owner)) {
       return {
         kind: "not-default",
-        message: "AIDE 默认打开器记录存在，但 app 不可启动；请先清理再重新注入。",
+        message: t("AIDE 默认打开器记录存在，但 app 不可启动；请先清理再重新注入。"),
         owner,
       };
     }
     if (owner && !windowsOwnerLauncherIsUsable(owner)) {
       return {
         kind: "not-default",
-        message: "AIDE Windows 打开器记录存在，但 v4 启动文件缺失或不安全；请先清理再重新注入。",
+        message: t("AIDE Windows 打开器记录存在，但 v4 启动文件缺失或不安全；请先清理再重新注入。"),
         owner,
         requiresReinstall: true,
       };
@@ -2001,7 +2008,7 @@ export class ExternalFileOpenerSystem {
             : {
                 kind: "not-default",
                 message:
-                  `检测到没有 owner 的 AIDE Windows 残留注册：${windowsInspectionSummary(inspection)}。请先清理再重新注入。`,
+                  t("检测到没有 owner 的 AIDE Windows 残留注册：{v0}。请先清理再重新注入。", { v0: windowsInspectionSummary(inspection) }),
                 owner: null,
                 requiresReinstall: true,
               };
@@ -2014,7 +2021,7 @@ export class ExternalFileOpenerSystem {
         if (!launcherPreflight.ok) {
           return {
             kind: "not-default",
-            message: `Windows 启动器环境不可用：${launcherPreflight.message}`,
+            message: t("Windows 启动器环境不可用：{v0}", { v0: launcherPreflight.message }),
             owner,
             checkFailed: true,
           };
@@ -2047,7 +2054,7 @@ export class ExternalFileOpenerSystem {
       } catch (error) {
         return {
           kind: "not-default",
-          message: `Windows 默认打开方式检查失败：${error instanceof Error ? error.message : String(error)}`,
+          message: t("Windows 默认打开方式检查失败：{v0}", { v0: error instanceof Error ? error.message : String(error) }),
           owner,
           checkFailed: true,
           requiresWindowsConfirmation: Boolean(owner),
@@ -2066,7 +2073,7 @@ export class ExternalFileOpenerSystem {
       return {
         ok: false,
         status,
-        message: `${status.message} 如需更换 owner，请先清理默认打开方式。`,
+        message: t("{v0} 如需更换 owner，请先清理默认打开方式。", { v0: status.message }),
         failureKind: "existing-owner",
       };
     }
@@ -2085,7 +2092,7 @@ export class ExternalFileOpenerSystem {
         return {
           ok: false,
           status,
-          message: `Windows 注册预检失败：${error instanceof Error ? error.message : String(error)}`,
+          message: t("Windows 注册预检失败：{v0}", { v0: error instanceof Error ? error.message : String(error) }),
           failureKind: "platform-install-failed",
         };
       }
@@ -2093,7 +2100,7 @@ export class ExternalFileOpenerSystem {
         const status: DefaultOpenerStatus = {
           kind: "not-default",
           message:
-            `检测到已有或残缺的 AIDE Windows 注册：${windowsInspectionSummary(registration)}。注入不会覆盖它，请先清理。`,
+            t("检测到已有或残缺的 AIDE Windows 注册：{v0}。注入不会覆盖它，请先清理。", { v0: windowsInspectionSummary(registration) }),
           owner: null,
           requiresReinstall: true,
         };
@@ -2185,7 +2192,7 @@ export class ExternalFileOpenerSystem {
           ok: false,
           status,
           message:
-            `Windows 注册写入失败且未能完整回滚；已保留 v4 启动文件，避免残留注册指向缺失入口。${status.message} ${error.message}`,
+            t("Windows 注册写入失败且未能完整回滚；已保留 v4 启动文件，避免残留注册指向缺失入口。{v0} {v1}", { v0: status.message, v1: error.message }),
           failureKind: "platform-install-failed",
         };
       }
@@ -2197,7 +2204,7 @@ export class ExternalFileOpenerSystem {
       return {
         ok: false,
         status,
-        message: `默认打开器注入失败：${error instanceof Error ? error.message : String(error)}`,
+        message: t("默认打开器注入失败：{v0}", { v0: error instanceof Error ? error.message : String(error) }),
         failureKind: "platform-install-failed",
       };
     }
@@ -2205,9 +2212,9 @@ export class ExternalFileOpenerSystem {
     const baseMessage =
       process.platform === "win32"
         ? status.message
-        : "已注入 AIDE 默认打开器。";
+        : t("已注入 AIDE 默认打开器。");
     const message = symlinkFallbackActive
-      ? `${baseMessage} 符号链接预检未通过，已按本机授权启用受管临时副本兜底；后续新文件仍会先尝试真实符号链接。`
+      ? t("{v0} 符号链接预检未通过，已按本机授权启用受管临时副本兜底；后续新文件仍会先尝试真实符号链接。", { v0: baseMessage })
       : baseMessage;
     return {
       ok: true,
@@ -2232,7 +2239,7 @@ export class ExternalFileOpenerSystem {
         ok: false,
         status,
         message:
-          "Windows 默认打开器 owner 文件存在但内容无效；为避免误删其它配置，本次未做任何修改。",
+          t("Windows 默认打开器 owner 文件存在但内容无效；为避免误删其它配置，本次未做任何修改。"),
         failureKind: "platform-cleanup-failed",
       };
     }
@@ -2246,7 +2253,7 @@ export class ExternalFileOpenerSystem {
         return {
           ok: false,
           status,
-          message: `默认打开器属于其它仓库：${owner.vaultRoot}。确认后才能清理。`,
+          message: t("默认打开器属于其它仓库：{v0}。确认后才能清理。", { v0: owner.vaultRoot }),
           failureKind: "other-vault-confirmation-required",
         };
       }
@@ -2255,7 +2262,7 @@ export class ExternalFileOpenerSystem {
         return {
           ok: false,
           status,
-          message: "默认打开器 owner 已发生变化；本次未做任何修改，请重新检查后确认。",
+          message: t("默认打开器 owner 已发生变化；本次未做任何修改，请重新检查后确认。"),
           failureKind: "other-vault-confirmation-required",
         };
       }
@@ -2278,8 +2285,8 @@ export class ExternalFileOpenerSystem {
         ok: true,
         status,
         message: `${cleaned
-          ? "已清理 AIDE 默认打开器。"
-          : "没有发现需要清理的 AIDE 默认打开器。"}${
+          ? t("已清理 AIDE 默认打开器。")
+          : t("没有发现需要清理的 AIDE 默认打开器。")}${
           warnings.length > 0 ? ` ${warnings.join("；")}` : ""
         }`,
         warnings,
@@ -2291,10 +2298,9 @@ export class ExternalFileOpenerSystem {
       return {
         ok: false,
         status,
-        message:
-          `默认打开器清理失败；已保留 owner/runtime 以便重试：${
-            error instanceof Error ? error.message : String(error)
-          }`,
+        message: t("默认打开器清理失败；已保留 owner/runtime 以便重试：{v0}", {
+          v0: error instanceof Error ? error.message : String(error),
+        }),
         failureKind: "platform-cleanup-failed",
       };
     }

@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { t } from "./i18n";
 import fs from "node:fs";
 import path from "node:path";
 import { ensureContainedVaultDirectory } from "./external-file-mirror-path";
@@ -233,7 +234,7 @@ function assertSymlinkFailure(proof: SymlinkFailureProof): void {
   ) {
     throw new ManagedCopyFallbackError(
       "symlink-failure-required",
-      "只有在符号链接明确失败后才能创建受管临时副本。",
+      t("只有在符号链接明确失败后才能创建受管临时副本。"),
     );
   }
 }
@@ -254,13 +255,13 @@ export function resolveManagedCopyScope(
   if (!hostId) {
     throw new ManagedCopyFallbackError(
       "invalid-scope",
-      "受管临时副本需要非空的本机标识。",
+      t("受管临时副本需要非空的本机标识。"),
     );
   }
   if (!path.isAbsolute(input.vaultRoot)) {
     throw new ManagedCopyFallbackError(
       "invalid-scope",
-      "受管临时副本需要绝对 vault 路径。",
+      t("受管临时副本需要绝对 vault 路径。"),
     );
   }
 
@@ -272,7 +273,7 @@ export function resolveManagedCopyScope(
   } catch {
     throw new ManagedCopyFallbackError(
       "invalid-scope",
-      "受管临时副本的 vault 路径不存在或不是目录。",
+      t("受管临时副本的 vault 路径不存在或不是目录。"),
     );
   }
 
@@ -316,7 +317,7 @@ export function normalizeManagedCopyVaultPath(vaultPath: string): string {
   ) {
     throw new ManagedCopyFallbackError(
       "invalid-vault-path",
-      "受管临时副本路径必须是 vault 内的相对路径。",
+      t("受管临时副本路径必须是 vault 内的相对路径。"),
     );
   }
   const normalized = path.posix.normalize(replaced);
@@ -327,7 +328,7 @@ export function normalizeManagedCopyVaultPath(vaultPath: string): string {
   ) {
     throw new ManagedCopyFallbackError(
       "invalid-vault-path",
-      "受管临时副本路径不能离开 vault。",
+      t("受管临时副本路径不能离开 vault。"),
     );
   }
   return normalized;
@@ -343,7 +344,7 @@ function resolveManagedCopyPath(
   if (!isContainedPath(scope.vaultRoot, absolutePath)) {
     throw new ManagedCopyFallbackError(
       "path-outside-vault",
-      "受管临时副本路径解析到了 vault 外部。",
+      t("受管临时副本路径解析到了 vault 外部。"),
     );
   }
 
@@ -361,7 +362,7 @@ function resolveManagedCopyPath(
       "path-outside-vault",
       error instanceof Error
         ? error.message
-        : "受管临时副本的父目录无法安全创建。",
+        : t("受管临时副本的父目录无法安全创建。"),
     );
   }
   return { vaultPath: normalized, absolutePath };
@@ -376,13 +377,13 @@ function assertRegularFileOrMissing(
     if (stat.isSymbolicLink()) {
       throw new ManagedCopyFallbackError(
         "unsafe-symbolic-link",
-        `拒绝把${role === "external" ? "外部文件" : "临时副本"}符号链接当作受管副本写入。`,
+        t("拒绝把{v0}符号链接当作受管副本写入。", { v0: role === "external" ? t("外部文件") : t("临时副本") }),
       );
     }
     if (!stat.isFile()) {
       throw new ManagedCopyFallbackError(
         "not-a-file",
-        `${role === "external" ? "外部路径" : "临时副本路径"}不是普通文件。`,
+        t("{v0}不是普通文件。", { v0: role === "external" ? t("外部路径") : t("临时副本路径") }),
       );
     }
     return "file";
@@ -452,13 +453,13 @@ async function assertRegularFileOrMissingAsync(
     if (stat.isSymbolicLink()) {
       throw new ManagedCopyFallbackError(
         "unsafe-symbolic-link",
-        `拒绝把${role === "external" ? "外部文件" : "临时副本"}符号链接当作受管副本写入。`,
+        t("拒绝把{v0}符号链接当作受管副本写入。", { v0: role === "external" ? t("外部文件") : t("临时副本") }),
       );
     }
     if (!stat.isFile()) {
       throw new ManagedCopyFallbackError(
         "not-a-file",
-        `${role === "external" ? "外部路径" : "临时副本路径"}不是普通文件。`,
+        t("{v0}不是普通文件。", { v0: role === "external" ? t("外部路径") : t("临时副本路径") }),
       );
     }
     return "file";
@@ -526,7 +527,7 @@ function replaceWithVerifiedCopy(
   options: VerifiedCopyOptions,
 ): VerifiedCopyResult {
   if (assertRegularFileOrMissing(source, options.sourceRole) !== "file") {
-    throw new ManagedCopyFallbackError("not-a-file", "副本同步源文件不存在。");
+    throw new ManagedCopyFallbackError("not-a-file", t("副本同步源文件不存在。"));
   }
   const initialSourceSha256 = regularFileSha256OrNull(
     source,
@@ -658,7 +659,7 @@ async function replaceWithVerifiedCopyAsync(
   options: VerifiedCopyOptions,
 ): Promise<VerifiedCopyResult> {
   if (await assertRegularFileOrMissingAsync(source, options.sourceRole) !== "file") {
-    throw new ManagedCopyFallbackError("not-a-file", "副本同步源文件不存在。");
+    throw new ManagedCopyFallbackError("not-a-file", t("副本同步源文件不存在。"));
   }
   const [initialSourceSha256, initialDestinationSha256] = await Promise.all([
     regularFileSha256OrNullAsync(source, options.sourceRole),
@@ -775,7 +776,7 @@ function assertStatePaths(
   ) {
     throw new ManagedCopyFallbackError(
       "state-path-mismatch",
-      "现有受管临时副本属于另一个文件映射。",
+      t("现有受管临时副本属于另一个文件映射。"),
     );
   }
 }
@@ -792,19 +793,19 @@ export function activateManagedCopyAfterSymlinkFailure(
   if (!path.isAbsolute(options.externalPath)) {
     throw new ManagedCopyFallbackError(
       "invalid-external-path",
-      "受管临时副本需要绝对外部文件路径。",
+      t("受管临时副本需要绝对外部文件路径。"),
     );
   }
   const externalPath = path.resolve(options.externalPath);
   const destination = resolveManagedCopyPath(scope, options.vaultPath, true);
 
   if (assertRegularFileOrMissing(externalPath, "external") !== "file") {
-    throw new ManagedCopyFallbackError("not-a-file", "外部文件不存在。 ");
+    throw new ManagedCopyFallbackError("not-a-file", t("外部文件不存在。 "));
   }
   if (assertRegularFileOrMissing(destination.absolutePath, "copy") !== "missing") {
     throw new ManagedCopyFallbackError(
       "target-occupied",
-      "目标镜像路径已被现有文件占用，未覆盖该文件。",
+      t("目标镜像路径已被现有文件占用，未覆盖该文件。"),
     );
   }
 
@@ -822,7 +823,7 @@ export function activateManagedCopyAfterSymlinkFailure(
   if (copyResult.status === "stale") {
     throw new ManagedCopyFallbackError(
       "source-changed-during-copy",
-      "创建临时副本时任一侧发生并发变化，未覆盖任何文件。",
+      t("创建临时副本时任一侧发生并发变化，未覆盖任何文件。"),
     );
   }
   const baselineSha256 = copyResult.sha256;
@@ -850,13 +851,13 @@ export function resumeManagedCopyFallback(
   if (!path.isAbsolute(options.externalPath)) {
     throw new ManagedCopyFallbackError(
       "invalid-external-path",
-      "受管临时副本需要绝对外部文件路径。",
+      t("受管临时副本需要绝对外部文件路径。"),
     );
   }
   if (!isManagedCopyOwnedByScope(options.existing, scope)) {
     throw new ManagedCopyFallbackError(
       "foreign-state",
-      "拒绝复用其他主机或其他 vault 创建的临时副本。",
+      t("拒绝复用其他主机或其他 vault 创建的临时副本。"),
     );
   }
   const externalPath = path.resolve(options.externalPath);
@@ -880,13 +881,13 @@ export async function resumeManagedCopyFallbackAsync(
   if (!path.isAbsolute(options.externalPath)) {
     throw new ManagedCopyFallbackError(
       "invalid-external-path",
-      "受管临时副本需要绝对外部文件路径。",
+      t("受管临时副本需要绝对外部文件路径。"),
     );
   }
   if (!isManagedCopyOwnedByScope(options.existing, scope)) {
     throw new ManagedCopyFallbackError(
       "foreign-state",
-      "拒绝复用其他主机或其他 vault 创建的临时副本。",
+      t("拒绝复用其他主机或其他 vault 创建的临时副本。"),
     );
   }
   const externalPath = path.resolve(options.externalPath);
@@ -938,7 +939,7 @@ export function synchronizeManagedCopy(
   if (!isManagedCopyOwnedByScope(state, scope)) {
     throw new ManagedCopyFallbackError(
       "foreign-state",
-      "拒绝同步其他主机或其他 vault 创建的临时副本。",
+      t("拒绝同步其他主机或其他 vault 创建的临时副本。"),
     );
   }
   const destination = resolveManagedCopyPath(scope, state.vaultPath, true);
@@ -1107,7 +1108,7 @@ export async function synchronizeManagedCopyAsync(
   if (!isManagedCopyOwnedByScope(state, scope)) {
     throw new ManagedCopyFallbackError(
       "foreign-state",
-      "拒绝同步其他主机或其他 vault 创建的临时副本。",
+      t("拒绝同步其他主机或其他 vault 创建的临时副本。"),
     );
   }
   const destination = resolveManagedCopyPath(scope, state.vaultPath, true);
@@ -1294,13 +1295,13 @@ export function resolveManagedCopyConflict(
   ) {
     throw new ManagedCopyFallbackError(
       "invalid-conflict",
-      "只能解析包含双边内容哈希的受管副本冲突。",
+      t("只能解析包含双边内容哈希的受管副本冲突。"),
     );
   }
   if (choice !== "external" && choice !== "copy" && choice !== "later") {
     throw new ManagedCopyFallbackError(
       "invalid-conflict",
-      "未知的受管副本冲突选择。",
+      t("未知的受管副本冲突选择。"),
     );
   }
 
@@ -1309,7 +1310,7 @@ export function resolveManagedCopyConflict(
   if (!isManagedCopyOwnedByScope(state, scope)) {
     throw new ManagedCopyFallbackError(
       "foreign-state",
-      "拒绝解析其他主机或其他 vault 的临时副本冲突。",
+      t("拒绝解析其他主机或其他 vault 的临时副本冲突。"),
     );
   }
   const destination = resolveManagedCopyPath(scope, state.vaultPath, false);
@@ -1448,7 +1449,7 @@ export class ManagedCopyWatchController {
     if (!isManagedCopyOwnedByScope(options.state, scope)) {
       throw new ManagedCopyFallbackError(
         "foreign-state",
-        "拒绝监听其他主机或其他 vault 创建的临时副本。",
+        t("拒绝监听其他主机或其他 vault 创建的临时副本。"),
       );
     }
     const copy = resolveManagedCopyPath(scope, options.state.vaultPath, true);
@@ -1783,7 +1784,7 @@ export class ManagedCopyWatchController {
     if (this.disposed) {
       throw new ManagedCopyFallbackError(
         "controller-disposed",
-        "受管临时副本监听器已停止。",
+        t("受管临时副本监听器已停止。"),
       );
     }
     const result = resolveManagedCopyConflict(

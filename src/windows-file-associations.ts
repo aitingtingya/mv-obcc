@@ -1,4 +1,5 @@
 import childProcess from "node:child_process";
+import { t } from "./i18n";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -58,12 +59,12 @@ async function defaultWindowsUriLauncher(uri: string): Promise<void> {
     globals.window?.require ??
     globals.require;
   if (!requireModule) {
-    throw new Error("当前 Electron 环境不支持加载系统 shell。");
+    throw new Error(t("当前 Electron 环境不支持加载系统 shell。"));
   }
 
   const electron = requireModule("electron") as ElectronShellLike;
   if (typeof electron.shell?.openExternal !== "function") {
-    throw new Error("当前 Electron 环境不支持打开系统设置 URI。");
+    throw new Error(t("当前 Electron 环境不支持打开系统设置 URI。"));
   }
   await electron.shell.openExternal(uri);
 }
@@ -125,7 +126,7 @@ export interface WindowsCurrentDefaultsResult {
 
 export class WindowsFileAssociationConflictError extends Error {
   constructor() {
-    super("检测到已有或残缺的 AIDE Windows 注册；请先清理再重新注入。");
+    super(t("检测到已有或残缺的 AIDE Windows 注册；请先清理再重新注入。"));
     this.name = "WindowsFileAssociationConflictError";
   }
 }
@@ -140,7 +141,7 @@ export class WindowsFileAssociationRollbackError extends AggregateError {
       : String(rollbackError);
     super(
       [installError, rollbackError],
-      `Windows 文件关联安装失败，且注册表回滚失败：${rollbackMessage}`,
+      t("Windows 文件关联安装失败，且注册表回滚失败：{v0}", { v0: rollbackMessage }),
     );
     this.name = "WindowsFileAssociationRollbackError";
   }
@@ -221,7 +222,11 @@ async function defaultCommandRunner(
       commandError.stdout?.trim(),
     ].filter((value): value is string => Boolean(value));
     throw new Error(
-      `${executable} 执行失败${commandError.code === undefined ? "" : `（${commandError.code}）`}：${details.join("；")}`,
+      t("{v0} 执行失败{v1}：{v2}", {
+        v0: executable,
+        v1: commandError.code === undefined ? "" : `（${commandError.code}）`,
+        v2: details.join("；"),
+      }),
     );
   }
 }
@@ -229,7 +234,7 @@ async function defaultCommandRunner(
 function normalizeExtension(extension: string): string {
   const normalized = extension.trim().replace(/^\.+/, "").toLowerCase();
   if (!/^[a-z0-9][a-z0-9+_-]*$/.test(normalized)) {
-    throw new Error(`非法文件后缀：${extension}`);
+    throw new Error(t("非法文件后缀：{v0}", { v0: extension }));
   }
   return normalized;
 }
@@ -445,7 +450,7 @@ function issueForProbe(
       name: expected.name,
       label,
       expectedType: expected.type,
-      errorMessage: "原生注册表检查没有返回该值。",
+      errorMessage: t("原生注册表检查没有返回该值。"),
     };
   }
   if (actual.errorCode !== 0) {
@@ -513,7 +518,7 @@ function inspectionFromReport(
   report: NativeRegistryInspectionReport,
 ): WindowsFileAssociationInspection {
   if (!report.ok) {
-    throw new Error(`Windows 原生注册表检查失败：${report.error ?? "未知错误"}`);
+    throw new Error(t("Windows 原生注册表检查失败：{v0}", { v0: report.error ?? t("未知错误") }));
   }
 
   const actualByLabel = new Map(
@@ -563,17 +568,21 @@ function inspectionFromReport(
 function issueDescription(issue: WindowsRegistryInspectionIssue): string {
   switch (issue.kind) {
     case "missing":
-      return `${issue.label}：缺失（预期 ${issue.expectedType}）`;
+      return t("{v0}：缺失（预期 {v1}）", { v0: issue.label, v1: issue.expectedType ?? t("未知") });
     case "type-mismatch":
-      return `${issue.label}：预期 ${issue.expectedType}，实际 ${issue.actualType ?? "未知类型"}`;
+      return t("{v0}：预期 {v1}，实际 {v2}", { v0: issue.label, v1: issue.expectedType ?? t("未知"), v2: issue.actualType ?? t("未知类型") });
     case "length-mismatch":
-      return `${issue.label}：预期 ${issue.expectedType}/0 字节，实际 ${issue.actualType ?? "未知类型"}/${issue.actualByteLength ?? "未知"} 字节`;
+      return t("{v0}：预期 {v1}/0 字节，实际 {v2}/{v3} 字节", { v0: issue.label, v1: issue.expectedType ?? t("未知"), v2: issue.actualType ?? t("未知类型"), v3: issue.actualByteLength ?? t("未知") });
     case "data-mismatch":
-      return `${issue.label}：REG_SZ 内容与当前注入配置不一致`;
+      return t("{v0}：REG_SZ 内容与当前注入配置不一致", { v0: issue.label });
     case "read-error":
-      return `${issue.label}：读取失败${issue.errorCode === undefined ? "" : `（Win32 ${issue.errorCode}）`}${issue.errorMessage ? ` ${issue.errorMessage}` : ""}`;
+      return t("{v0}：读取失败{v1}{v2}", {
+        v0: issue.label,
+        v1: issue.errorCode === undefined ? "" : `（Win32 ${issue.errorCode}）`,
+        v2: issue.errorMessage ? ` ${issue.errorMessage}` : "",
+      });
     case "unexpected":
-      return `${issue.label}：发现当前配置之外的 AIDE 残留`;
+      return t("{v0}：发现当前配置之外的 AIDE 残留", { v0: issue.label });
   }
 }
 
@@ -585,7 +594,7 @@ export function describeWindowsRegistryIssues(
 
 function csharpStringLiteral(value: string): string {
   if (/[\u0000-\u001f]/.test(value)) {
-    throw new Error("Windows 文件关联身份不能包含控制字符。");
+    throw new Error(t("Windows 文件关联身份不能包含控制字符。"));
   }
   return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
 }
@@ -1416,7 +1425,7 @@ export class WindowsFileAssociations {
       const verified = inspectionFromReport(values, report);
       if (verified.state !== "complete") {
         throw new Error(
-          `Windows 注册写入后校验失败：${describeWindowsRegistryIssues(verified.issues)}`,
+          t("Windows 注册写入后校验失败：{v0}", { v0: describeWindowsRegistryIssues(verified.issues) }),
         );
       }
       await this.notifyAssociationChanged(helperPath);
@@ -1476,11 +1485,11 @@ export class WindowsFileAssociations {
       { values: [] },
     );
     if (!report.ok) {
-      throw new Error(`Windows 注册清理失败：${report.error ?? "未知错误"}`);
+      throw new Error(t("Windows 注册清理失败：{v0}", { v0: report.error ?? t("未知错误") }));
     }
     if ((report.remainingReferences?.length ?? 0) > 0) {
       throw new Error(
-        `Windows 注册清理后仍有 AIDE 残留：${report.remainingReferences?.join("、")}`,
+        t("Windows 注册清理后仍有 AIDE 残留：{v0}", { v0: report.remainingReferences?.join("、") ?? "" }),
       );
     }
     const warnings: string[] = [];
@@ -1488,7 +1497,7 @@ export class WindowsFileAssociations {
       await this.notifyAssociationChanged(helperPath);
     } catch (error) {
       warnings.push(
-        `Windows Shell 刷新失败：${error instanceof Error ? error.message : String(error)}`,
+        t("Windows Shell 刷新失败：{v0}", { v0: error instanceof Error ? error.message : String(error) }),
       );
     }
     return {
@@ -1527,7 +1536,7 @@ export class WindowsFileAssociations {
       } catch (genericSettingsError) {
         throw new AggregateError(
           [registeredAppError, genericSettingsError],
-          "无法打开 Windows 默认应用设置。",
+          t("无法打开 Windows 默认应用设置。"),
         );
       }
     }
@@ -1552,7 +1561,7 @@ export class WindowsFileAssociations {
       );
       if ((report.remainingReferences?.length ?? 0) > 0) {
         throw new Error(
-          `Windows 注册回滚后仍有 AIDE 残留：${report.remainingReferences?.join("、")}`,
+          t("Windows 注册回滚后仍有 AIDE 残留：{v0}", { v0: report.remainingReferences?.join("、") ?? "" }),
         );
       }
     } catch (error) {
@@ -1597,7 +1606,7 @@ export class WindowsFileAssociations {
       ]);
       const parsed = JSON.parse(result.stdout.trim()) as T;
       if (!parsed.ok) {
-        throw new Error(parsed.error ?? "Windows 原生注册表操作失败。");
+        throw new Error(parsed.error ?? t("Windows 原生注册表操作失败。"));
       }
       return parsed;
     } finally {
