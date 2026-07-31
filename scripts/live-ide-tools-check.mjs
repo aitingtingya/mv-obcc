@@ -9,6 +9,7 @@
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import readline from "node:readline";
 import { fileURLToPath } from "node:url";
@@ -20,8 +21,20 @@ const argValue = (name) => {
   const index = args.indexOf(name);
   return index >= 0 ? args[index + 1] : undefined;
 };
+// 与 src/path-utils.ts 的 stablePortSeed 保持一致（独立脚本无法 import TS）。
+const stablePortSeed = (value) => {
+  const normalized = process.platform === "win32"
+    ? path.normalize(value).toLowerCase()
+    : path.normalize(value);
+  let hash = 2166136261;
+  for (const char of normalized) {
+    hash ^= char.charCodeAt(0);
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
+};
 const runtimePath = argValue("--runtime")
-  ?? path.join(vaultRoot, ".obsidian", "plugins", "mv-obcc", "tmp", "universal-mcp", "runtime.json");
+  ?? path.join(os.tmpdir(), `mv-aide-universal-mcp-${stablePortSeed(vaultRoot)}`, "runtime.json");
 const only = argValue("--only");
 
 const SCRATCH_NAME = "mv-obcc-live-check-scratch.md";
