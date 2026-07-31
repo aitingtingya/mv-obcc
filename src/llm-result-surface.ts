@@ -521,7 +521,7 @@ export class LlmResultSurface implements LlmResultSink {
     this.fallbackReason =
       error instanceof Error ? error.message : String(error);
     console.warn(
-      "[mv-senceai] LLM embedded editor failed; using textarea fallback:",
+      "[mv-aide] LLM embedded editor failed; using textarea fallback:",
       this.fallbackReason,
     );
     this.cleanupEmbeddedLeaf();

@@ -1,9 +1,9 @@
 {
   "id": "mv-obcc",
-  "name": "mv-SenceAI",
-  "version": "0.8.1",
+  "name": "mv-AIDE",
+  "version": "0.9.0",
   "minAppVersion": "1.7.2",
-  "description": "Connects local vaults to Claude Code and Codex CLI with page tracking, integrated tools, editable diffs, and optional upstream compatibility.",
+  "description": "AI IDE for Obsidian: bridges Claude Code, Codex CLI and universal MCP agents to your vault, with integrated terminal, inline completion, selection assistant, source authoring aids and a system default file opener.",
   "author": "MV",
   "isDesktopOnly": true
 }

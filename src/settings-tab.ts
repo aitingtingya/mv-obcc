@@ -30,6 +30,11 @@ import {
   normalizeSourceAssistExtension,
 } from "./source-assist/source-assist-settings";
 import { externalFileAllowedExtensions } from "./external-file-opener";
+import { normalizeExternalFileMirrorFolder } from "./external-file-mirror-path";
+import type {
+  DefaultOpenerOperationResult,
+  ExternalFileOpenerOwner,
+} from "./external-file-opener-system";
 import { getDefaultSourceAssistSnippetVariables } from "./source-assist/default-snippet-variables";
 import { createSourceAssistSnippetsEditor } from "./source-assist/snippets-editor";
 import { parseSnippets } from "./vendor/latex-suite/src/snippets/parse";
@@ -121,6 +126,264 @@ class SourceAssistExtensionModal extends Modal {
   }
 }
 
+class SymlinkFallbackModal extends Modal {
+  private statusEl!: HTMLElement;
+  private readonly returnFocusEl: HTMLElement | null;
+
+  constructor(
+    app: App,
+    private message: string,
+    private readonly platform: NodeJS.Platform,
+    private readonly fallbackAvailable: boolean,
+    private readonly openDeveloperSettings: (() => Promise<void>) | null,
+    private readonly repairAndRetry: (
+      () => Promise<DefaultOpenerOperationResult>
+    ) | null,
+    private readonly retryInjection: () => Promise<DefaultOpenerOperationResult>,
+    private readonly continueWithFallback: () => Promise<DefaultOpenerOperationResult>,
+  ) {
+    super(app);
+    const activeElement = this.modalEl.ownerDocument.activeElement;
+    this.returnFocusEl = activeElement
+      && activeElement !== this.modalEl.ownerDocument.body
+      && typeof (activeElement as HTMLElement).focus === "function"
+      ? activeElement as HTMLElement
+      : null;
+  }
+
+  onOpen(): void {
+    const { contentEl } = this;
+    this.modalEl.classList.add("mv-senceai-symlink-modal");
+    this.modalEl.setAttribute("aria-busy", "false");
+    contentEl.empty();
+    contentEl.createEl("h3", {
+      text: this.platform === "win32"
+        ? "Windows 符号链接修复"
+        : "符号链接不可用",
+    });
+    contentEl.createEl("p", {
+      text: "插件始终优先创建并验证真实符号链接。只有该尝试明确失败后，才允许启用独立的受管临时副本；选择后，日常文件打开与同步保持静默。",
+      cls: "setting-item-description",
+    });
+    this.statusEl = contentEl.createEl("p", {
+      text: this.message,
+      cls: "setting-item-description",
+    });
+    this.statusEl.addClass("mv-senceai-status-error");
+    this.statusEl.setAttribute("role", "status");
+    this.statusEl.setAttribute("aria-live", "polite");
+    this.statusEl.setAttribute("aria-atomic", "true");
+
+    const buttonRow = contentEl.createDiv({ cls: "mv-senceai-modal-button-row" });
+    if (this.repairAndRetry) {
+      const repairButton = buttonRow.createEl("button", {
+        text: "管理员修复并重试",
+      });
+      repairButton.addClass("mod-cta");
+      repairButton.addEventListener("click", () => {
+        void this.run(repairButton, this.repairAndRetry!);
+      });
+    }
+    if (this.openDeveloperSettings) {
+      const settingsButton = buttonRow.createEl("button", {
+        text: "打开开发者设置",
+      });
+      settingsButton.addEventListener("click", () => {
+        settingsButton.disabled = true;
+        this.modalEl.setAttribute("aria-busy", "true");
+        void this.openDeveloperSettings!().finally(() => {
+          settingsButton.disabled = false;
+          this.modalEl.setAttribute("aria-busy", "false");
+          if (settingsButton.isConnected) {
+            settingsButton.focus({ preventScroll: true });
+          }
+        });
+      });
+    }
+    const retryButton = buttonRow.createEl("button", { text: "重新检测" });
+    retryButton.addEventListener("click", () => {
+      void this.run(retryButton, this.retryInjection);
+    });
+    if (this.fallbackAvailable) {
+      const fallbackButton = buttonRow.createEl("button", {
+        text: "使用受管临时副本并继续",
+      });
+      fallbackButton.addEventListener("click", () => {
+        void this.run(fallbackButton, this.continueWithFallback);
+      });
+    }
+    const cancelButton = buttonRow.createEl("button", { text: "取消" });
+    cancelButton.addEventListener("click", () => this.close());
+  }
+
+  onClose(): void {
+    this.contentEl.empty();
+    const returnFocusEl = this.returnFocusEl;
+    queueMicrotask(() => {
+      if (returnFocusEl?.isConnected) {
+        returnFocusEl.focus({ preventScroll: true });
+      }
+    });
+  }
+
+  private async run(
+    button: HTMLButtonElement,
+    operation: () => Promise<DefaultOpenerOperationResult>,
+  ): Promise<void> {
+    button.disabled = true;
+    this.modalEl.setAttribute("aria-busy", "true");
+    try {
+      const result = await operation();
+      this.message = result.message;
+      this.statusEl.setText(result.message);
+      if (result.ok) this.close();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.message = message;
+      this.statusEl.setText(message);
+    } finally {
+      button.disabled = false;
+      this.modalEl.setAttribute("aria-busy", "false");
+      if (button.isConnected) {
+        button.focus({ preventScroll: true });
+      }
+    }
+  }
+}
+
+class WindowsDefaultAppConfirmationModal extends Modal {
+  private statusEl!: HTMLElement;
+
+  constructor(
+    app: App,
+    private status: DefaultOpenerOperationResult["status"],
+    private readonly openDefaultAppsSettings: () => Promise<void>,
+    private readonly recheck: () => Promise<DefaultOpenerOperationResult["status"]>,
+  ) {
+    super(app);
+  }
+
+  onOpen(): void {
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.createEl("h3", { text: "Windows 默认应用确认" });
+    contentEl.createEl("p", {
+      text: "MV AIDE File Opener 已注册为候选应用。Windows 要求您在系统界面中确认每个文件后缀的默认打开方式。",
+      cls: "setting-item-description",
+    });
+    this.statusEl = contentEl.createEl("p", {
+      text: this.status.message,
+      cls: "setting-item-description",
+    });
+
+    const buttonRow = contentEl.createDiv({ cls: "mv-senceai-modal-button-row" });
+    const settingsButton = buttonRow.createEl("button", {
+      text: "打开默认应用设置",
+    });
+    settingsButton.addClass("mod-cta");
+    settingsButton.addEventListener("click", () => {
+      void this.openDefaultAppsSettings();
+    });
+    const retryButton = buttonRow.createEl("button", { text: "重新检查" });
+    retryButton.addEventListener("click", () => {
+      void this.retry(retryButton);
+    });
+    const cancelButton = buttonRow.createEl("button", { text: "稍后" });
+    cancelButton.addEventListener("click", () => this.close());
+  }
+
+  private async retry(button: HTMLButtonElement): Promise<void> {
+    button.disabled = true;
+    try {
+      this.status = await this.recheck();
+      this.statusEl.setText(this.status.message);
+      if (this.status.kind !== "not-default") this.close();
+    } finally {
+      button.disabled = false;
+    }
+  }
+}
+
+class WindowsOtherVaultCleanupModal extends Modal {
+  constructor(
+    app: App,
+    private readonly owner: ExternalFileOpenerOwner,
+    private readonly confirmCleanup: () => Promise<DefaultOpenerOperationResult | null>,
+    private readonly onResult: (result: DefaultOpenerOperationResult) => void,
+  ) {
+    super(app);
+  }
+
+  onOpen(): void {
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.createEl("h3", { text: "确认清理其它仓库的默认打开器" });
+    contentEl.createEl("p", {
+      text: "当前 Windows 默认打开器 owner 属于其它仓库。只有确认 owner 在等待期间没有变化后，插件才会执行精确清理。",
+      cls: "setting-item-description",
+    });
+    contentEl.createEl("p", {
+      text: `仓库：${this.owner.vaultRoot}`,
+      cls: "setting-item-description",
+    });
+    const buttonRow = contentEl.createDiv({ cls: "mv-senceai-modal-button-row" });
+    const confirmButton = buttonRow.createEl("button", { text: "确认清理" });
+    confirmButton.addClass("mod-warning");
+    confirmButton.addEventListener("click", () => {
+      void this.confirm(confirmButton);
+    });
+    const cancelButton = buttonRow.createEl("button", { text: "取消" });
+    cancelButton.addEventListener("click", () => this.close());
+  }
+
+  private async confirm(button: HTMLButtonElement): Promise<void> {
+    button.disabled = true;
+    try {
+      const result = await this.confirmCleanup();
+      if (!result) return;
+      this.close();
+      this.onResult(result);
+    } finally {
+      button.disabled = false;
+    }
+  }
+}
+
+class WindowsCleanupCompleteModal extends Modal {
+  constructor(
+    app: App,
+    private readonly message: string,
+    private readonly openDefaultAppsSettings: () => Promise<void>,
+  ) {
+    super(app);
+  }
+
+  onOpen(): void {
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.createEl("h3", { text: "Windows 默认打开器已清理" });
+    contentEl.createEl("p", {
+      text: this.message,
+      cls: "setting-item-description",
+    });
+    contentEl.createEl("p", {
+      text: "Windows 受保护的默认应用选择不会被插件修改。如需为这些后缀改选其它应用，可以打开系统默认应用设置。",
+      cls: "setting-item-description",
+    });
+    const buttonRow = contentEl.createDiv({ cls: "mv-senceai-modal-button-row" });
+    const settingsButton = buttonRow.createEl("button", {
+      text: "打开默认应用设置",
+    });
+    settingsButton.addClass("mod-cta");
+    settingsButton.addEventListener("click", () => {
+      void this.openDefaultAppsSettings();
+      this.close();
+    });
+    const closeButton = buttonRow.createEl("button", { text: "稍后" });
+    closeButton.addEventListener("click", () => this.close());
+  }
+}
+
 class SourceHighlightThemeImportModal extends Modal {
   private fileEl!: HTMLInputElement;
   private nameEl!: HTMLInputElement;
@@ -138,7 +401,7 @@ class SourceHighlightThemeImportModal extends Modal {
     contentEl.empty();
     contentEl.createEl("h3", { text: "载入自定义代码高亮主题" });
     contentEl.createEl("p", {
-      text: "支持 Prism CSS、highlight.js CSS、VS Code/Shiki/TextMate JSON 和 mv-SenceAI JSON。非 Prism 格式会转换为近似效果，不能完全还原原主题。",
+      text: "支持 Prism CSS、highlight.js CSS、VS Code/Shiki/TextMate JSON 和 mv-AIDE JSON。非 Prism 格式会转换为近似效果，不能完全还原原主题。",
       cls: "setting-item-description",
     });
 
@@ -167,7 +430,7 @@ class SourceHighlightThemeImportModal extends Modal {
           .addOption("prism-css", "Prism CSS")
           .addOption("highlight-js-css", "highlight.js CSS")
           .addOption("textmate-json", "VS Code / Shiki / TextMate JSON")
-          .addOption("mv-senceai-json", "mv-SenceAI JSON")
+          .addOption("mv-senceai-json", "mv-AIDE JSON")
           .setValue(this.format)
           .onChange((value) => {
             this.format = value as SourceHighlightImportFormat;
@@ -202,7 +465,7 @@ class SourceHighlightThemeImportModal extends Modal {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       new Notice(`主题载入失败：${message}`);
-      console.warn("[mv-senceai-ide] Failed to import source highlight theme.", error);
+      console.warn("[mv-aide] Failed to import source highlight theme.", error);
     }
   }
 }
@@ -552,6 +815,7 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
   private readonly sourceAssistSnippetEditors: EditorView[] = [];
   private forceOpenSection: MainSettingsSectionId | null = null;
   private forceOpenSourceAssistProfileId: string | null = null;
+  private defaultOpenerOperationPending = false;
 
   constructor(app: App, private readonly plugin: MvSenceAiIdePlugin) {
     super(app, plugin);
@@ -562,7 +826,7 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
     const previousScrollTop = this.captureSettingsUiState(rootEl);
     this.destroySourceAssistSnippetEditors();
     rootEl.empty();
-    addHeading(rootEl, this.plugin.manifest.name || "mv-SenceAI");
+    addHeading(rootEl, this.plugin.manifest.name || "mv-AIDE");
 
     const ideEl = this.createSettingsSection(rootEl, "ide", "IDE桥接");
     const llmEl = this.createSettingsSection(rootEl, "llm", "划词助手");
@@ -636,6 +900,88 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
     } else {
       codexStatusEl.setText("● 运行中");
       codexStatusEl.addClass("mv-senceai-status-success");
+    }
+
+    const universalSetting = new Setting(containerEl)
+      .setName("暴露 mv-AIDE 协议")
+      .setDesc(
+        "默认关闭。开启后通过标准 MCP 协议完整暴露 IDE 桥接能力：全部 8 个 IDE 工具（含 openDiff 人工审核）与状态感知资源（工作区上下文、打开的标签、最新选区、@ 提及），用户可以自行接入其它 agent。仅本机 127.0.0.1 提供 Streamable HTTP 与 stdio 接入，在 Obsidian 启动完成后的空闲阶段加载；不影响 Claude Code、Codex 与 MCP 工具开关。",
+      )
+      .addToggle((toggle) =>
+        toggle
+          .setValue(this.plugin.settings.universalMcp.enabled)
+          .onChange(async (value) => {
+            this.plugin.settings.universalMcp.enabled = value;
+            await this.plugin.saveAndApplySettings();
+            this.rerenderSettings("ide");
+          }),
+      );
+    universalSetting.settingEl.addClass("mv-senceai-universal-mcp-setting");
+
+    const universalStatus = new Setting(containerEl)
+      .setName("mv-AIDE 协议状态")
+      .setDesc(this.plugin.universalMcpStatus);
+    universalStatus.settingEl.addClass("mv-senceai-universal-mcp-setting");
+    universalStatus.descEl.setAttribute("aria-live", "polite");
+
+    if (this.plugin.settings.universalMcp.enabled) {
+      const protocolSetting = new Setting(containerEl)
+        .setName("通用 MCP 协议版本")
+        .setDesc("2026-07-28、2025-11-25、2025-03-26（由客户端协商）");
+      protocolSetting.settingEl.addClass("mv-senceai-universal-mcp-setting");
+
+      const copyConfig = async (
+        config: string | null,
+        label: string,
+      ): Promise<void> => {
+        if (!config) {
+          new Notice("mv-AIDE 协议尚未就绪，请在 Obsidian 启动完成后刷新状态。");
+          return;
+        }
+        try {
+          await navigator.clipboard.writeText(config);
+          new Notice(`${label}已复制`);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          new Notice(`复制失败：${message}`, 8000);
+        }
+      };
+
+      const connectionSetting = new Setting(containerEl)
+        .setName("通用 Agent 连接配置")
+        .setDesc(
+          "HTTP 和 stdio 使用同一套标准能力。stdio 只连接已经运行的 Obsidian，不会自行启动 Obsidian。",
+        )
+        .addButton((button) => {
+          const config = this.plugin.getUniversalMcpHttpConfig();
+          button
+            .setButtonText("复制 HTTP 配置")
+            .setDisabled(!config)
+            .onClick(() => copyConfig(config, "HTTP 配置"));
+        })
+        .addButton((button) => {
+          // 禁用判断只查运行时是否就绪；配置在用户点击时才生成，
+          // 避免设置页渲染时同步探测系统 Node（spawnSync）卡住主线程。
+          button
+            .setButtonText("复制 stdio 配置")
+            .setDisabled(!this.plugin.hasUniversalMcpRuntime())
+            .onClick(() =>
+              copyConfig(this.plugin.getUniversalMcpStdioConfig(), "stdio 配置"),
+            );
+        })
+        .addButton((button) =>
+          button.setButtonText("刷新状态").onClick(() => {
+            this.rerenderSettings("ide");
+          }),
+        )
+        .addButton((button) =>
+          button.setButtonText("轮换令牌").onClick(async () => {
+            await this.plugin.rotateUniversalMcpToken();
+            new Notice("mv-AIDE 协议令牌已轮换，请更新所有客户端配置。");
+            this.rerenderSettings("ide");
+          }),
+        );
+      connectionSetting.settingEl.addClass("mv-senceai-universal-mcp-setting");
     }
 
     addHeading(containerEl, "功能与工具");
@@ -927,7 +1273,7 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
       .addButton((button) =>
         button.setButtonText("重启").onClick(async () => {
           await this.plugin.restartBridge();
-          new Notice("mv-SenceAI 桥接已重启。");
+          new Notice("mv-AIDE 桥接已重启。");
           this.rerenderSettings("ide");
         }),
       );
@@ -938,7 +1284,7 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
       .addButton((button) =>
         button.setButtonText("恢复").onClick(async () => {
           await this.plugin.restoreClaudeSettings();
-          new Notice("已恢复 mv-SenceAI 管理的 Claude 设置。");
+          new Notice("已恢复 mv-AIDE 管理的 Claude 设置。");
           this.rerenderSettings("ide");
         }),
       );
@@ -1185,6 +1531,18 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
           .setValue(this.plugin.settings.terminalFontSize || "")
           .onChange(async (value) => {
             this.plugin.settings.terminalFontSize = value.trim();
+            await this.plugin.saveData(this.plugin.settings);
+          })
+      );
+
+    new Setting(containerEl)
+      .setName("终端按键直通 (Key passthrough)")
+      .setDesc("终端聚焦时，将 Ctrl/Alt/F 键/方向键组合等按键直接发送给终端程序（与系统终端行为一致），不再触发 Obsidian 快捷键。关闭则恢复 Obsidian 快捷键优先。")
+      .addToggle((toggle) =>
+        toggle
+          .setValue(this.plugin.settings.terminalKeyPassthrough !== false)
+          .onChange(async (value) => {
+            this.plugin.settings.terminalKeyPassthrough = value;
             await this.plugin.saveData(this.plugin.settings);
           })
       );
@@ -1565,6 +1923,69 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
     );
   }
 
+  private openWindowsDefaultAppConfirmation(
+    status: DefaultOpenerOperationResult["status"],
+  ): void {
+    new WindowsDefaultAppConfirmationModal(
+      this.app,
+      status,
+      () => this.plugin.openWindowsDefaultAppsSettings(),
+      async () => {
+        const checked = await this.plugin.checkDefaultFileOpener();
+        this.rerenderSettings("external-file-opener");
+        return checked;
+      },
+    ).open();
+  }
+
+  private async runDefaultOpenerOperation<T>(
+    operation: () => Promise<T>,
+  ): Promise<T | null> {
+    if (this.defaultOpenerOperationPending) return null;
+    this.defaultOpenerOperationPending = true;
+    this.rerenderSettings("external-file-opener");
+    try {
+      return await operation();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      new Notice(`默认打开器操作失败：${message}`, 8000);
+      return null;
+    } finally {
+      this.defaultOpenerOperationPending = false;
+      this.rerenderSettings("external-file-opener");
+    }
+  }
+
+  private handleWindowsCleanupResult(
+    result: DefaultOpenerOperationResult,
+  ): void {
+    const owner = result.status.owner;
+    if (
+      result.failureKind === "other-vault-confirmation-required" &&
+      owner
+    ) {
+      new WindowsOtherVaultCleanupModal(
+        this.app,
+        owner,
+        () => this.runDefaultOpenerOperation(() =>
+          this.plugin.cleanupDefaultFileOpener({
+            marker: owner.marker,
+            vaultRoot: owner.vaultRoot,
+            installedAt: owner.installedAt,
+          })),
+        (confirmedResult) => this.handleWindowsCleanupResult(confirmedResult),
+      ).open();
+      return;
+    }
+    if (result.ok && result.offerWindowsDefaultAppsSettings) {
+      new WindowsCleanupCompleteModal(
+        this.app,
+        result.message,
+        () => this.plugin.openWindowsGenericDefaultAppsSettings(),
+      ).open();
+    }
+  }
+
   private renderExternalFileOpenerSettings(containerEl: HTMLElement): void {
     const settings = this.plugin.settings.externalFileOpener;
     const supportedExtensions = externalFileAllowedExtensions(this.plugin.settings)
@@ -1604,47 +2025,137 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
+      .setName("Obsidian 内显示文件类型图标")
+      .setDesc("在标签页按后缀显示文件格式徽标（如 MD、PY、TEX），便于一眼区分文件格式。")
+      .addToggle((toggle) =>
+        toggle
+          .setValue(settings.fileTypeIcons !== false)
+          .setDisabled(!settings.enabled)
+          .onChange(async (value) => {
+            settings.fileTypeIcons = value;
+            await this.plugin.saveAndApplySettings();
+          }),
+      );
+
+    new Setting(containerEl)
       .setName("系统默认打开方式")
       .setDesc(this.plugin.defaultFileOpenerStatus)
       .addButton((button) =>
-        button.setButtonText("检查").onClick(() => {
-          const status = this.plugin.checkDefaultFileOpener();
-          new Notice(status.message);
-          this.rerenderSettings("external-file-opener");
-        }),
+        button
+          .setButtonText("检查")
+          .setDisabled(this.defaultOpenerOperationPending)
+          .onClick(async () => {
+            const status = await this.runDefaultOpenerOperation(
+              () => this.plugin.checkDefaultFileOpener(),
+            );
+            if (!status) return;
+            new Notice(status.message, status.checkFailed ? 8000 : 5000);
+            if (status.requiresWindowsConfirmation) {
+              this.openWindowsDefaultAppConfirmation(status);
+            }
+          }),
       )
       .addButton((button) =>
         button
           .setButtonText("一键注入")
           .setCta()
-          .setDisabled(!settings.enabled)
+          .setDisabled(!settings.enabled || this.defaultOpenerOperationPending)
           .onClick(async () => {
-            await this.plugin.installDefaultFileOpener();
-            this.rerenderSettings("external-file-opener");
+            const result = await this.runDefaultOpenerOperation(
+              () => this.plugin.installDefaultFileOpener(),
+            );
+            if (!result) return;
+            if (
+              result.failureKind === "symlink-permission" ||
+              result.failureKind === "symlink-unsupported"
+            ) {
+              const retryInjection = async (
+                allowManagedCopyFallback = false,
+              ): Promise<DefaultOpenerOperationResult> => {
+                const retry = await this.plugin.installDefaultFileOpener({
+                  allowManagedCopyFallback,
+                });
+                this.rerenderSettings("external-file-opener");
+                if (retry.status.requiresWindowsConfirmation) {
+                  window.setTimeout(
+                    () => this.openWindowsDefaultAppConfirmation(retry.status),
+                    0,
+                  );
+                }
+                return retry;
+              };
+              new SymlinkFallbackModal(
+                this.app,
+                result.message,
+                process.platform,
+                result.managedCopyFallbackAvailable === true,
+                process.platform === "win32"
+                  ? () => this.plugin.openWindowsDeveloperSettings()
+                  : null,
+                process.platform === "win32"
+                  ? async () => {
+                      await this.plugin.repairWindowsDeveloperMode();
+                      return await retryInjection(false);
+                    }
+                  : null,
+                () => retryInjection(false),
+                () => retryInjection(true),
+              ).open();
+            } else if (result.status.requiresWindowsConfirmation) {
+              this.openWindowsDefaultAppConfirmation(result.status);
+            }
           }),
       )
       .addButton((button) =>
-        button.setButtonText("清理").onClick(async () => {
-          await this.plugin.cleanupDefaultFileOpener();
-          this.rerenderSettings("external-file-opener");
-        }),
+        button
+          .setButtonText("清理")
+          .setDisabled(this.defaultOpenerOperationPending)
+          .onClick(async () => {
+            const result = await this.runDefaultOpenerOperation(
+              () => this.plugin.cleanupDefaultFileOpener(),
+            );
+            if (result) this.handleWindowsCleanupResult(result);
+          }),
       );
 
-    new Setting(containerEl)
+    const mirrorSetting = new Setting(containerEl)
       .setName("镜像目录")
-      .setDesc("外部文件会以 symlink 形式映射到此 vault 内目录。")
+      .setDesc("始终优先使用真实 symlink；仅在创建失败且本机已授权时，才在此目录使用受管临时副本。")
       .addText((text) =>
         text
           .setValue(settings.mirrorFolder)
-          .setPlaceholder("senceai-external-files/mirror")
+          .setPlaceholder("mv-aide-external-files/mirror")
           .setDisabled(!settings.enabled)
           .onChange(async (value) => {
-            settings.mirrorFolder =
-              value.trim().replace(/^\/+/, "") ||
+            const candidate = value.trim() ||
               DEFAULT_SETTINGS.externalFileOpener.mirrorFolder;
+            try {
+              settings.mirrorFolder = normalizeExternalFileMirrorFolder(candidate);
+            } catch (error) {
+              new Notice(
+                error instanceof Error ? error.message : String(error),
+                5000,
+              );
+              return;
+            }
             await this.plugin.saveData(this.plugin.settings);
           }),
+      )
+      .addButton((button) =>
+        button
+          .setButtonText("重试并迁移符号链接")
+          .setTooltip("仅手动触发：先同步本机受管副本，再把安全收敛的副本迁移回真实符号链接")
+          .setDisabled(!settings.enabled)
+          .onClick(async () => {
+            button.setDisabled(true);
+            try {
+              await this.plugin.retryManagedCopiesAsSymlinks();
+            } finally {
+              button.setDisabled(!settings.enabled);
+            }
+          }),
       );
+    mirrorSetting.settingEl.addClass("mv-senceai-external-mirror-setting");
   }
 
   private renderSourceAssistSettings(containerEl: HTMLElement): void {
@@ -1873,7 +2384,7 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
               this.plugin.settings.sourceAssist.customHighlightThemes.push(theme);
               await this.plugin.saveSourceAssistSettings();
               new Notice(`已载入主题：${theme.name}`);
-              for (const warning of warnings) console.info(`[mv-senceai-ide] ${warning}`);
+              for (const warning of warnings) console.info(`[mv-aide] ${warning}`);
               this.rerenderSettings("source-assist");
             }).open();
           }),

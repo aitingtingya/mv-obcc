@@ -28,6 +28,7 @@
   },
   "include": [
     "main.ts",
-    "src/**/*.ts"
+    "src/**/*.ts",
+    "scripts/**/*.ts"
   ]
 }

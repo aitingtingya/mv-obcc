@@ -166,14 +166,14 @@ export function texDisplayMathPreviewExtension(
               this.disabled = true;
               this.active = false;
               console.warn(
-                `[mv-senceai-ide] Disabled TeX math preview for this editor because it failed to initialize. Current extension: "${this.lastObservedExtension}".`,
+                `[mv-aide] Disabled TeX math preview for this editor because it failed to initialize. Current extension: "${this.lastObservedExtension}".`,
                 error,
               );
               try {
                 this.reconfigurePreview([]);
               } catch (disableError) {
                 console.warn(
-                  "[mv-senceai-ide] Failed to clear disabled TeX math preview.",
+                  "[mv-aide] Failed to clear disabled TeX math preview.",
                   disableError,
                 );
               }
@@ -190,7 +190,7 @@ export function texDisplayMathPreviewExtension(
           if (this.retryCount >= TEX_PREVIEW_MAX_RETRIES) {
             this.disabled = true;
             console.warn(
-              `[mv-senceai-ide] Disabled TeX math preview for this editor because the file extension was not available after ${TEX_PREVIEW_MAX_RETRIES} retries. Current extension: "${this.lastObservedExtension}".`,
+              `[mv-aide] Disabled TeX math preview for this editor because the file extension was not available after ${TEX_PREVIEW_MAX_RETRIES} retries. Current extension: "${this.lastObservedExtension}".`,
             );
             return;
           }
@@ -270,7 +270,7 @@ function texDisplayMathPreviewRuntimeExtension(
               });
             } catch (error) {
               console.error(
-                "[mv-senceai-ide] Failed to update TeX math preview.",
+                "[mv-aide] Failed to update TeX math preview.",
                 error,
               );
             }
@@ -347,7 +347,7 @@ export function buildTexDisplayMathPreview(
   try {
     return buildTexDisplayMathPreviewUnsafe(view);
   } catch (error) {
-    console.error("[mv-senceai-ide] Failed to build TeX math preview.", error);
+    console.error("[mv-aide] Failed to build TeX math preview.", error);
     return { decorations: Decoration.none, signature: "error" };
   }
 }
@@ -449,7 +449,7 @@ export function buildTexInlineMathTooltips(
     };
   } catch (error) {
     console.error(
-      "[mv-senceai-ide] Failed to build TeX inline math preview.",
+      "[mv-aide] Failed to build TeX inline math preview.",
       error,
     );
     return { tooltips: [], signature: "error" };
@@ -521,10 +521,10 @@ function renderMathInto(container: HTMLElement, source: string, display: boolean
   try {
     container.appendChild(renderMath(source.trim(), display));
     Promise.resolve(finishRenderMath()).catch((error: unknown) => {
-      console.error("[mv-senceai-ide] Failed to finish TeX math preview.", error);
+      console.error("[mv-aide] Failed to finish TeX math preview.", error);
     });
   } catch (error) {
-    console.error("[mv-senceai-ide] Failed to render TeX math preview.", error);
+    console.error("[mv-aide] Failed to render TeX math preview.", error);
     container.textContent = source;
   }
 }

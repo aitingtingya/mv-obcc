@@ -1,7 +1,7 @@
 {
   "name": "mv-obcc",
-  "version": "0.8.1",
-  "description": "A focused Claude Code and Codex CLI IDE bridge for local vaults.",
+  "version": "0.9.0",
+  "description": "mv-AIDE: an AI IDE bridge connecting Claude Code, Codex CLI and universal MCP agents to local vaults.",
   "main": "main.js",
   "type": "module",
   "scripts": {
@@ -10,6 +10,8 @@
     "lint": "eslint main.ts src",
     "typecheck": "tsc --noEmit",
     "verify": "npm run lint && npm run typecheck && npm run build",
+    "test:protocol": "npm run build && node scripts/test-universal-mcp-stdio.mjs",
+    "test:ide-live": "node scripts/live-ide-tools-check.mjs",
     "deploy:local": "npm run build && node scripts/deploy-local.mjs",
     "package": "node scripts/package.mjs"
   },

@@ -1,7 +1,7 @@
 import path from "node:path";
 import { MarkdownView, TFile, type App, type WorkspaceLeaf } from "obsidian";
 import { randomUUID } from "node:crypto";
-import { DIFF_VIEW_TYPE } from "./constants";
+import { DIFF_VIEW_TYPE, TERMINAL_VIEW_TYPE } from "./constants";
 import { resolveVaultPath } from "./path-utils";
 import { getVaultRoot } from "./selection";
 import { ObsidianDiffView } from "./diff-view";
@@ -179,6 +179,7 @@ export class ToolRegistry {
     const oldFile = oldFilePath ? findFile(this.app, oldFilePath) : null;
     const oldContents = oldFile ? await this.app.vault.cachedRead(oldFile) : "";
     const sessionId = randomUUID();
+    const previousLeaf = this.app.workspace.getMostRecentLeaf();
     const leaf = this.app.workspace.getLeaf("tab");
     await leaf.setViewState({ type: DIFF_VIEW_TYPE, active: true });
 
@@ -218,7 +219,12 @@ export class ToolRegistry {
     };
     diffView.setPayload(payload);
     await this.app.workspace.revealLeaf(leaf);
+    this.app.workspace.setActiveLeaf(leaf, { focus: true });
     const decision = await decisionPromise;
+    if (previousLeaf?.view?.getViewType() === TERMINAL_VIEW_TYPE) {
+      this.app.workspace.setActiveLeaf(previousLeaf, { focus: true });
+      await this.app.workspace.revealLeaf(previousLeaf);
+    }
 
     return decision.decision === "accept"
       ? {

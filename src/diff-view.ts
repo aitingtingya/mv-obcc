@@ -117,7 +117,7 @@ export class ObsidianDiffView extends ItemView {
 
     if (decision === "accept" && !(await this.payload.validateOriginal())) {
       this.conflictElement?.addClass("is-visible");
-      new Notice("mv-SenceAI IDE：源文件已变化，本次差异未被接受。");
+      new Notice("mv-AIDE IDE：源文件已变化，本次差异未被接受。");
       return;
     }
 

@@ -1,3 +1,5 @@
+import type { ManagedCopyState } from "./managed-copy-fallback";
+
 export type UpstreamMode = "native" | "compatibility";
 
 export interface ToolToggles {
@@ -24,6 +26,12 @@ export interface IdeIntegrationSettings {
   claudeCode: boolean;
   /** Codex CLI /ide context provider and managed MCP config. Fresh installs default off. */
   codex: boolean;
+}
+
+/** Independent authorization for the opt-in universal IDE MCP endpoint. */
+export interface UniversalMcpSettings {
+  enabled: boolean;
+  authToken: string | null;
 }
 
 export type LlmProviderType = "openai" | "anthropic";
@@ -235,6 +243,10 @@ export interface ExternalFileMapping {
   vaultPath: string;
   createdAt: number;
   extension: string;
+  /** Missing on legacy mappings, which are always interpreted as symlinks. */
+  strategy?: "symlink" | "managed-copy";
+  /** Present only for a device-owned managed-copy fallback mapping. */
+  managedCopy?: ManagedCopyState;
 }
 
 export interface ExternalFileOpenerSettings {
@@ -243,6 +255,7 @@ export interface ExternalFileOpenerSettings {
   mirrorFolder: string;
   mappings: Record<string, ExternalFileMapping>;
   openerToken: string;
+  fileTypeIcons: boolean;
 }
 
 export type TerminalThemeMode = "obsidian" | "light" | "dark" | "custom";
@@ -292,6 +305,7 @@ export interface BridgeSettings {
   toolToggles: ToolToggles;
   toolContextLimits: ToolContextLimits;
   ideIntegrations: IdeIntegrationSettings;
+  universalMcp: UniversalMcpSettings;
   llm: LlmFeatureSettings;
   inlineCompletion: InlineCompletionSettings;
   sourceAssist: SourceAssistSettings;
@@ -309,6 +323,7 @@ export interface BridgeSettings {
   terminalPythonPath: string;
   terminalFontFamily: string;
   terminalFontSize: string;
+  terminalKeyPassthrough: boolean;
   terminalOpenPosition: string;
   terminalThemeMode: TerminalThemeMode;
   terminalCustomThemeId: string;

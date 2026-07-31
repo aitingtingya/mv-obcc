@@ -13,7 +13,7 @@ interface CodexMcpRegistrationRuntime {
 
 const MANAGED_BEGIN = "# BEGIN mv-SenceAI managed Codex MCP server";
 const MANAGED_END = "# END mv-SenceAI managed Codex MCP server";
-const SERVER_NAME = "mv_senceai_obsidian";
+const SERVER_NAME = "mv_aide_obsidian";
 
 export function defaultCodexConfigPath(): string {
   return path.join(os.homedir(), ".codex", "config.toml");
@@ -62,7 +62,7 @@ function readIfExists(filePath: string): string {
 
 function writeFileAtomic(filePath: string, content: string): void {
   fs.mkdirSync(path.dirname(filePath), { recursive: true, mode: 0o700 });
-  const temporary = `${filePath}.mv-senceai.tmp`;
+  const temporary = `${filePath}.mv-aide.tmp`;
   fs.writeFileSync(temporary, content, { mode: 0o600 });
   fs.renameSync(temporary, filePath);
 }

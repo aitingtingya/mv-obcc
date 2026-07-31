@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
+import { createRequire } from "node:module";
 import path from "node:path";
 import {
   editorInfoField,
@@ -24,6 +25,7 @@ import {
   type ViewUpdate,
 } from "@codemirror/view";
 import { isSelectedPageType } from "./src/activity-tracking";
+import { detectSystemNodeCommand } from "./src/universal-mcp-stdio-command";
 import { BridgeServer } from "./src/bridge-server";
 import {
   applyManagedTerminalHooks,
@@ -38,6 +40,8 @@ import {
   DEFAULT_SETTINGS,
   DIFF_VIEW_TYPE,
   TERMINAL_VIEW_TYPE,
+  UNIVERSAL_MCP_PORT_BASE,
+  UNIVERSAL_MCP_PORT_SPAN,
   WINDOWS_MCP_REGISTRATION_VERSION,
 } from "./src/constants";
 import {
@@ -97,6 +101,12 @@ import {
   schedulePostLayoutStartup,
   type PostLayoutStartupHandle,
 } from "./src/post-layout-startup";
+import { stablePortSeed } from "./src/path-utils";
+import { FileTypeIconView } from "./src/file-type-icon-view";
+import {
+  createStartupPerformanceRecorder,
+  type StartupPerformanceSnapshot,
+} from "./src/startup-performance";
 import {
   applyBottomTerminalSplitRatio,
   activeWorkspaceLeaf,
@@ -111,13 +121,35 @@ import {
   ExternalFileOpenerFeature,
   externalFileAllowedExtensions,
   normalizeExternalFileOpenerExtensionMode,
+  type ExternalFileOpenResult,
+  type ManagedCopyRestoreTask,
+  type ManagedCopySymlinkRetrySummary,
 } from "./src/external-file-opener";
 import {
+  openExternalFileWithFallbackConsent as runExternalFileFallbackConsent,
+} from "./src/external-file-fallback-orchestrator";
+import {
+  requestExternalFileSymlinkFallbackDecision,
+  type ExternalFileSymlinkFallbackDecision,
+} from "./src/external-file-symlink-fallback-modal";
+import {
   ExternalFileOpenerSystem,
+  readExternalFileOpenerOwner,
+  sameVaultRoot,
+  type DefaultOpenerOperationResult,
   type DefaultOpenerStatus,
+  type ExternalFileOpenerOwnerConfirmation,
 } from "./src/external-file-opener-system";
+import { readOrCreateExternalFileHostId } from "./src/external-file-host-identity";
+import { normalizeExternalFileMirrorFolder } from "./src/external-file-mirror-path";
+import type {
+  ManagedCopyConflict,
+  ManagedCopyConflictChoice,
+  ManagedCopyConflictResolutionResult,
+} from "./src/managed-copy-fallback";
 import {
   CodexIdeProvider,
+  codexIdeSocketPathForRuntime,
   type CodexIdeContextSnapshot,
 } from "./src/codex-ide-provider";
 import {
@@ -136,6 +168,22 @@ import type {
 } from "./src/types";
 
 type NewLeafSpecifier = PaneType | boolean;
+type UniversalMcpRuntimeModule = typeof import("./src/universal-mcp");
+type UniversalMcpServerInstance = InstanceType<
+  UniversalMcpRuntimeModule["UniversalMcpServer"]
+>;
+type UniversalMcpRuntimeDescriptor =
+  import("./src/universal-mcp").UniversalMcpRuntimeDescriptor;
+
+interface UniversalMcpIdleHandle {
+  kind: "idle" | "timeout";
+  id: number;
+}
+
+interface BundledModuleEvaluationTiming {
+  startedAt: number;
+  endedAt?: number;
+}
 
 interface NativeOpenDialog {
   showOpenDialog(options: {
@@ -231,6 +279,80 @@ class ExternalFilePathModal extends Modal {
   }
 }
 
+class ManagedCopyConflictModal extends Modal {
+  private choiceMade = false;
+
+  constructor(
+    app: App,
+    private readonly conflict: ManagedCopyConflict,
+    private readonly resolveConflict: (
+      choice: ManagedCopyConflictChoice,
+    ) => Promise<ManagedCopyConflictResolutionResult>,
+  ) {
+    super(app);
+  }
+
+  onOpen(): void {
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.createEl("h3", { text: "外部文件出现双边修改" });
+    contentEl.createEl("p", {
+      text: "外部原文件和 Obsidian 中的受管临时副本都已修改。为防止覆盖，本插件已暂停自动同步，请选择保留哪一侧。",
+      cls: "setting-item-description",
+    });
+    contentEl.createEl("p", {
+      text: `外部文件：${this.conflict.state.externalPath}`,
+      cls: "setting-item-description",
+    });
+    contentEl.createEl("p", {
+      text: `Vault 副本：${this.conflict.state.vaultPath}`,
+      cls: "setting-item-description",
+    });
+    new Setting(contentEl)
+      .addButton((button) =>
+        button
+          .setButtonText("保留外部文件")
+          .setCta()
+          .onClick(() => void this.choose("external")),
+      )
+      .addButton((button) =>
+        button
+          .setButtonText("保留 Obsidian 副本")
+          .onClick(() => void this.choose("copy")),
+      )
+      .addButton((button) =>
+        button
+          .setButtonText("稍后处理")
+          .onClick(() => void this.choose("later")),
+      );
+  }
+
+  onClose(): void {
+    if (!this.choiceMade) void this.resolveConflict("later");
+  }
+
+  private async choose(choice: ManagedCopyConflictChoice): Promise<void> {
+    if (this.choiceMade) return;
+    this.choiceMade = true;
+    this.close();
+    try {
+      const result = await this.resolveConflict(choice);
+      if (result.status === "resolved-external") {
+        new Notice("已保留外部文件，并更新 Obsidian 受管副本。");
+      } else if (result.status === "resolved-copy") {
+        new Notice("已保留 Obsidian 副本，并安全写回外部文件。");
+      } else if (result.status === "stale") {
+        new Notice("选择期间文件再次变化；本次未覆盖任何一侧，请重新处理。", 8000);
+      }
+    } catch (error) {
+      new Notice(
+        `受管副本冲突处理失败：${error instanceof Error ? error.message : String(error)}`,
+        8000,
+      );
+    }
+  }
+}
+
 function customMarkdownHighlightRefreshRequested(update: ViewUpdate): boolean {
   return update.transactions.some((transaction) =>
     transaction.effects.some((effect) =>
@@ -244,6 +366,7 @@ export default class MvSenceAiIdePlugin extends Plugin {
   port = 0;
   mcpStatus = "尚未检查";
   codexMcpStatus = "Codex MCP 未启用";
+  universalMcpStatus = "mv-AIDE 协议未启用";
   defaultFileOpenerStatus = "尚未检查";
   claudeIdeError: string | null = null;
   codexIdeError: string | null = null;
@@ -264,12 +387,29 @@ export default class MvSenceAiIdePlugin extends Plugin {
   private sourceAssist: SourceAssistFeature | null = null;
   private externalFileOpener: ExternalFileOpenerFeature | null = null;
   private readonly externalFileOpenerSystem = new ExternalFileOpenerSystem();
+  private externalFileFallbackDecision:
+    Promise<ExternalFileSymlinkFallbackDecision> | null = null;
   private codexIdeProvider: CodexIdeProvider | null = null;
   private mcpRegistrationTimer: number | null = null;
   private mcpRegistrationInFlight: Promise<void> | null = null;
   private codexMcpRegistrationTimer: number | null = null;
   private codexMcpRegistrationInFlight: Promise<void> | null = null;
   private postLayoutStartup: PostLayoutStartupHandle | null = null;
+  private fileTypeIconView: FileTypeIconView | null = null;
+  private universalMcpRuntimeModule: UniversalMcpRuntimeModule | null = null;
+  private universalMcpServer: UniversalMcpServerInstance | null = null;
+  private universalMcpDescriptor: UniversalMcpRuntimeDescriptor | null = null;
+  private universalMcpIdleHandle: UniversalMcpIdleHandle | null = null;
+  private universalMcpLayoutReady = false;
+  private universalMcpStartGeneration = 0;
+  private universalMcpStartInFlight: Promise<void> | null = null;
+  private universalMcpStopInFlight: Promise<void> | null = null;
+  private universalSelectionSignature: string | null = null;
+  private universalEditorsSignature: string | null = null;
+  private universalLatestMention: unknown = null;
+  private readonly startupPerformance = createStartupPerformanceRecorder();
+  private startupModuleTimingRecorded = false;
+  private measuredManagedCopyRestoreTask: ManagedCopyRestoreTask | null = null;
   private registeredCustomMarkdownExtensions = new Set<string>();
   private ownedCustomMarkdownExtensions = new Set<string>();
   private readonly registeredCustomMarkdownCommandIds = new Set<string>();
@@ -279,6 +419,9 @@ export default class MvSenceAiIdePlugin extends Plugin {
   private unloaded = false;
 
   async onload(): Promise<void> {
+    this.recordBundledModuleEvaluation();
+    const endOnloadTiming = this.startupPerformance.begin("plugin.onload");
+    try {
     this.unloaded = false;
     const rawLoaded = (await this.loadData()) as
       | (Partial<BridgeSettings> & { codex?: unknown })
@@ -307,12 +450,26 @@ export default class MvSenceAiIdePlugin extends Plugin {
           loaded.ideIntegrations?.codex ??
           DEFAULT_SETTINGS.ideIntegrations.codex,
       },
+      universalMcp: {
+        ...DEFAULT_SETTINGS.universalMcp,
+        ...(loaded.universalMcp ?? {}),
+      },
       llm: migrateLlm(loaded.llm),
       inlineCompletion: migrateInlineCompletion(loaded.inlineCompletion),
       sourceAssist: normalizeSourceAssistSettings(loaded.sourceAssist),
       externalFileOpener: {
         ...DEFAULT_SETTINGS.externalFileOpener,
         ...(loaded.externalFileOpener ?? {}),
+        mirrorFolder: (() => {
+          try {
+            return normalizeExternalFileMirrorFolder(
+              loaded.externalFileOpener?.mirrorFolder ??
+                DEFAULT_SETTINGS.externalFileOpener.mirrorFolder,
+            );
+          } catch {
+            return DEFAULT_SETTINGS.externalFileOpener.mirrorFolder;
+          }
+        })(),
         extensionMode: normalizeExternalFileOpenerExtensionMode(
           loaded.externalFileOpener?.extensionMode,
         ),
@@ -321,6 +478,9 @@ export default class MvSenceAiIdePlugin extends Plugin {
         },
       },
     });
+    this.universalMcpStatus = this.settings.universalMcp.enabled
+      ? "等待 Obsidian 启动完成"
+      : "mv-AIDE 协议未启用";
     if (!this.settings.externalFileOpener.openerToken) {
       this.settings.externalFileOpener.openerToken = randomUUID();
     }
@@ -354,6 +514,22 @@ export default class MvSenceAiIdePlugin extends Plugin {
       getSettings: () => this.settings,
       getVaultRoot: () => getVaultRoot(this.app),
       saveSettings: () => this.saveData(this.settings),
+      managedCopyFallbackEnabled: () =>
+        this.externalFileOpenerSystem.managedCopyFallbackEnabled(
+          getVaultRoot(this.app),
+        ),
+      getManagedCopyHostId: () => readOrCreateExternalFileHostId(),
+      onManagedCopyConflict: (conflict, resolve) => {
+        new ManagedCopyConflictModal(this.app, conflict, resolve).open();
+      },
+      onManagedCopyError: (error) => {
+        const message = error instanceof Error ? error.message : String(error);
+        console.warn(
+          "[mv-aide] Managed-copy synchronization failed.",
+          error,
+        );
+        new Notice(`受管临时副本同步失败：${message}`, 8000);
+      },
     });
     this.toolRegistry = new ToolRegistry(
       this.app,
@@ -362,28 +538,27 @@ export default class MvSenceAiIdePlugin extends Plugin {
       () => this.settings.toolContextLimits.readCurrentWebPage,
     );
 
-    const socketPath = path.join(
-      this.codexRuntimeDir(),
-      "codex-ipc",
-      `ipc-${typeof process.getuid === "function" ? process.getuid() : 0}.sock`,
-    );
-
     this.codexIdeProvider = new CodexIdeProvider({
       getSnapshot: () => this.codexIdeContextSnapshot(),
-      socketPath,
-      onLog: (message) => console.error("[mv-senceai-ide]", message),
+      socketPath: codexIdeSocketPathForRuntime(this.codexRuntimeDir()),
+      onLog: (message) => console.error("[mv-aide]", message),
     });
 
     this.registerEvent(
       this.app.workspace.on("active-leaf-change", () => {
         this.terminalTracker?.scan();
+        this.fileTypeIconView?.refreshTabIcons();
         this.selectionHighlighter?.sync(true);
         this.scheduleBroadcast();
+        // Returning to a terminal tab must hand keyboard focus back to
+        // xterm's textarea; otherwise the terminal looks dead until clicked.
+        this.app.workspace.getActiveViewOfType(TerminalView)?.focusTerminal();
       }),
     );
     this.registerEvent(
       this.app.workspace.on("layout-change", () => {
         this.terminalTracker?.scan();
+        this.fileTypeIconView?.refreshTabIcons();
         this.selectionHighlighter?.sync();
         this.scheduleBroadcast();
       }),
@@ -435,11 +610,14 @@ export default class MvSenceAiIdePlugin extends Plugin {
       editorCallback: () => {
         const state = currentSelection(this.app);
         if (state) {
+          const mention = atMentionedParams(state);
+          this.universalLatestMention = mention;
           this.server?.broadcast({
             jsonrpc: "2.0",
             method: "at_mentioned",
-            params: atMentionedParams(state),
+            params: mention,
           });
+          this.universalMcpServer?.publishBridgeEvent("at_mentioned", mention);
         }
       },
     });
@@ -486,10 +664,23 @@ export default class MvSenceAiIdePlugin extends Plugin {
     this.llmFeature.registerCommands();
     this.llmFeature.registerMenus();
 
+    this.fileTypeIconView = new FileTypeIconView({
+      app: this.app,
+      getSupportedExtensions: () => this.externalFileAllowedExtensions(),
+      isEnabled: () =>
+        this.settings.externalFileOpener.enabled &&
+        this.settings.externalFileOpener.fileTypeIcons !== false,
+    });
+    this.fileTypeIconView.start();
+    this.app.workspace.onLayoutReady(() => this.fileTypeIconView?.refresh());
+
     this.schedulePostLayoutStartup();
     this.terminalTracker.scan();
     this.selectionHighlighter.sync(true);
     this.scheduleBroadcast();
+    } finally {
+      endOnloadTiming();
+    }
   }
 
   onunload(): void {
@@ -498,6 +689,7 @@ export default class MvSenceAiIdePlugin extends Plugin {
       this.broadcastTimer = null;
     }
     this.unloaded = true;
+    this.cancelUniversalMcpIdleStart();
     this.postLayoutStartup?.cancel();
     this.postLayoutStartup = null;
     this.clearScheduledMcpRegistration();
@@ -508,6 +700,10 @@ export default class MvSenceAiIdePlugin extends Plugin {
     this.llmFeature = null;
     this.inlineCompletion?.dispose();
     this.inlineCompletion = null;
+    this.externalFileOpener?.dispose();
+    this.externalFileOpener = null;
+    this.fileTypeIconView?.dispose();
+    this.fileTypeIconView = null;
     this.customMarkdownHighlightEditorViews.clear();
 
     const leaves = this.app.workspace.getLeavesOfType(TERMINAL_VIEW_TYPE);
@@ -579,10 +775,12 @@ export default class MvSenceAiIdePlugin extends Plugin {
 
   async saveAndApplySettings(): Promise<void> {
     await this.saveData(this.settings);
+    this.fileTypeIconView?.syncFromSettings();
     this.syncCustomMarkdownExtensions();
     await this.sourceAssist?.settingsChanged();
     await this.syncLocalServices(true, false);
     await this.syncCodexIdeProvider();
+    await this.applyUniversalMcpSetting();
     this.scheduleCodexMcpRegistrationIfReady();
   }
 
@@ -602,7 +800,7 @@ export default class MvSenceAiIdePlugin extends Plugin {
       this.ownedCustomMarkdownExtensions,
       sourceAssistMarkdownExtensions(this.settings.sourceAssist).join(","),
       (message, error) => {
-        console.warn(`[mv-senceai-ide] ${message}`, error ?? "");
+        console.warn(`[mv-aide] ${message}`, error ?? "");
       },
     );
     this.registeredCustomMarkdownExtensions = new Set(state.active);
@@ -678,7 +876,7 @@ export default class MvSenceAiIdePlugin extends Plugin {
       });
     } catch (error) {
       console.error(
-        "[mv-senceai-ide] Failed to create custom Markdown file",
+        "[mv-aide] Failed to create custom Markdown file",
         error,
       );
       const message = error instanceof Error ? error.message : String(error);
@@ -701,7 +899,7 @@ export default class MvSenceAiIdePlugin extends Plugin {
     const result = await dialog.showOpenDialog({
       properties: ["openFile"],
       filters: [
-        { name: "SenceAI supported files", extensions },
+        { name: "AIDE supported files", extensions },
         { name: "All files", extensions: ["*"] },
       ],
     });
@@ -723,15 +921,63 @@ export default class MvSenceAiIdePlugin extends Plugin {
     filePath: string,
     makeFrontmost = true,
   ): Promise<void> {
-    const result = await this.externalFileOpener?.openExternalFile(filePath, {
-      makeFrontmost,
-    });
-    if (!result) {
-      new Notice("外部文件打开器尚未初始化。");
-      return;
-    }
+    const result = await this.openExternalFileWithConsent(filePath, makeFrontmost);
     if (!result.success) {
       new Notice(`打开外部文件失败：${result.message ?? "未知错误"}`, 8000);
+    }
+  }
+
+  private async openExternalFileWithConsent(
+    filePath: string,
+    makeFrontmost: boolean,
+  ): Promise<ExternalFileOpenResult> {
+    const opener = this.externalFileOpener;
+    if (!opener) {
+      return {
+        success: false,
+        externalPath: filePath,
+        vaultPath: null,
+        message: "外部文件打开器尚未初始化。",
+      };
+    }
+    return await runExternalFileFallbackConsent({
+      open: () => opener.openExternalFile(filePath, { makeFrontmost }),
+      requestDecision: (failure, message) =>
+        this.requestExternalFileFallbackDecision(failure, message),
+      authorizeManagedCopy: (failure) =>
+        this.externalFileOpenerSystem.authorizeManagedCopyFallbackAfterFailure(
+          getVaultRoot(this.app),
+          failure,
+        ),
+      ...(process.platform === "win32"
+        ? { repairWindowsSymlinkSupport: () => this.repairWindowsDeveloperMode() }
+        : {}),
+    });
+  }
+
+  private async requestExternalFileFallbackDecision(
+    failure: NonNullable<ExternalFileOpenResult["symlinkFailure"]>,
+    message: string,
+  ): Promise<ExternalFileSymlinkFallbackDecision> {
+    if (this.externalFileFallbackDecision) {
+      return await this.externalFileFallbackDecision;
+    }
+    const pending = requestExternalFileSymlinkFallbackDecision({
+      app: this.app,
+      failure,
+      message,
+      platform: process.platform,
+      openDeveloperSettings: process.platform === "win32"
+        ? () => this.openWindowsDeveloperSettings()
+        : undefined,
+    });
+    this.externalFileFallbackDecision = pending;
+    try {
+      return await pending;
+    } finally {
+      if (this.externalFileFallbackDecision === pending) {
+        this.externalFileFallbackDecision = null;
+      }
     }
   }
 
@@ -786,7 +1032,7 @@ export default class MvSenceAiIdePlugin extends Plugin {
     try {
       this.customMarkdownExtensionRegistry()?.unregisterExtensions?.(extensions);
     } catch (error) {
-      console.warn("[mv-senceai-ide] Failed to unregister custom Markdown extensions.", error);
+      console.warn("[mv-aide] Failed to unregister custom Markdown extensions.", error);
     } finally {
       this.registeredCustomMarkdownExtensions.clear();
       this.ownedCustomMarkdownExtensions.clear();
@@ -865,7 +1111,7 @@ export default class MvSenceAiIdePlugin extends Plugin {
       this.customMarkdownEditorExtension(view.state),
       view.state.doc.toString(),
       (message, error) => {
-        console.warn(`[mv-senceai-ide] ${message}`, error ?? "");
+        console.warn(`[mv-aide] ${message}`, error ?? "");
       },
     );
     if (ranges.length === 0) return Decoration.none;
@@ -897,7 +1143,7 @@ export default class MvSenceAiIdePlugin extends Plugin {
       this.customMarkdownPrism = (await loadPrism()) as PrismLike;
       this.refreshCustomMarkdownHighlights();
     } catch (error) {
-      console.warn("[mv-senceai-ide] Failed to load Prism.", error);
+      console.warn("[mv-aide] Failed to load Prism.", error);
     }
   }
 
@@ -909,7 +1155,7 @@ export default class MvSenceAiIdePlugin extends Plugin {
         });
       } catch (error) {
         console.warn(
-          "[mv-senceai-ide] Failed to refresh custom Markdown highlighting.",
+          "[mv-aide] Failed to refresh custom Markdown highlighting.",
           error,
         );
       }
@@ -945,14 +1191,22 @@ export default class MvSenceAiIdePlugin extends Plugin {
   }
 
   private async finishUnload(): Promise<void> {
-    try {
-      await this.codexIdeProvider?.stop();
-      await this.restoreClaudeSettings();
-      await this.closeDiffs();
-      await this.stopBridge();
-    } catch (error) {
-      console.error("[mv-senceai-ide] unload cleanup failed", error);
-    }
+    const cleanupSteps: Array<[string, () => Promise<unknown>]> = [
+      ["Universal MCP", () => this.stopUniversalMcp()],
+      ["Codex IDE provider", async () => this.codexIdeProvider?.stop()],
+      ["Claude settings", () => this.restoreClaudeSettings()],
+      ["diff views", () => this.closeDiffs()],
+      ["bridge", () => this.stopBridge()],
+    ];
+    await Promise.allSettled(
+      cleanupSteps.map(async ([label, cleanup]) => {
+        try {
+          await cleanup();
+        } catch (error) {
+          console.error(`[mv-aide] ${label} unload cleanup failed`, error);
+        }
+      }),
+    );
   }
 
   resolvedUpstream(): ResolvedUpstream {
@@ -974,48 +1228,188 @@ export default class MvSenceAiIdePlugin extends Plugin {
     await this.saveData(this.settings);
   }
 
-  checkDefaultFileOpener(): DefaultOpenerStatus {
-    const status = this.externalFileOpenerSystem.check(getVaultRoot(this.app));
+  async checkDefaultFileOpener(): Promise<DefaultOpenerStatus> {
+    const status = await this.externalFileOpenerSystem.check(
+      getVaultRoot(this.app),
+      this.externalFileAllowedExtensions(),
+    );
     this.defaultFileOpenerStatus = status.message;
     return status;
   }
 
-  async installDefaultFileOpener(): Promise<void> {
+  async installDefaultFileOpener(
+    options: { allowManagedCopyFallback?: boolean } = {},
+  ): Promise<DefaultOpenerOperationResult> {
+    const vaultRoot = getVaultRoot(this.app);
+    const existing = readExternalFileOpenerOwner();
+    if (existing) {
+      const status = await this.checkDefaultFileOpener();
+      const result: DefaultOpenerOperationResult = {
+        ok: false,
+        status,
+        message: `${status.message} 如需更换 owner，请先清理默认打开方式。`,
+        failureKind: "existing-owner",
+      };
+      this.defaultFileOpenerStatus = result.message;
+      new Notice(result.message, 8000);
+      return result;
+    }
+
+    const wasEnabled = this.settings.externalFileOpener.enabled;
     if (!this.settings.externalFileOpener.enabled) {
       this.settings.externalFileOpener.enabled = true;
       await this.saveAndApplySettings();
     }
     const result = await this.externalFileOpenerSystem.install({
-      vaultRoot: getVaultRoot(this.app),
+      vaultRoot,
       vaultName: this.vaultName(),
+      mirrorFolder: this.settings.externalFileOpener.mirrorFolder,
       extensionMode: this.settings.externalFileOpener.extensionMode,
       extensions: this.externalFileAllowedExtensions(),
+      allowManagedCopyFallback: options.allowManagedCopyFallback,
     });
+    if (!result.ok && !wasEnabled) {
+      this.settings.externalFileOpener.enabled = false;
+      await this.saveAndApplySettings();
+    }
     this.defaultFileOpenerStatus = result.message;
     if (result.ok) {
       this.syncExternalFileOpenerRuntime();
     }
     new Notice(result.message, result.ok ? 4000 : 8000);
+    return result;
   }
 
-  async cleanupDefaultFileOpener(): Promise<void> {
-    const result = await this.externalFileOpenerSystem.cleanup(getVaultRoot(this.app));
+  async cleanupDefaultFileOpener(
+    confirmedOwner?: ExternalFileOpenerOwnerConfirmation,
+  ): Promise<DefaultOpenerOperationResult> {
+    const result = await this.externalFileOpenerSystem.cleanup(
+      getVaultRoot(this.app),
+      { confirmedOwner },
+    );
+    this.syncExternalFileOpenerRuntime();
     this.defaultFileOpenerStatus = result.message;
-    new Notice(result.message);
+    new Notice(result.message, result.ok ? 5000 : 8000);
+    return result;
+  }
+
+  async retryManagedCopiesAsSymlinks(): Promise<ManagedCopySymlinkRetrySummary> {
+    const summary = await this.externalFileOpener?.retryManagedCopiesAsSymlinks() ?? {
+      attempted: 0,
+      migrated: 0,
+      remaining: 0,
+      failures: [],
+      warnings: [],
+    };
+    if (summary.attempted === 0) {
+      new Notice("当前没有本机受管临时副本需要迁移。", 4000);
+    } else if (summary.remaining === 0) {
+      new Notice(`已将 ${summary.migrated} 个受管临时副本安全迁移为真实符号链接。`, 5000);
+    } else {
+      new Notice(
+        `已迁移 ${summary.migrated} 个；仍保留 ${summary.remaining} 个受管副本。` +
+          ` 未迁移项不会丢失内容，详情见控制台。`,
+        8000,
+      );
+      for (const failure of summary.failures) {
+        console.warn(`[mv-aide] Managed-copy migration skipped: ${failure}`);
+      }
+    }
+    for (const warning of summary.warnings) {
+      console.warn(`[mv-aide] Managed-copy migration warning: ${warning}`);
+    }
+    return summary;
+  }
+
+  async repairWindowsDeveloperMode(): Promise<boolean> {
+    const result = await this.externalFileOpenerSystem.repairWindowsDeveloperMode();
+    const messages = {
+      repaired: "已通过管理员权限启用并验证 Windows 开发者模式。",
+      "already-enabled": "Windows 开发者模式已经生效，将重新检测符号链接。",
+      "blocked-by-policy": "组织策略明确禁用了开发者模式，插件不会覆盖该策略。",
+      cancelled: "已取消管理员修复。",
+    } as const;
+    const message = messages[result.status as keyof typeof messages] ?? result.message;
+    new Notice(message, result.ok ? 5000 : 8000);
+    return result.ok;
+  }
+
+  async openWindowsDeveloperSettings(): Promise<void> {
+    try {
+      await this.externalFileOpenerSystem.openWindowsDeveloperSettings();
+      new Notice("已打开 Windows 开发者设置。开启开发者模式后回到此处重新检测。");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      new Notice(`无法打开 Windows 开发者设置：${message}`, 8000);
+    }
+  }
+
+  async openWindowsDefaultAppsSettings(): Promise<void> {
+    try {
+      await this.externalFileOpenerSystem.openWindowsDefaultAppsSettings();
+      new Notice("已打开 Windows 默认应用设置，请为已注册后缀选择 MV AIDE File Opener。");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      new Notice(`无法打开 Windows 默认应用设置：${message}`, 8000);
+    }
+  }
+
+  async openWindowsGenericDefaultAppsSettings(): Promise<void> {
+    try {
+      await this.externalFileOpenerSystem.openWindowsGenericDefaultAppsSettings();
+      new Notice("已打开 Windows 默认应用设置；如需更换已清理的默认项，请在系统界面选择其它应用。");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      new Notice(`无法打开 Windows 默认应用设置：${message}`, 8000);
+    }
   }
 
   private syncExternalFileOpenerRuntime(): void {
     const vaultRoot = getVaultRoot(this.app);
     if (!this.settings.externalFileOpener.enabled || !this.port) {
+      this.externalFileOpener?.stopManagedCopyRuntime();
       this.externalFileOpenerSystem.removeRuntime(vaultRoot);
       return;
     }
-    this.externalFileOpenerSystem.writeRuntime({
-      vaultRoot,
-      vaultName: this.vaultName(),
-      port: this.port,
-      token: this.settings.externalFileOpener.openerToken,
+    const owner = readExternalFileOpenerOwner();
+    if (!owner || !sameVaultRoot(owner.vaultRoot, vaultRoot)) {
+      this.externalFileOpener?.stopManagedCopyRuntime();
+      this.externalFileOpenerSystem.removeRuntime(vaultRoot);
+      return;
+    }
+    // Publish the opener runtime first. Managed-copy recovery is intentionally
+    // a later, cancellable idle task so it cannot hold up external requests.
+    this.startupPerformance.measureSync("external-opener.runtime-publish", () => {
+      this.externalFileOpenerSystem.writeRuntime({
+        vaultRoot,
+        vaultName: this.vaultName(),
+        port: this.port,
+        token: this.settings.externalFileOpener.openerToken,
+      });
     });
+    const restoreTask = this.externalFileOpener?.scheduleManagedCopyWatcherRestore();
+    if (restoreTask && restoreTask !== this.measuredManagedCopyRestoreTask) {
+      this.measuredManagedCopyRestoreTask = restoreTask;
+      const endRestoreTiming = this.startupPerformance.begin("managed-copy.restore");
+      void restoreTask.completion.then(
+        () => {
+          endRestoreTiming();
+          if (this.measuredManagedCopyRestoreTask === restoreTask) {
+            this.measuredManagedCopyRestoreTask = null;
+          }
+        },
+        (error) => {
+          endRestoreTiming();
+          if (this.measuredManagedCopyRestoreTask === restoreTask) {
+            this.measuredManagedCopyRestoreTask = null;
+          }
+          console.warn(
+            "[mv-aide] Failed to restore managed-copy watchers.",
+            error,
+          );
+        },
+      );
+    }
   }
 
   private vaultName(): string {
@@ -1041,7 +1435,7 @@ export default class MvSenceAiIdePlugin extends Plugin {
         await this.startBridge();
       } catch (error) {
         this.claudeIdeError = error instanceof Error ? error.message : String(error);
-        console.error("[mv-senceai-ide] Claude IDE bridge start failed", error);
+        console.error("[mv-aide] Claude IDE bridge start failed", error);
       }
     } else if (!this.shouldRunLocalServer() && this.server) {
       await this.stopBridge();
@@ -1098,16 +1492,17 @@ export default class MvSenceAiIdePlugin extends Plugin {
       externalFileOpenerToken: () =>
         this.settings.externalFileOpener.openerToken,
       onExternalFileOpen: async (request) => {
-        const result = await this.externalFileOpener?.openExternalFile(
+        const result = await this.openExternalFileWithConsent(
           request.path,
-          { makeFrontmost: request.makeFrontmost },
+          request.makeFrontmost,
         );
-        return result ?? {
-          success: false,
-          externalPath: request.path,
-          vaultPath: null,
-          message: "外部文件打开器尚未初始化。",
-        };
+        if (!result.success) {
+          new Notice(
+            `打开外部文件失败：${result.message ?? "未知错误"}`,
+            8000,
+          );
+        }
+        return result;
       },
       onMessage: (request, context) =>
         this.handleRequest(request, "ide", context),
@@ -1117,10 +1512,10 @@ export default class MvSenceAiIdePlugin extends Plugin {
         this.terminalTracker?.scan();
         this.scheduleBroadcast();
       },
-      onLog: (message) => console.error("[mv-senceai-ide]", message),
+      onLog: (message) => console.error("[mv-aide]", message),
     });
     this.port = await this.server.start();
-    console.log(`[mv-senceai-ide] listening on 127.0.0.1:${this.port}`);
+    console.log(`[mv-aide] listening on 127.0.0.1:${this.port}`);
   }
 
   private async stopBridge(): Promise<void> {
@@ -1161,7 +1556,7 @@ export default class MvSenceAiIdePlugin extends Plugin {
     try {
       await this.applyClaudeSettings();
     } catch (error) {
-      console.warn("[mv-senceai-ide] Claude settings sync failed", error);
+      console.warn("[mv-aide] Claude settings sync failed", error);
       if (notify) {
         new Notice("Claude 设置同步失败，但插件已继续运行。详情见控制台。");
       }
@@ -1186,7 +1581,7 @@ export default class MvSenceAiIdePlugin extends Plugin {
               (request.params?.protocolVersion as string | undefined) ?? "2025-03-26",
             capabilities: { tools: {} },
             serverInfo: {
-              name: channel === "mcp" ? "mv-senceai-ide-tools" : "mv-senceai-ide",
+              name: channel === "mcp" ? "mv-aide-tools" : "mv-aide",
               version: this.manifest.version,
             },
           },
@@ -1241,7 +1636,13 @@ export default class MvSenceAiIdePlugin extends Plugin {
     if (this.broadcastTimer !== null) activeWindow.clearTimeout(this.broadcastTimer);
     this.broadcastTimer = activeWindow.setTimeout(() => {
       this.broadcastTimer = null;
-      void this.broadcastSelection();
+      void this.broadcastSelection()
+        .catch((error) => {
+          console.warn("[mv-aide] Context refresh failed", error);
+        })
+        .finally(() => {
+          if (!this.unloaded) this.publishUniversalContextChanges();
+        });
     }, 100);
   }
 
@@ -1305,7 +1706,7 @@ export default class MvSenceAiIdePlugin extends Plugin {
       await this.syncMcpRegistration(force);
       if (!this.unloaded) await this.saveData(this.settings);
     } catch (error) {
-      console.warn("[mv-senceai-ide] MCP registration failed", error);
+      console.warn("[mv-aide] MCP registration failed", error);
       this.mcpStatus = `注册失败：${
         error instanceof Error ? error.message : String(error)
       }`;
@@ -1370,6 +1771,309 @@ export default class MvSenceAiIdePlugin extends Plugin {
     return this.port ? `http://127.0.0.1:${this.port}/mcp` : null;
   }
 
+  getUniversalMcpHttpConfig(): string | null {
+    const descriptor = this.universalMcpDescriptor;
+    if (!descriptor) return null;
+    return JSON.stringify(
+      {
+        type: "streamable-http",
+        url: descriptor.httpUrl,
+        headers: {
+          Authorization: `Bearer ${descriptor.auth.token}`,
+        },
+      },
+      null,
+      2,
+    );
+  }
+
+  hasUniversalMcpRuntime(): boolean {
+    return this.universalMcpDescriptor !== null;
+  }
+
+  getUniversalMcpStdioConfig(): string | null {
+    if (!this.universalMcpDescriptor) return null;
+    const nodeCommand = this.resolveUniversalMcpNodeCommand();
+    const config: Record<string, unknown> = {
+      type: "stdio",
+      command: nodeCommand ?? process.execPath,
+      args: [
+        path.join(this.pluginInstallDirectory(), "universal-mcp-stdio.cjs"),
+        "--runtime",
+        this.universalMcpRuntimeDescriptorPath(),
+      ],
+    };
+    if (!nodeCommand) {
+      config.env = { ELECTRON_RUN_AS_NODE: "1" };
+    }
+    return JSON.stringify(config, null, 2);
+  }
+
+  private universalMcpNodeCommand: string | null | undefined;
+
+  private resolveUniversalMcpNodeCommand(): string | null {
+    if (this.universalMcpNodeCommand === undefined) {
+      this.universalMcpNodeCommand = detectSystemNodeCommand();
+    }
+    return this.universalMcpNodeCommand;
+  }
+
+  async rotateUniversalMcpToken(): Promise<void> {
+    this.settings.universalMcp.authToken = randomUUID();
+    await this.saveData(this.settings);
+    await this.stopUniversalMcp();
+    this.scheduleUniversalMcpStart();
+  }
+
+  private pluginInstallDirectory(): string {
+    return path.join(
+      getVaultRoot(this.app),
+      this.app.vault.configDir,
+      "plugins",
+      this.manifest.id,
+    );
+  }
+
+  private universalMcpRuntimeDescriptorPath(): string {
+    return path.join(
+      this.pluginInstallDirectory(),
+      "tmp",
+      "universal-mcp",
+      "runtime.json",
+    );
+  }
+
+  private loadUniversalMcpRuntime(): UniversalMcpRuntimeModule {
+    if (this.universalMcpRuntimeModule) return this.universalMcpRuntimeModule;
+    const pluginDirectory = this.pluginInstallDirectory();
+    const requireFromPlugin = createRequire(path.join(pluginDirectory, "main.js"));
+    this.universalMcpRuntimeModule = requireFromPlugin(
+      path.join(pluginDirectory, "universal-mcp.cjs"),
+    ) as UniversalMcpRuntimeModule;
+    return this.universalMcpRuntimeModule;
+  }
+
+  private async applyUniversalMcpSetting(): Promise<void> {
+    if (!this.settings.universalMcp.enabled) {
+      await this.stopUniversalMcp();
+      return;
+    }
+    this.scheduleUniversalMcpStart();
+  }
+
+  private scheduleUniversalMcpStart(): void {
+    this.cancelUniversalMcpIdleStart();
+    if (!this.settings.universalMcp.enabled) {
+      this.universalMcpStatus = "mv-AIDE 协议未启用";
+      return;
+    }
+    if (!this.universalMcpLayoutReady) {
+      this.universalMcpStatus = "等待 Obsidian 启动完成";
+      return;
+    }
+    if (this.universalMcpServer?.isRunning) {
+      this.universalMcpStatus = `运行中：${this.universalMcpDescriptor?.httpUrl ?? "本机"}`;
+      return;
+    }
+
+    const generation = ++this.universalMcpStartGeneration;
+    this.universalMcpStatus = "等待 Obsidian 空闲后启动";
+    const run = () => {
+      this.universalMcpIdleHandle = null;
+      if (
+        this.unloaded ||
+        generation !== this.universalMcpStartGeneration ||
+        !this.settings.universalMcp.enabled
+      ) {
+        return;
+      }
+      const inFlight = this.startUniversalMcp(generation);
+      this.universalMcpStartInFlight = inFlight;
+      void inFlight.finally(() => {
+        if (this.universalMcpStartInFlight === inFlight) {
+          this.universalMcpStartInFlight = null;
+        }
+      });
+    };
+    const idleWindow = activeWindow as typeof activeWindow & {
+      requestIdleCallback?: (
+        callback: () => void,
+        options?: { timeout: number },
+      ) => number;
+    };
+    if (typeof idleWindow.requestIdleCallback === "function") {
+      this.universalMcpIdleHandle = {
+        kind: "idle",
+        id: idleWindow.requestIdleCallback(run, { timeout: 2000 }),
+      };
+    } else {
+      this.universalMcpIdleHandle = {
+        kind: "timeout",
+        id: activeWindow.setTimeout(run, 50),
+      };
+    }
+  }
+
+  private cancelUniversalMcpIdleStart(): void {
+    const pending = this.universalMcpIdleHandle;
+    this.universalMcpIdleHandle = null;
+    this.universalMcpStartGeneration += 1;
+    if (!pending) return;
+    if (pending.kind === "idle") {
+      const idleWindow = activeWindow as typeof activeWindow & {
+        cancelIdleCallback?: (id: number) => void;
+      };
+      idleWindow.cancelIdleCallback?.(pending.id);
+    } else {
+      activeWindow.clearTimeout(pending.id);
+    }
+  }
+
+  private async startUniversalMcp(generation: number): Promise<void> {
+    try {
+      if (!this.settings.universalMcp.authToken) {
+        this.settings.universalMcp.authToken = randomUUID();
+        await this.saveData(this.settings);
+      }
+      if (
+        this.unloaded ||
+        generation !== this.universalMcpStartGeneration ||
+        !this.settings.universalMcp.enabled
+      ) {
+        return;
+      }
+
+      this.universalMcpStatus = "正在启动 mv-AIDE 协议服务";
+      const runtime = this.loadUniversalMcpRuntime();
+      const vaultRoot = getVaultRoot(this.app);
+      const preferredOffset = stablePortSeed(vaultRoot) % UNIVERSAL_MCP_PORT_SPAN;
+      let lastPortError: unknown = null;
+
+      for (let offset = 0; offset < UNIVERSAL_MCP_PORT_SPAN; offset += 1) {
+        const port =
+          UNIVERSAL_MCP_PORT_BASE +
+          ((preferredOffset + offset) % UNIVERSAL_MCP_PORT_SPAN);
+        const candidate = new runtime.UniversalMcpServer({
+          authToken: this.settings.universalMcp.authToken,
+          runtimeDescriptorPath: this.universalMcpRuntimeDescriptorPath(),
+          port,
+          serverName: "mv-aide-universal",
+          serverVersion: this.manifest.version,
+          capabilities: {
+            getContextSnapshot: () => this.codexIdeContextSnapshot(),
+            listIdeTools: () => IDE_TOOL_DEFINITIONS,
+            callIdeTool: async (name, args, context) => {
+              const definition = IDE_TOOL_DEFINITIONS.find(
+                (tool) => tool.name === name,
+              );
+              if (!definition) {
+                return {
+                  content: [{ type: "text", text: `Tool not found: ${name}` }],
+                  isError: true,
+                };
+              }
+              const result = await this.toolRegistry?.call(name, args, {
+                clientId: context.clientId,
+                channel: "mcp",
+              });
+              return (
+                result ?? {
+                  content: [{ type: "text", text: `Tool not found: ${name}` }],
+                  isError: true,
+                }
+              );
+            },
+          },
+          onLog: (message) => console.log(`[mv-aide] ${message}`),
+        });
+        try {
+          const descriptor = await this.startupPerformance.measure(
+            "universal-mcp.runtime-publish",
+            () => candidate.start(),
+          );
+          if (
+            this.unloaded ||
+            generation !== this.universalMcpStartGeneration ||
+            !this.settings.universalMcp.enabled
+          ) {
+            await candidate.stop();
+            return;
+          }
+          this.universalMcpServer = candidate;
+          this.universalMcpDescriptor = descriptor;
+          this.universalSelectionSignature = null;
+          this.universalEditorsSignature = null;
+          this.publishUniversalContextChanges();
+          if (this.universalLatestMention !== null) {
+            candidate.publishBridgeEvent(
+              "at_mentioned",
+              this.universalLatestMention,
+            );
+          }
+          this.universalMcpStatus = `运行中：${descriptor.httpUrl}`;
+          return;
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "EADDRINUSE") throw error;
+          lastPortError = error;
+        }
+      }
+      throw lastPortError ?? new Error("没有可用的本机 mv-AIDE 协议端口。");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.universalMcpStatus = `启动失败：${message}`;
+      console.error("[mv-aide] Universal MCP start failed", error);
+    }
+  }
+
+  private async stopUniversalMcp(): Promise<void> {
+    this.cancelUniversalMcpIdleStart();
+    if (this.universalMcpStopInFlight) {
+      await this.universalMcpStopInFlight;
+      return;
+    }
+    const stop = async () => {
+      const starting = this.universalMcpStartInFlight;
+      if (starting) await starting.catch(() => undefined);
+      const server = this.universalMcpServer;
+      this.universalMcpServer = null;
+      this.universalMcpDescriptor = null;
+      this.universalSelectionSignature = null;
+      this.universalEditorsSignature = null;
+      if (server) await server.stop();
+      this.universalMcpStatus = this.settings.universalMcp.enabled
+        ? "等待 Obsidian 空闲后启动"
+        : "mv-AIDE 协议未启用";
+    };
+    const inFlight = stop();
+    this.universalMcpStopInFlight = inFlight;
+    try {
+      await inFlight;
+    } finally {
+      if (this.universalMcpStopInFlight === inFlight) {
+        this.universalMcpStopInFlight = null;
+      }
+    }
+  }
+
+  private publishUniversalContextChanges(): void {
+    const server = this.universalMcpServer;
+    if (!server?.isRunning) return;
+    const current = this.lastContexts.get("global") ?? null;
+    const selection = current ? selectionChangedParams(current) : null;
+    const selectionSignature = JSON.stringify(selection);
+    if (selectionSignature !== this.universalSelectionSignature) {
+      this.universalSelectionSignature = selectionSignature;
+      server.publishBridgeEvent("selection_changed", selection);
+    }
+
+    const openEditors = getOpenWorkspaceTabs(this.app).tabs;
+    const editorsSignature = JSON.stringify(openEditors);
+    if (editorsSignature !== this.universalEditorsSignature) {
+      this.universalEditorsSignature = editorsSignature;
+      server.publishBridgeEvent("workspace_changed", openEditors);
+    }
+  }
+
   private codexRuntimeDir(): string {
     return path.join(
       getVaultRoot(this.app),
@@ -1390,19 +2094,95 @@ export default class MvSenceAiIdePlugin extends Plugin {
       isUnloaded: () => this.unloaded,
       run: () => this.runPostLayoutStartup(),
       onError: (error) => {
-        console.error("[mv-senceai-ide] post-layout startup failed", error);
+        console.error("[mv-aide] post-layout startup failed", error);
       },
     });
   }
 
   private async runPostLayoutStartup(): Promise<void> {
     if (this.unloaded) return;
-    this.cleanupCodexRuntimeCacheBestEffort();
-    await this.syncCodexIdeProvider();
-    if (this.unloaded) return;
-    await this.syncLocalServices(false, false);
-    if (this.unloaded) return;
-    this.scheduleCodexMcpRegistrationIfReady();
+    const endPostLayoutTiming = this.startupPerformance.begin("post-layout.total");
+    try {
+      this.universalMcpLayoutReady = true;
+      this.startupPerformance.measureSync("post-layout.codex-cache-cleanup", () => {
+        this.cleanupCodexRuntimeCacheBestEffort();
+      });
+      await this.startupPerformance.measure("post-layout.codex-provider", () =>
+        this.syncCodexIdeProvider(),
+      );
+      if (this.unloaded) return;
+      await this.startupPerformance.measure("post-layout.local-services", () =>
+        this.syncLocalServices(false, false),
+      );
+      if (this.unloaded) return;
+      this.startWindowsFileOpenerMigration();
+      this.scheduleCodexMcpRegistrationIfReady();
+      this.scheduleUniversalMcpStart();
+    } finally {
+      endPostLayoutTiming();
+      const metrics = this.startupPerformance.snapshot().aggregates.map((entry) => ({
+        name: entry.name,
+        count: entry.count,
+        totalMs: Number(entry.totalMs.toFixed(1)),
+        maxMs: Number(entry.maxMs.toFixed(1)),
+      }));
+      console.debug("[mv-aide] startup performance", metrics);
+    }
+  }
+
+  getStartupPerformanceSnapshot(): StartupPerformanceSnapshot {
+    return this.startupPerformance.snapshot();
+  }
+
+  private recordBundledModuleEvaluation(): void {
+    if (this.startupModuleTimingRecorded) return;
+    this.startupModuleTimingRecorded = true;
+    const sharedGlobal = globalThis as typeof globalThis & {
+      __mvSenceAiModuleEvaluationTiming?: BundledModuleEvaluationTiming;
+    };
+    const timing = sharedGlobal.__mvSenceAiModuleEvaluationTiming;
+    delete sharedGlobal.__mvSenceAiModuleEvaluationTiming;
+    if (
+      !timing ||
+      !Number.isFinite(timing.startedAt) ||
+      !Number.isFinite(timing.endedAt) ||
+      (timing.endedAt as number) < timing.startedAt
+    ) {
+      return;
+    }
+    this.startupPerformance.recordSpan(
+      "module.evaluate",
+      timing.startedAt,
+      timing.endedAt as number,
+    );
+  }
+
+  private startWindowsFileOpenerMigration(): void {
+    if (process.platform !== "win32" ||
+        !this.settings.externalFileOpener.enabled) {
+      return;
+    }
+    void this.externalFileOpenerSystem.migrateWindowsFileOpener(
+      getVaultRoot(this.app),
+      this.externalFileAllowedExtensions(),
+    ).then((migration) => {
+      if (this.unloaded) return;
+      if (migration.migrated || migration.error) {
+        this.defaultFileOpenerStatus = migration.error
+          ? `${migration.message} ${migration.error}`
+          : migration.message;
+      }
+      if (migration.error) {
+        console.warn("[mv-aide] Windows file opener migration failed", migration.error);
+        new Notice(this.defaultFileOpenerStatus, 8000);
+      }
+    }).catch((error) => {
+      if (this.unloaded) return;
+      const message = error instanceof Error ? error.message : String(error);
+      this.defaultFileOpenerStatus = `Windows 打开器自动迁移失败：${message}`;
+      console.warn("[mv-aide] Windows file opener migration failed", error);
+      new Notice(this.defaultFileOpenerStatus, 8000);
+    });
   }
 
   private scheduleCodexMcpRegistrationIfReady(): void {
@@ -1420,7 +2200,7 @@ export default class MvSenceAiIdePlugin extends Plugin {
         force: true,
       });
     } catch (error) {
-      console.warn("[mv-senceai-ide] Codex runtime cache cleanup failed", error);
+      console.warn("[mv-aide] Codex runtime cache cleanup failed", error);
     }
   }
 
@@ -1434,13 +2214,21 @@ export default class MvSenceAiIdePlugin extends Plugin {
     }
     try {
       await this.codexIdeProvider.start();
-      await ensureCodexShellAlias(
-        this.codexRuntimeDir(),
-        this.settings.codexExecutable || "codex",
-      );
+      if (process.platform !== "win32") {
+        await ensureCodexShellAlias(
+          this.codexRuntimeDir(),
+          this.settings.codexExecutable || "codex",
+        );
+      }
     } catch (error) {
-      this.codexIdeError = error instanceof Error ? error.message : String(error);
-      console.error("[mv-senceai-ide] Codex IDE provider failed", error);
+      const code = (error as NodeJS.ErrnoException | undefined)?.code;
+      this.codexIdeError =
+        process.platform === "win32" && code === "EADDRINUSE"
+          ? "Codex IDE 通道已被其它 IDE 或仓库占用。"
+          : error instanceof Error
+            ? error.message
+            : String(error);
+      console.error("[mv-aide] Codex IDE provider failed", error);
       await removeCodexShellAlias();
     }
   }
