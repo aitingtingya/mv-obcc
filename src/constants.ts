@@ -172,7 +172,7 @@ export const DEFAULT_SETTINGS = {
         snippetPreviousTabstopTrigger: "Shift-Tab",
         texEnhancedRenderEnabled: false,
         texOutlineEnabled: false,
-        texMathFormats: "export default []",
+        texMathFormats: "[]",
       },
     ],
     highlightThemeId: "builtin:obsidian",
