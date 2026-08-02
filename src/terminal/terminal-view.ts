@@ -18,6 +18,13 @@ import { encodeTerminalKey } from "./terminal-keys";
 import { TERMINAL_PTY_PY_BASE64, TERMINAL_WIN_PY_BASE64 } from "./terminal-scripts";
 import MvSenceAiIdePlugin from "../../main";
 
+// stdin 帧协议：[type: 1B][length: 4B LE][payload]。前端按消息打帧、后端
+// 按帧拆分，不再从无边界字节流里猜转义序列边界（旧方案下 Windows 裸 ESC
+// 会被解析器当作"可能的序列开头"无限期扣押）。scripts/terminal/*.py 实现
+// 同一协议，改动必须两端同步并重新生成 terminal-scripts.ts。
+const TERMINAL_FRAME_INPUT = 0;
+const TERMINAL_FRAME_RESIZE = 1;
+
 export class TerminalView extends ItemView {
   private plugin: MvSenceAiIdePlugin;
   private term: Terminal | null = null;
@@ -253,17 +260,23 @@ export class TerminalView extends ItemView {
     });
 
     this.term.onData((data) => {
-      if (this.proc && this.proc.stdin && !this.proc.killed) {
-        this.proc.stdin.write(data);
-      }
+      this.writeTerminalFrame(TERMINAL_FRAME_INPUT, data);
     });
 
     this.term.onResize(({ cols: c, rows: r }) => {
       if (c < 10 || r < 3) return;
-      if (this.proc && this.proc.stdin && !this.proc.killed) {
-        this.proc.stdin.write(`\x1b]RESIZE;${c};${r}\x07`);
-      }
+      this.writeTerminalFrame(TERMINAL_FRAME_RESIZE, `${c};${r}`);
     });
+  }
+
+  private writeTerminalFrame(type: number, payload: string): void {
+    const proc = this.proc;
+    if (!proc?.stdin || proc.killed) return;
+    const body = Buffer.from(payload, "utf8");
+    const header = Buffer.alloc(5);
+    header.writeUInt8(type, 0);
+    header.writeUInt32LE(body.length, 1);
+    proc.stdin.write(Buffer.concat([header, body]));
   }
 
   private handleTerminalKeydown(event: KeyboardEvent): void {
@@ -315,7 +328,7 @@ export class TerminalView extends ItemView {
     // a second time, and Obsidian must not trigger a hotkey for it.
     event.preventDefault();
     event.stopImmediatePropagation();
-    this.proc.stdin.write(encoded);
+    this.writeTerminalFrame(TERMINAL_FRAME_INPUT, encoded);
   }
 
   private resolveVaultPath(candidate: string): TFile | null {
