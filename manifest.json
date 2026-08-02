@@ -1,7 +1,7 @@
 {
   "id": "mv-obcc",
   "name": "mv-AIDE",
-  "version": "0.9.1",
+  "version": "0.9.2",
   "minAppVersion": "1.7.2",
   "description": "AI IDE for your vault: bridges Claude Code, Codex CLI and universal MCP agents, with integrated terminal, inline completion, selection assistant, source authoring aids and a system default file opener.",
   "author": "MV",

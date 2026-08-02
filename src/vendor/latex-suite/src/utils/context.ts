@@ -1,4 +1,4 @@
-import { EditorState, SelectionRange } from "@codemirror/state";
+import { EditorState, Facet, SelectionRange } from "@codemirror/state";
 import { EditorView, PluginValue, ViewPlugin, ViewUpdate } from "@codemirror/view";
 import { findMatchingBracket, getCloseBracket } from "src/utils/editor_utils";
 import { Mode } from "../snippets/options";
@@ -10,7 +10,6 @@ import { snippetLessArea, textAreaEnvs } from "./default_text_areas";
 
 const OPEN_INLINE_MATH_NODE = "formatting_formatting-math_formatting-math-begin_keyword_math";
 const CLOSE_INLINE_MATH_NODE = "formatting_formatting-math_formatting-math-end_keyword_math_math-";
-
 
 const OPEN_DISPLAY_MATH_NODE = "formatting_formatting-math_formatting-math-begin_keyword_math_math-block";
 const CLOSE_DISPLAY_MATH_NODE = "formatting_formatting-math_formatting-math-end_keyword_math_math-";
@@ -26,9 +25,99 @@ export interface Bounds {
 	inner_end: number;
 	outer_start: number;
 	outer_end: number;
+	preview_source?: string;
+	preview_source_start?: number;
 }
 
-type MathBounds = Bounds & {mode: MathMode};
+export type MathBounds = Bounds & {mode: MathMode};
+
+export interface ExternalMathRegion extends Bounds {
+	display: boolean;
+	preview_source: string;
+	preview_source_start: number;
+}
+
+export const externalMathRegionsFacet = Facet.define<
+	readonly ExternalMathRegion[],
+	readonly ExternalMathRegion[]
+>({
+	combine: (values) => values.flat(),
+});
+
+const externalRegionToMathBounds = (region: ExternalMathRegion): MathBounds => ({
+	inner_start: region.inner_start,
+	inner_end: region.inner_end,
+	outer_start: region.outer_start,
+	outer_end: region.outer_end,
+	preview_source: region.preview_source,
+	preview_source_start: region.preview_source_start,
+	mode: region.display ? MathMode.BlockMath : MathMode.InlineMath,
+});
+
+const isValidMathBound = (bound: MathBounds): boolean =>
+	bound.outer_start >= 0 &&
+	bound.outer_start <= bound.inner_start &&
+	bound.inner_start <= bound.inner_end &&
+	bound.inner_end <= bound.outer_end &&
+	bound.outer_start < bound.outer_end;
+
+const mathBoundsOverlap = (left: MathBounds, right: MathBounds): boolean =>
+	left.outer_start < right.outer_end && right.outer_start < left.outer_end;
+
+const mathBoundSize = (bound: MathBounds): number =>
+	bound.outer_end - bound.outer_start;
+
+/**
+ * External regions have already been analyzed by their owner and are the
+ * authority for their spans. Native syntax-tree bounds remain available only
+ * where they do not overlap an external region. Among overlapping native
+ * candidates, keep the smallest range so a malformed large pair cannot swallow
+ * later valid equations.
+ */
+export const mergePrioritizedMathBounds = (
+	nativeBounds: readonly MathBounds[],
+	externalBounds: readonly MathBounds[],
+): MathBounds[] => {
+	const external = externalBounds.filter(isValidMathBound);
+	const nativeCandidates = nativeBounds
+		.filter(isValidMathBound)
+		.filter((bound) => !external.some((region) => mathBoundsOverlap(bound, region)))
+		.sort((left, right) =>
+			mathBoundSize(left) - mathBoundSize(right) ||
+			left.outer_start - right.outer_start ||
+			left.outer_end - right.outer_end,
+		);
+	const native: MathBounds[] = [];
+	for (const bound of nativeCandidates) {
+		if (native.some((existing) => mathBoundsOverlap(existing, bound))) continue;
+		native.push(bound);
+	}
+	return [...external, ...native].sort(
+		(left, right) =>
+			left.outer_start - right.outer_start || left.outer_end - right.outer_end,
+	);
+};
+
+const externalMathBoundAt = (
+	state: EditorState,
+	pos: number,
+): MathBounds | null => {
+	let best: MathBounds | null = null;
+	for (const region of state.facet(externalMathRegionsFacet)) {
+		const bound = externalRegionToMathBounds(region);
+		if (
+			!isValidMathBound(bound) ||
+			pos < bound.inner_start ||
+			pos > bound.inner_end
+		) {
+			continue;
+		}
+		if (best === null || mathBoundSize(bound) < mathBoundSize(best)) {
+			best = bound;
+		}
+	}
+	return best;
+};
 
 export const contextPlugin = ViewPlugin.fromClass(
 	class Context implements PluginValue {
@@ -246,7 +335,7 @@ export const getContextPlugin = (view: EditorView): Context => {
 }
 
 
-enum MathMode {
+export enum MathMode {
 	InlineMath,
 	BlockMath,
 }
@@ -444,7 +533,7 @@ export const mathBoundsPlugin = ViewPlugin.fromClass(
 					}
 				}
 			}
-			this.mathBounds = temp_math_bounds.filter((val, i) => {
+			const nativeBounds = temp_math_bounds.filter((val, i) => {
 				if (i === 0) return true;
 				const prev = temp_math_bounds[i - 1];
 				if (prev.outer_start === val.outer_start && prev.outer_end === val.outer_end) {
@@ -453,9 +542,22 @@ export const mathBoundsPlugin = ViewPlugin.fromClass(
 				}
 				return true;
 			});
+
+			// Generic external regions are already analyzed and rewritten by their
+			// owner. Latex Suite only consumes their bounds and math mode.
+			const externalBounds = view.state
+				.facet(externalMathRegionsFacet)
+				.map(externalRegionToMathBounds);
+			this.mathBounds = mergePrioritizedMathBounds(
+				nativeBounds,
+				externalBounds,
+			);
 		}
 
 		inMathBound = (state: EditorState, pos: number): MathBounds | null => {
+			const externalBound = externalMathBoundAt(state, pos);
+			if (externalBound !== null) return externalBound;
+
 			const bounds = this.mathBounds;
 			if (
 				pos <= bounds[0]?.outer_start ||
@@ -487,7 +589,7 @@ export const mathBoundsPlugin = ViewPlugin.fromClass(
 			if (!pos) pos = state.selection.main.to;
 			const bounds = this.computeEquationBounds(state, pos);
 			if (!bounds) return null;
-			this.addMathBound(bounds);
+			this.addMathBound(state, bounds);
 			return bounds;
 		}
 
@@ -570,26 +672,15 @@ export const mathBoundsPlugin = ViewPlugin.fromClass(
 			return mathBound;
 		};
 		
-		private addMathBound = (bound: MathBounds) => {
-			if (this.mathBounds.length === 0) {
-				this.mathBounds.push(bound);
-			} else if (bound.outer_end <= this.mathBounds[0].outer_start) {
-				this.mathBounds.unshift(bound);
-			} else if (bound.outer_start >= this.mathBounds[this.mathBounds.length - 1].outer_end) {
-				this.mathBounds.push(bound);
-			} else {
-				// Binary search for insertion point
-				let left = 0, right = this.mathBounds.length - 1;
-				while (left <= right) {
-					const mid = (left + right) >> 1;
-					if (bound.outer_start < this.mathBounds[mid].outer_start) {
-						right = mid - 1;
-					} else {
-						left = mid + 1;
-					}
-				}
-				this.mathBounds.splice(left, 0, bound);
-			}
+		private addMathBound = (state: EditorState, bound: MathBounds) => {
+			const externalBounds = state
+				.facet(externalMathRegionsFacet)
+				.map(externalRegionToMathBounds);
+			this.mathBounds = mergePrioritizedMathBounds(
+				[...this.mathBounds, bound],
+				externalBounds,
+			);
+			this.equations = null;
 			return bound;
 		}
 		

@@ -180,6 +180,14 @@ export interface SourceAssistProfile {
   snippetPreviousTabstopTrigger: string;
   /** Enables the plugin's custom TeX Live Preview extension for .tex files only. */
   texEnhancedRenderEnabled: boolean;
+  /** Shows \section-level headings in the core Outline and enables editor folding for .tex files. */
+  texOutlineEnabled: boolean;
+  /**
+   * Custom math formats for the TeX enhanced renderer, in the same JS-array
+   * shape as `snippets`: `export default [{ 开头, 结尾, 设置 }, ...]` where
+   * 设置 is "n" (inline) or "j" (display). Empty by default.
+   */
+  texMathFormats: string;
 }
 
 export type SourceHighlightThemeFormat =

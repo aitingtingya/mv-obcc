@@ -1,6 +1,6 @@
 import {
-  Compartment,
   EditorSelection,
+  type EditorState,
   Prec,
   RangeSetBuilder,
   StateEffect,
@@ -10,213 +10,58 @@ import {
 import {
   Decoration,
   EditorView,
-  showTooltip,
-  type Tooltip,
   ViewPlugin,
   WidgetType,
   type DecorationSet,
-  type ViewUpdate,
 } from "@codemirror/view";
 import {
   editorInfoField,
   editorLivePreviewField,
   finishRenderMath,
+  loadMathJax,
   renderMath,
 } from "obsidian";
-import { texMathBounds, type SourceAssistMathBound } from "./tex-math";
+import {
+  type ConfiguredTexMathRegion,
+  texMathRegions,
+  type TexMathRegion,
+} from "./tex-math";
 
-export interface TexMathPreviewOptions {
-  positionIsAbove: boolean;
-  cursor: string;
-}
+const mathJaxRenderTokens = new WeakMap<HTMLElement, object>();
 
-type TexPreviewRuntimeFactory = (options: TexMathPreviewOptions) => Extension;
-
-const TEX_PREVIEW_RETRY_INTERVAL_MS = 100;
-const TEX_PREVIEW_MAX_RETRIES = 30;
-
-type TexInlineTooltipState = {
-  equation: string;
-  bounds: SourceAssistMathBound;
-  tooltip: Tooltip;
-};
-
-const updateTexInlineTooltipsEffect =
-  StateEffect.define<readonly TexInlineTooltipState[]>();
-const updateTexDisplayDecorationsEffect = StateEffect.define<DecorationSet>();
-
-export interface TexDisplayMathPreviewResult {
+interface TexMathVisualState {
+  mathJaxReady: boolean;
   decorations: DecorationSet;
-  signature: string;
 }
 
-export interface TexInlineMathTooltipsResult {
-  tooltips: readonly TexInlineTooltipState[];
-  signature: string;
-}
+const setTexMathJaxReadyEffect = StateEffect.define<void>();
 
-const texInlineTooltipField = StateField.define<readonly TexInlineTooltipState[]>({
-  create: () => [],
-  update(tooltips, transaction) {
+const texMathVisualStateField = StateField.define<TexMathVisualState>({
+  create: () => ({
+    mathJaxReady: false,
+    decorations: Decoration.none,
+  }),
+  update(value, transaction) {
+    let mathJaxReady = value.mathJaxReady;
     for (const effect of transaction.effects) {
-      if (effect.is(updateTexInlineTooltipsEffect)) return effect.value;
+      if (effect.is(setTexMathJaxReadyEffect)) mathJaxReady = true;
     }
-    return tooltips;
+    return {
+      mathJaxReady,
+      decorations: mathJaxReady
+        ? buildTexMathVisualDecorations(transaction.state)
+        : Decoration.none,
+    };
   },
   provide: (field) =>
-    showTooltip.computeN([field], (state) =>
-      state.field(field).map((value) => value.tooltip),
+    Prec.highest(
+      EditorView.decorations.from(field, (value) => value.decorations),
     ),
 });
 
-const texDisplayDecorationField = StateField.define<DecorationSet>({
-  create: () => Decoration.none,
-  update(decorations, transaction) {
-    let next = transaction.docChanged ? decorations.map(transaction.changes) : decorations;
-    for (const effect of transaction.effects) {
-      if (effect.is(updateTexDisplayDecorationsEffect)) next = effect.value;
-    }
-    return next;
-  },
-  provide: (field) => EditorView.decorations.from(field),
-});
-
-export function texDisplayMathPreviewExtension(
-  options: TexMathPreviewOptions,
-  createRuntimeExtension: TexPreviewRuntimeFactory = texDisplayMathPreviewRuntimeExtension,
-): Extension {
-  const previewCompartment = new Compartment();
+export function texDisplayMathPreviewExtension(): Extension {
   return [
-    previewCompartment.of([]),
-    ViewPlugin.fromClass(
-      class {
-        private active = false;
-        private disabled = false;
-        private updateQueued = false;
-        private timeout: ReturnType<typeof setTimeout> | null = null;
-        private animationFrame: number | null = null;
-        private destroyed = false;
-        private retryCount = 0;
-        private lastObservedExtension = "";
-
-        constructor(private readonly view: EditorView) {
-          this.queuePreviewSync(true);
-        }
-
-        update(update: ViewUpdate): void {
-          if (
-            update.docChanged ||
-            update.viewportChanged ||
-            update.selectionSet ||
-            editorExtension(update.startState) !== editorExtension(update.state)
-          ) {
-            this.queuePreviewSync(true);
-          }
-        }
-
-        destroy(): void {
-          this.destroyed = true;
-          if (this.timeout !== null) {
-            clearTimeout(this.timeout);
-            this.timeout = null;
-          }
-          if (
-            this.animationFrame !== null &&
-            typeof globalThis.cancelAnimationFrame === "function"
-          ) {
-            globalThis.cancelAnimationFrame(this.animationFrame);
-            this.animationFrame = null;
-          }
-        }
-
-        private queuePreviewSync(afterFrame: boolean): void {
-          if (this.updateQueued || this.disabled || this.timeout !== null) return;
-          this.updateQueued = true;
-          const sync = () => {
-            this.timeout = setTimeout(() => {
-              this.timeout = null;
-              this.updateQueued = false;
-              if (!this.destroyed) this.syncPreviewRuntime();
-            }, 0);
-          };
-          if (afterFrame && typeof globalThis.requestAnimationFrame === "function") {
-            this.animationFrame = globalThis.requestAnimationFrame(() => {
-              this.animationFrame = null;
-              sync();
-            });
-          } else {
-            sync();
-          }
-        }
-
-        private syncPreviewRuntime(): void {
-          const extension = editorExtension(this.view.state);
-          this.lastObservedExtension = extension;
-          if (extension === "tex") {
-            this.retryCount = 0;
-            if (this.active) return;
-            try {
-              this.view.dispatch({
-                effects: previewCompartment.reconfigure(
-                  createRuntimeExtension(options),
-                ),
-              });
-              this.active = true;
-            } catch (error) {
-              this.disabled = true;
-              this.active = false;
-              console.warn(
-                `[mv-aide] Disabled TeX math preview for this editor because it failed to initialize. Current extension: "${this.lastObservedExtension}".`,
-                error,
-              );
-              try {
-                this.reconfigurePreview([]);
-              } catch (disableError) {
-                console.warn(
-                  "[mv-aide] Failed to clear disabled TeX math preview.",
-                  disableError,
-                );
-              }
-            }
-            return;
-          }
-
-          if (extension) {
-            if (this.active) this.reconfigurePreview([]);
-            this.active = false;
-            return;
-          }
-
-          if (this.retryCount >= TEX_PREVIEW_MAX_RETRIES) {
-            this.disabled = true;
-            console.warn(
-              `[mv-aide] Disabled TeX math preview for this editor because the file extension was not available after ${TEX_PREVIEW_MAX_RETRIES} retries. Current extension: "${this.lastObservedExtension}".`,
-            );
-            return;
-          }
-          this.retryCount += 1;
-          this.timeout = setTimeout(() => {
-            this.timeout = null;
-            this.queuePreviewSync(false);
-          }, TEX_PREVIEW_RETRY_INTERVAL_MS);
-        }
-
-        private reconfigurePreview(extension: Extension): void {
-          this.view.dispatch({
-            effects: previewCompartment.reconfigure(extension),
-          });
-        }
-      },
-    ),
-  ];
-}
-
-function texDisplayMathPreviewRuntimeExtension(
-  options: TexMathPreviewOptions,
-): Extension {
-  return [
-    texInlineTooltipField,
-    texDisplayDecorationField,
+    texMathVisualStateField,
     Prec.highest(
       EditorView.domEventHandlers({
         keydown(event, view) {
@@ -226,55 +71,33 @@ function texDisplayMathPreviewRuntimeExtension(
     ),
     ViewPlugin.fromClass(
       class {
-        private previewUpdateQueued = false;
-        private lastDisplaySignature = "";
-        private lastTooltipSignature = "";
+        private destroyed = false;
 
         constructor(private readonly view: EditorView) {
-          this.queuePreviewUpdate();
-        }
-
-        update(update: ViewUpdate): void {
-          if (
-            update.docChanged ||
-            update.viewportChanged ||
-            update.selectionSet ||
-            editorExtension(update.startState) !== editorExtension(update.state)
-          ) {
-            this.queuePreviewUpdate();
+          try {
+            void Promise.resolve(loadMathJax())
+              .then(() => {
+                if (this.destroyed) return;
+                this.view.dispatch({
+                  effects: setTexMathJaxReadyEffect.of(),
+                });
+              })
+              .catch((error: unknown) => {
+                console.error(
+                  "[mv-aide] Failed to load MathJax for TeX preview.",
+                  error,
+                );
+              });
+          } catch (error) {
+            console.error(
+              "[mv-aide] Failed to load MathJax for TeX preview.",
+              error,
+            );
           }
         }
 
-        private queuePreviewUpdate(): void {
-          if (this.previewUpdateQueued) return;
-          this.previewUpdateQueued = true;
-          queueMicrotask(() => {
-            this.previewUpdateQueued = false;
-            try {
-              const display = buildTexDisplayMathPreview(this.view);
-              const inlineTooltips = buildTexInlineMathTooltips(this.view, options);
-              if (
-                display.signature === this.lastDisplaySignature &&
-                inlineTooltips.signature === this.lastTooltipSignature
-              ) {
-                return;
-              }
-              this.lastDisplaySignature = display.signature;
-              this.lastTooltipSignature = inlineTooltips.signature;
-              this.view.dispatch({
-                effects: [
-                  updateTexDisplayDecorationsEffect.of(display.decorations),
-                  updateTexInlineTooltipsEffect.of(inlineTooltips.tooltips),
-                  this.view.scrollSnapshot(),
-                ],
-              });
-            } catch (error) {
-              console.error(
-                "[mv-aide] Failed to update TeX math preview.",
-                error,
-              );
-            }
-          });
+        destroy(): void {
+          this.destroyed = true;
         }
       },
     ),
@@ -298,8 +121,13 @@ class TexMathWidget extends WidgetType {
     );
   }
 
-  updateDOM(dom: HTMLElement, view: EditorView): boolean {
-    if (!(dom instanceof HTMLElement)) return false;
+  updateDOM(dom: HTMLElement): boolean {
+    if (
+      !(dom instanceof HTMLElement) ||
+      dom.tagName !== (this.display ? "DIV" : "SPAN")
+    ) {
+      return false;
+    }
     dom.replaceChildren();
     dom.className = this.className();
     dom.dataset.cursorTarget = String(this.cursorTarget);
@@ -308,7 +136,9 @@ class TexMathWidget extends WidgetType {
   }
 
   toDOM(view: EditorView): HTMLElement {
-    const wrap = document.createElement("div");
+    const wrap = view.dom.ownerDocument.createElement(
+      this.display ? "div" : "span",
+    );
     wrap.className = this.className();
     wrap.dataset.cursorTarget = String(this.cursorTarget);
     wrap.addEventListener("mousedown", (event) => {
@@ -330,77 +160,62 @@ class TexMathWidget extends WidgetType {
     return false;
   }
 
+  get estimatedHeight(): number {
+    return this.display ? 50 : -1;
+  }
+
   private className(): string {
     return this.display
-      ? "mv-senceai-tex-math-preview mv-senceai-tex-math-preview-display"
-      : "mv-senceai-tex-math-preview mv-senceai-tex-math-preview-inline";
+      ? "math math-block cm-embed-block mv-senceai-tex-math-preview mv-senceai-tex-math-preview-display"
+      : "math mv-senceai-tex-math-preview mv-senceai-tex-math-preview-inline";
   }
 }
 
-export function buildTexDisplayMathDecorations(view: EditorView): DecorationSet {
-  return buildTexDisplayMathPreview(view).decorations;
-}
-
-export function buildTexDisplayMathPreview(
-  view: EditorView,
-): TexDisplayMathPreviewResult {
+export function buildTexMathVisualDecorations(
+  state: EditorState,
+): DecorationSet {
   try {
-    return buildTexDisplayMathPreviewUnsafe(view);
+    return buildTexMathVisualDecorationsUnsafe(state);
   } catch (error) {
     console.error("[mv-aide] Failed to build TeX math preview.", error);
-    return { decorations: Decoration.none, signature: "error" };
+    return Decoration.none;
   }
 }
 
-function buildTexDisplayMathPreviewUnsafe(
-  view: EditorView,
-): TexDisplayMathPreviewResult {
-  if (editorExtension(view.state) !== "tex") {
-    return { decorations: Decoration.none, signature: "not-tex" };
-  }
-  if (view.visibleRanges.length === 0) {
-    return { decorations: Decoration.none, signature: "no-visible-ranges" };
-  }
+function buildTexMathVisualDecorationsUnsafe(
+  state: EditorState,
+): DecorationSet {
+  if (editorExtension(state) !== "tex") return Decoration.none;
 
   const builder = new RangeSetBuilder<Decoration>();
-  const signatureParts: string[] = [];
-  const visibleFrom = Math.min(...view.visibleRanges.map((range) => range.from));
-  const visibleTo = Math.max(...view.visibleRanges.map((range) => range.to));
-  const bounds = texMathBounds(view.state);
-  for (const bound of bounds) {
-    if (!isValidBound(view, bound)) {
-      continue;
-    }
-    if (bound.kind === "dollar-display") {
-      continue;
-    }
-    if (bound.outer_end < visibleFrom || bound.outer_start > visibleTo) {
-      continue;
-    }
-    const source = view.state.sliceDoc(bound.inner_start, bound.inner_end);
-    if (!source.trim()) {
-      continue;
-    }
-    const widget = new TexMathWidget(source, bound.display, bound.inner_start);
-    if (isLivePreview(view) && !selectionTouchesBound(view, bound)) {
-      signatureParts.push(displaySignaturePart("replace", bound, source));
+  const regions = texMathRegions(state);
+  for (const region of regions) {
+    if (region.origin !== "configured") continue;
+    if (!isValidBound(state, region)) continue;
+    const source = region.renderSource;
+    if (!source.trim()) continue;
+    const widget = new TexMathWidget(
+      source,
+      region.display,
+      region.inner_start,
+    );
+    if (isLivePreview(state) && !selectionTouchesBound(state, region)) {
       builder.add(
-        bound.outer_start,
-        bound.outer_end,
+        region.outer_start,
+        region.outer_end,
         Decoration.replace({
           widget,
-          block: bound.display,
+          block: region.display,
         }),
       );
       continue;
     }
-    if (!bound.display) {
+    if (!region.display) {
       continue;
     }
-    signatureParts.push(displaySignaturePart("widget", bound, source));
     builder.add(
-      bound.outer_end,
-      bound.outer_end,
+      region.outer_end,
+      region.outer_end,
       Decoration.widget({
         widget,
         block: true,
@@ -408,125 +223,41 @@ function buildTexDisplayMathPreviewUnsafe(
       }),
     );
   }
-  return {
-    decorations: builder.finish(),
-    signature: signatureParts.join("|"),
-  };
+  return builder.finish();
 }
 
-export function buildTexInlineMathTooltips(
-  view: EditorView,
-  options: TexMathPreviewOptions,
-): TexInlineMathTooltipsResult {
-  try {
-    if (editorExtension(view.state) !== "tex") {
-      return { tooltips: [], signature: "not-tex" };
-    }
-    const bound = texInlineMathBoundAt(view);
-    if (!bound) {
-      return { tooltips: [], signature: "none" };
-    }
-    const equation = view.state.sliceDoc(bound.inner_start, bound.inner_end);
-    if (!equation.trim()) {
-      return { tooltips: [], signature: "empty" };
-    }
-    const equationWithCursor = insertPreviewCursor(
-      equation,
-      view.state.selection.main.head - bound.inner_start,
-      options.cursor,
-    );
-    const tooltip = texInlineMathTooltip(view, bound, equationWithCursor, options);
-    return {
-      tooltips: [{ equation: equationWithCursor, bounds: bound, tooltip }],
-      signature: [
-        bound.outer_start,
-        bound.outer_end,
-        bound.inner_start,
-        bound.inner_end,
-        options.positionIsAbove ? "above" : "below",
-        equationWithCursor,
-      ].join(":"),
-    };
-  } catch (error) {
-    console.error(
-      "[mv-aide] Failed to build TeX inline math preview.",
-      error,
-    );
-    return { tooltips: [], signature: "error" };
-  }
-}
-
-function texInlineMathBoundAt(view: EditorView): SourceAssistMathBound | null {
-  const pos = view.state.selection.main.head;
-  return (
-    texMathBounds(view.state).find(
-      (bound) =>
-        bound.kind === "paren-inline" &&
-        pos > bound.inner_start &&
-        pos < bound.inner_end,
-    ) ?? null
-  );
-}
-
-function displaySignaturePart(
-  action: "replace" | "widget",
-  bound: SourceAssistMathBound,
+function renderMathInto(
+  container: HTMLElement,
   source: string,
-): string {
-  return [
-    action,
-    bound.kind,
-    bound.display ? "display" : "inline",
-    bound.outer_start,
-    bound.outer_end,
-    bound.inner_start,
-    bound.inner_end,
-    source,
-  ].join(":");
-}
-
-function texInlineMathTooltip(
-  view: EditorView,
-  bound: SourceAssistMathBound,
-  equationWithCursor: string,
-  options: TexMathPreviewOptions,
-): Tooltip {
-  const above = options.positionIsAbove;
-  const pos = above
-    ? bound.inner_start
-    : Math.max(
-        bound.inner_start,
-        view.moveToLineBoundary(
-          EditorSelection.range(bound.inner_end, bound.inner_end),
-          false,
-        ).anchor,
-      );
-
-  return {
-    pos,
-    above,
-    strictSide: true,
-    arrow: true,
-    create: () => {
-      const dom = document.createElement("div");
-      dom.classList.add("cm-tooltip-cursor");
-      dom.classList.add(above ? "cm-tooltip-above" : "cm-tooltip-below");
-      renderMathInto(dom, equationWithCursor, false);
-      return { dom };
-    },
-  };
-}
-
-function renderMathInto(container: HTMLElement, source: string, display: boolean): void {
+  display: boolean,
+): void {
+  const token = {};
+  mathJaxRenderTokens.set(container, token);
   try {
-    container.appendChild(renderMath(source.trim(), display));
-    Promise.resolve(finishRenderMath()).catch((error: unknown) => {
-      console.error("[mv-aide] Failed to finish TeX math preview.", error);
-    });
+    container.appendChild(renderMath(source, display));
   } catch (error) {
     console.error("[mv-aide] Failed to render TeX math preview.", error);
     container.textContent = source;
+    return;
   }
+  try {
+    void Promise.resolve(finishRenderMath()).catch((error: unknown) => {
+      finishMathRenderWithFallback(container, source, token, error);
+    });
+  } catch (error) {
+    finishMathRenderWithFallback(container, source, token, error);
+  }
+}
+
+function finishMathRenderWithFallback(
+  container: HTMLElement,
+  source: string,
+  token: object,
+  error: unknown,
+): void {
+  console.error("[mv-aide] Failed to finish TeX math preview.", error);
+  if (mathJaxRenderTokens.get(container) !== token) return;
+  container.textContent = source;
 }
 
 export function handleTexPreviewNavigationKey(
@@ -539,7 +270,7 @@ export function handleTexPreviewNavigationKey(
     event.metaKey ||
     event.shiftKey ||
     editorExtension(view.state) !== "tex" ||
-    !isLivePreview(view)
+    !isLivePreview(view.state)
   ) {
     return false;
   }
@@ -616,17 +347,19 @@ function texPreviewHorizontalTarget(
     : null;
 }
 
-function navigableTexPreviewBounds(view: EditorView): SourceAssistMathBound[] {
-  return texMathBounds(view.state).filter((bound) => {
-    if (!isValidBound(view, bound)) return false;
-    if (bound.kind === "dollar-display") return false;
-    return view.state.sliceDoc(bound.inner_start, bound.inner_end).trim() !== "";
-  });
+function navigableTexPreviewBounds(view: EditorView): ConfiguredTexMathRegion[] {
+  return texMathRegions(view.state).filter(
+    (bound): bound is ConfiguredTexMathRegion => {
+      if (bound.origin !== "configured") return false;
+      if (!isValidBound(view.state, bound)) return false;
+      return view.state.sliceDoc(bound.inner_start, bound.inner_end).trim() !== "";
+    },
+  );
 }
 
 function lineIntersectsBound(
   line: { from: number; to: number },
-  bound: SourceAssistMathBound,
+  bound: TexMathRegion,
 ): boolean {
   return line.from < bound.outer_end && line.to > bound.outer_start;
 }
@@ -634,7 +367,7 @@ function lineIntersectsBound(
 function movementTouchesBound(
   from: number,
   to: number,
-  bound: SourceAssistMathBound,
+  bound: TexMathRegion,
 ): boolean {
   return (
     positionInsideBound(from, bound) ||
@@ -644,17 +377,17 @@ function movementTouchesBound(
   );
 }
 
-function positionInsideBound(pos: number, bound: SourceAssistMathBound): boolean {
+function positionInsideBound(pos: number, bound: TexMathRegion): boolean {
   return pos > bound.outer_start && pos < bound.outer_end;
 }
 
-function positionActivatesBound(pos: number, bound: SourceAssistMathBound): boolean {
+function positionActivatesBound(pos: number, bound: TexMathRegion): boolean {
   return pos >= bound.outer_start && pos <= bound.outer_end;
 }
 
 function nudgeEndBoundaryInsideBound(
   pos: number,
-  bounds: readonly SourceAssistMathBound[],
+  bounds: readonly TexMathRegion[],
 ): number {
   for (const bound of bounds) {
     if (pos === bound.outer_end && bound.outer_start < bound.outer_end) {
@@ -664,41 +397,32 @@ function nudgeEndBoundaryInsideBound(
   return pos;
 }
 
-function insertPreviewCursor(
-  equation: string,
-  rawPosition: number,
-  cursor: string,
-): string {
-  const position = Math.max(0, Math.min(equation.length, rawPosition));
-  return `${equation.slice(0, position)}${cursor}${equation.slice(position)}`;
-}
-
-function isValidBound(view: EditorView, bound: SourceAssistMathBound): boolean {
+function isValidBound(state: EditorState, bound: TexMathRegion): boolean {
   return (
     bound.inner_start >= 0 &&
     bound.inner_end >= bound.inner_start &&
     bound.outer_start >= 0 &&
     bound.outer_end >= bound.outer_start &&
-    bound.outer_end <= view.state.doc.length
+    bound.outer_end <= state.doc.length
   );
 }
 
-function selectionTouchesBound(view: EditorView, bound: SourceAssistMathBound): boolean {
-  return view.state.selection.ranges.some((range) => {
+function selectionTouchesBound(state: EditorState, bound: TexMathRegion): boolean {
+  return state.selection.ranges.some((range) => {
     if (range.empty) return positionActivatesBound(range.head, bound);
     return range.from < bound.outer_end && range.to > bound.outer_start;
   });
 }
 
-function isLivePreview(view: EditorView): boolean {
+function isLivePreview(state: EditorState): boolean {
   try {
-    return view.state.field(editorLivePreviewField, false) ?? false;
+    return state.field(editorLivePreviewField, false) ?? false;
   } catch {
     return false;
   }
 }
 
-function editorExtension(state: EditorView["state"]): string {
+function editorExtension(state: EditorState): string {
   try {
     return (
       state.field(editorInfoField, false)?.file?.extension?.toLowerCase() ?? ""

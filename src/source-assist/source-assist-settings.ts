@@ -8,6 +8,7 @@ import {
   normalizeSourceHighlightThemeId,
   SOURCE_HIGHLIGHT_OBSIDIAN,
 } from "./highlight-themes";
+import { texMathFormatsDefaultValue } from "./tex-math";
 
 export const SOURCE_ASSIST_EXTENSION_PATTERN = /^[a-z0-9][a-z0-9+_-]*$/;
 export const CUSTOM_MARKDOWN_PLAIN_VISUALS_CLASS =
@@ -54,6 +55,8 @@ export function createSourceAssistProfile(
     snippetNextTabstopTrigger: "Tab",
     snippetPreviousTabstopTrigger: "Shift-Tab",
     texEnhancedRenderEnabled: false,
+    texOutlineEnabled: normalized === "tex",
+    texMathFormats: texMathFormatsDefaultValue(),
   };
 }
 
@@ -74,7 +77,18 @@ function normalizeProfile(raw: Partial<SourceAssistProfile> | undefined): Source
     snippetPreviousTabstopTrigger: raw?.snippetPreviousTabstopTrigger || "Shift-Tab",
     texEnhancedRenderEnabled:
       extension === "tex" && raw?.texEnhancedRenderEnabled === true,
+    texOutlineEnabled:
+      extension === "tex" ? (raw?.texOutlineEnabled ?? true) : false,
+    texMathFormats: normalizeTexMathFormats(raw?.texMathFormats),
   };
+}
+
+function normalizeTexMathFormats(value: unknown): string {
+  if (typeof value !== "string" || value === EMPTY_LATEX_SUITE_SNIPPETS) {
+    // Missing, or the former empty default: pre-fill the built-in formats.
+    return texMathFormatsDefaultValue();
+  }
+  return value;
 }
 
 export function normalizeSourceAssistSettings(

@@ -40,6 +40,13 @@ export function supportedFileTypeIconId(
   return fileTypeIconId(normalized);
 }
 
+/** Pure: true when the leaf shows a file document (markdown view). */
+export function isFileTabViewType(
+  viewType: string | null | undefined,
+): boolean {
+  return viewType === "markdown";
+}
+
 /**
  * Pure: the tab's file path. A live view's `file.path` wins; restored
  * deferred leaves only carry the path in the saved view state (`state.file`)
@@ -57,6 +64,7 @@ export function tabFilePath(
 interface TabbedLeafView {
   file?: { path?: string; extension?: string } | null;
   getIcon?: () => string;
+  getViewType?: () => string;
 }
 
 export interface FileTypeIconViewOptions {
@@ -67,6 +75,7 @@ export interface FileTypeIconViewOptions {
 
 export class FileTypeIconView {
   private readonly supportedExtensions = new Set<string>();
+  private readonly badgedIconEls = new WeakSet<HTMLElement>();
   private started = false;
 
   constructor(private readonly options: FileTypeIconViewOptions) {}
@@ -117,6 +126,12 @@ export class FileTypeIconView {
         tabHeaderInnerIconEl?: HTMLElement;
       }).tabHeaderInnerIconEl;
       if (!iconEl) return;
+      // Only file document tabs get extension badges; panel views (outline,
+      // terminal, ...) expose `view.file` too but must keep their own icon.
+      const viewType =
+        typeof view?.getViewType === "function"
+          ? view.getViewType()
+          : (leaf.getViewState()?.type as string | undefined);
       const viewPath = view?.file?.path;
       // Deferred restored leaves have no `view.file` until first activation;
       // only then pay for getViewState(), which reads the saved state object
@@ -129,13 +144,21 @@ export class FileTypeIconView {
       const path = tabFilePath(viewPath, stateFile) ?? "";
       const extension = path ? extensionOfPath(path) : null;
       const supportedId =
-        this.options.isEnabled() && extension
+        this.options.isEnabled() && isFileTabViewType(viewType) && extension
           ? supportedFileTypeIconId(extension, this.supportedExtensions)
           : null;
       if (supportedId) {
         setIcon(iconEl, supportedId);
-      } else if (typeof view?.getIcon === "function") {
-        setIcon(iconEl, view.getIcon());
+        this.badgedIconEls.add(iconEl);
+      } else if (this.badgedIconEls.has(iconEl)) {
+        // Only restore icon slots we badged ourselves. Every other tab —
+        // web viewer favicons, panel icons — is left completely untouched;
+        // setIcon would wipe their custom content (a favicon <img>) and
+        // replace it with getIcon()'s default (the globe).
+        this.badgedIconEls.delete(iconEl);
+        if (typeof view?.getIcon === "function") {
+          setIcon(iconEl, view.getIcon());
+        }
       }
     });
   }
@@ -146,7 +169,14 @@ export class FileTypeIconView {
       const iconEl = (leaf as unknown as {
         tabHeaderInnerIconEl?: HTMLElement;
       }).tabHeaderInnerIconEl;
-      if (iconEl && typeof view?.getIcon === "function") {
+      // Same contract as refreshTabIcons: only icon slots we badged ourselves
+      // get restored; all other tabs keep whatever icon they have.
+      if (
+        iconEl &&
+        this.badgedIconEls.has(iconEl) &&
+        typeof view?.getIcon === "function"
+      ) {
+        this.badgedIconEls.delete(iconEl);
         setIcon(iconEl, view.getIcon());
       }
     });
