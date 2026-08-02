@@ -80,7 +80,10 @@ should differ:
 - `snippets/parse.ts`: replace explicit `any` helper types with `unknown`
   based function types. Keep the dynamic `import(module)` because Latex Suite
   snippets are trusted local JavaScript modules; add only a documented lint
-  exception for that line.
+  exception for that line. This is the only sanctioned dynamic import in the
+  codebase — the same construct in first-party code was rejected by the
+  official 0.9.2 review and must never be reintroduced outside vendor (see
+  `DEVELOPMENT-GUIDELINES.md` 规范四).
 
 ## Required Checks
 

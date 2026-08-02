@@ -115,6 +115,20 @@ printf 'protocol=https\nhost=github.com\nusername=x-access-token\n\n' \
 
 这能避免发布仓因测试依赖链引入 `vite -> rolldown -> @napi-rs/wasm-runtime -> @emnapi/*`，导致 GitHub Actions 的 `npm ci` 失败。
 
+## 官方静态审核自检
+
+发布前在本地跑一遍官方 scanner 的同类静态检查（对应 `DEVELOPMENT-GUIDELINES.md` 规范一/三/四）：
+
+```bash
+# 动态代码执行：命中只能是类型位的 import("...") 注解（编译后擦除）
+rg '\bimport\(' src --glob '!src/vendor/**'
+rg '\beval\(|new Function\(' src   # 必须无匹配
+# HTML 注入面（vendor 内的已知豁免见 LATEX-SUITE-UPGRADE.md）
+rg 'innerHTML|outerHTML|insertAdjacentHTML' src --glob '!src/vendor/**'   # 必须无匹配
+```
+
+并核对 `manifest.json` 与 `package.json` 的 description 不含 "Obsidian"。
+
 ## 发布后检查
 
 脚本成功后至少确认：

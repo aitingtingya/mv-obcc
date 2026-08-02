@@ -37,3 +37,16 @@
    - 运行时生成物一律放 `os.tmpdir()`（按 vault 稳定哈希建子目录，目录权限 0700、含令牌的文件 0600），或用户显式授权的外部状态目录（如 `~/.mv-aide`）。
    - 严禁实现下载、解包、替换 `main.js` / `manifest.json` 等任何形式的自更新逻辑；版本分发只走 Obsidian 官方更新机制（GitHub release + community manifest）。
    - 历史违规案例：universal MCP 的 `runtime.json` 曾写入插件目录 `tmp/universal-mcp/`，已迁至 `os.tmpdir()/mv-aide-universal-mcp-<vault哈希>/runtime.json`（见 `main.ts` 的 `universalMcpRuntimeDescriptorPath()`）。新增任何运行时写文件路径前，先对照本条核验目标目录。
+
+---
+
+## 规范四：自有代码禁止动态代码执行 (No Dynamic Code Execution in First-Party Code)
+
+1. **红线说明**：
+   官方审核的静态扫描会直接报 Error：`Unsafe call to import for argument 0 (Variable 'module' declared as function parameter, which is considered unsafe...)`。`import(非字符串字面量)`、`eval(...)`、`new Function(...)` 都属于动态代码执行，官方一律按安全隐患拦截——无论参数在业务上是否可信。0.9.2 审核实例：`src/source-assist/tex-math.ts` 曾把用户配置当 JS 模块用 data: URL 动态 import，被官方拦下，已改为 `JSON.parse`（配置是纯声明式数据，本就不需要执行 JS）。
+2. **规范要求**：
+   - `src/` 下（vendor 之外）的自有代码严禁出现动态 `import(变量)`、`eval`、`new Function`。
+   - 声明式用户配置（纯数据）一律设计为 JSON 并用 `JSON.parse` 解析，禁止设计成 `export default [...]` 这类需要执行的 JS 模块格式。
+   - 解析器可以对封闭键名集合做有限的语法宽容（如 texMathFormats 接受裸键名/尾逗号/旧 `export default` 前缀，见 `normalizeTexMathFormatsText`），但底层必须是 `JSON.parse` 等纯解析，严禁演化为任何形式的执行。
+   - **唯一豁免**：`src/vendor/latex-suite/src/snippets/parse.ts` 的 `import(module)`——上游 latex-suite 的 snippet 语义包含 RegExp trigger 与函数 replacement，只能 JS 求值；该文件受 vendor 完整性测试钉死，此模式严禁扩散到 vendor 之外的任何代码。
+   - 若官方后续连豁免项也拦截，应对方式是携带理由申辩（上游官方插件同款构造、语义刚需），而不是在自有代码里复活该模式。

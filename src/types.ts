@@ -183,9 +183,11 @@ export interface SourceAssistProfile {
   /** Shows \section-level headings in the core Outline and enables editor folding for .tex files. */
   texOutlineEnabled: boolean;
   /**
-   * Custom math formats for the TeX enhanced renderer, in the same JS-array
-   * shape as `snippets`: `export default [{ 开头, 结尾, 设置 }, ...]` where
-   * 设置 is "n" (inline) or "j" (display). Empty by default.
+   * Custom math formats for the TeX enhanced renderer: an array of
+   * `{ 开头, 结尾, 设置 }` entries where 设置 is "n" (inline), "j"
+   * (display), "nl"/"jl" (environments). Accepts strict JSON or
+   * latex-suite style (bare keys, trailing commas, legacy
+   * `export default` prefix); parsed via `JSON.parse` after normalization.
    */
   texMathFormats: string;
 }

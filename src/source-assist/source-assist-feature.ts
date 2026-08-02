@@ -56,9 +56,9 @@ export class SourceAssistFeature {
     const texProfile = this.plugin.settings.sourceAssist.profiles.find(
       (profile) => profile.extension === "tex",
     );
-    const text = texProfile?.texMathFormats ?? EMPTY_LATEX_SUITE_SNIPPETS;
+    const text = texProfile?.texMathFormats ?? "[]";
     try {
-      return await parseTexMathFormats(text);
+      return parseTexMathFormats(text);
     } catch {
       return EMPTY_TEX_MATH_CUSTOM_CONFIG;
     }

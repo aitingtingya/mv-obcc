@@ -4,7 +4,6 @@ import {
   StateField,
   type EditorState,
 } from "@codemirror/state";
-import { encode } from "js-base64";
 
 export type TexMathFormatOption = "n" | "j" | "nl" | "jl";
 
@@ -87,30 +86,26 @@ const BUILT_IN_TEX_MATH_FORMATS: BuiltInTexMathFormat[] = [
   })),
 ];
 
-/** Escapes a TeX delimiter into its JS-string form for the settings box. */
+/** Escapes a TeX delimiter into its settings-string form (double backslash). */
 function texMathFormatSettingString(value: string): string {
   return value.replace(/\\/g, "\\\\");
 }
 
 /**
- * Built-in math formats as { 开头, 结尾, 设置 } entry lines (latex suite
- * style, comma-separated), used to pre-fill the settings default value.
- */
-export function texMathBuiltInFormatExamples(): string[] {
-  return BUILT_IN_TEX_MATH_FORMATS.map(
-    (format) =>
-      `{ 开头: "${texMathFormatSettingString(format.open)}", 结尾: "${texMathFormatSettingString(format.close)}", 设置: "${format.options}" },`,
-  );
-}
-
-/**
  * Default text for the settings panel's custom math formats box: the
- * built-in formats as real entries users can freely edit or delete.
+ * built-in formats as latex-suite-style entries (bare keys, quoted values)
+ * users can freely edit or delete. No `export default` prefix — nothing is
+ * ever executed (see parseTexMathFormats).
  */
 export function texMathFormatsDefaultValue(): string {
-  return ["export default [", ...texMathBuiltInFormatExamples(), "]"].join(
-    "\n",
-  );
+  return [
+    "[",
+    ...BUILT_IN_TEX_MATH_FORMATS.map(
+      (format) =>
+        `{ 开头: "${texMathFormatSettingString(format.open)}", 结尾: "${texMathFormatSettingString(format.close)}", 设置: "${format.options}" },`,
+    ),
+    "]",
+  ].join("\n");
 }
 
 /**
@@ -237,24 +232,45 @@ export function texMathBoundAt(
   );
 }
 
+const TEX_MATH_FORMATS_JSON_HINT =
+  '自定义数学格式需要是数组，形如 [{ 开头: "\\\\(", 结尾: "\\\\)", 设置: "n" }]（设置取值 n/j/nl/jl）';
+
 /**
- * Parses the settings text for custom math formats. Reuses the same JS-array
- * shape as the snippets editor, with the three fields renamed:
- * `{ 开头, 结尾, 设置 }` where 设置 is "n" (inline) or "j" (display).
+ * Normalizes the settings text into strict JSON before parsing. The key set
+ * is closed (开头/结尾/设置 only), so this leniency is exact and safe: it
+ * accepts latex-suite style — an optional legacy `export default` prefix,
+ * bare keys, and trailing commas — and is an identity transform on strict
+ * JSON. Nothing is ever executed; parsing below is plain `JSON.parse` (the
+ * official Obsidian review forbids dynamic code execution in our own code,
+ * see DEVELOPMENT-GUIDELINES.md 规范四).
+ */
+function normalizeTexMathFormatsText(text: string): string {
+  let normalized = text.trim();
+  if (normalized.startsWith("export default")) {
+    normalized = normalized.slice("export default".length);
+  }
+  return normalized
+    .replace(/([{,]\s*)(开头|结尾|设置)\s*:/g, '$1"$2":')
+    .replace(/,(\s*[\]}])/g, "$1");
+}
+
+/**
+ * Parses the settings text for custom math formats: an array of
+ * `{ 开头, 结尾, 设置 }` entries where 设置 is "n"/"j"/"nl"/"jl". Accepts
+ * both strict JSON and latex-suite style (bare keys, trailing commas,
+ * legacy `export default` prefix); see normalizeTexMathFormatsText.
  *
  * @throws a descriptive string on invalid input, for the settings validator.
  */
-export async function parseTexMathFormats(
-  text: string,
-): Promise<TexMathCustomConfig> {
+export function parseTexMathFormats(text: string): TexMathCustomConfig {
   let raw: unknown;
   try {
-    raw = await importTexMathFormats(text);
+    raw = JSON.parse(normalizeTexMathFormatsText(text));
   } catch {
-    throw "自定义数学格式需要是 export default [...] 数组";
+    throw TEX_MATH_FORMATS_JSON_HINT;
   }
   if (!Array.isArray(raw)) {
-    throw "自定义数学格式需要是 export default [...] 数组";
+    throw TEX_MATH_FORMATS_JSON_HINT;
   }
   const inline: TexMathDelimiterPair[] = [];
   const display: TexMathDelimiterPair[] = [];
@@ -289,37 +305,6 @@ export async function parseTexMathFormats(
 
 function isTexMathFormatOption(value: string): value is TexMathFormatOption {
   return value === "n" || value === "j" || value === "nl" || value === "jl";
-}
-
-async function importTexMathFormats(maybeJavaScriptCode: string): Promise<unknown> {
-  try {
-    try {
-      return await importModuleDefault(
-        `data:text/javascript;base64,${encode(maybeJavaScriptCode)}`,
-      );
-    } catch {
-      return await importModuleDefault(
-        `data:text/javascript;base64,${encode(
-          `export default ${maybeJavaScriptCode}`,
-        )}`,
-      );
-    }
-  } catch {
-    throw "Invalid format";
-  }
-}
-
-async function importModuleDefault(module: string): Promise<unknown> {
-  let data: { default?: unknown };
-  try {
-    data = await import(module);
-  } catch {
-    throw `failed to import module ${module}`;
-  }
-  if (!("default" in data)) {
-    throw `No default export provided for module ${module}`;
-  }
-  return data.default;
 }
 
 interface TexMathFormatSpecBase {

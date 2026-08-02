@@ -2532,7 +2532,7 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
       footerEl: footer,
       initialValue: profile.texMathFormats,
       validate: async (value) => {
-        await parseTexMathFormats(value);
+        parseTexMathFormats(value);
       },
       onValidChange: async (value) => {
         const target = this.plugin.settings.sourceAssist.profiles[idx];
