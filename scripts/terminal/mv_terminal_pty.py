@@ -1,5 +1,12 @@
 #!/usr/bin/env python3
-"""PTY wrapper with resize support for Obsidian terminal plugin."""
+"""PTY wrapper with resize support for Obsidian terminal plugin.
+
+stdin speaks the same length-prefixed frame protocol as the Windows
+wrapper (mv_terminal_win.py): [type: 1B][length: 4B LE][payload].
+FRAME_INPUT is forwarded to the PTY verbatim; FRAME_RESIZE ("cols;rows")
+resizes it. Explicit frame lengths keep every keystroke — a lone ESC
+included — unambiguous, with no escape-sequence parsing at all.
+"""
 import os
 import sys
 import pty
@@ -9,6 +16,43 @@ import termios
 import select
 import signal
 import time
+
+FRAME_INPUT = 0
+FRAME_RESIZE = 1
+FRAME_HEADER_SIZE = 5
+
+
+class FrameReader:
+    """Reassemble length-prefixed stdin frames (see module docstring).
+
+    Identical copy of the class in mv_terminal_win.py (the two wrappers are
+    standalone single files); keep them in sync.
+    """
+
+    def __init__(self):
+        self.buf = bytearray()
+
+    def feed(self, data):
+        """Consume bytes, return ("input", bytes) / ("resize", (cols, rows))."""
+        self.buf += data
+        events = []
+        while len(self.buf) >= FRAME_HEADER_SIZE:
+            frame_type = self.buf[0]
+            length = int.from_bytes(self.buf[1:FRAME_HEADER_SIZE], "little")
+            end = FRAME_HEADER_SIZE + length
+            if len(self.buf) < end:
+                break  # incomplete frame — wait for the rest of the payload
+            payload = bytes(self.buf[FRAME_HEADER_SIZE:end])
+            del self.buf[:end]
+            if frame_type == FRAME_RESIZE:
+                try:
+                    cols, rows = payload.decode("ascii").split(";")
+                    events.append(("resize", (int(cols), int(rows))))
+                except (ValueError, UnicodeDecodeError):
+                    pass  # malformed control frame — drop it, keep the stream alive
+            else:
+                events.append(("input", payload))
+        return events
 
 # Global to track child PID (also the process group ID) for signal handler
 child_pid = None
@@ -95,6 +139,7 @@ def main():
     fcntl.fcntl(stdin_fd, fcntl.F_SETFL, old_flags | os.O_NONBLOCK)
 
     running = True
+    reader = FrameReader()
     try:
         while running:
             try:
@@ -121,21 +166,12 @@ def main():
                             # stdin closed - plugin terminated
                             running = False
                             break
-                        if data:
-                            # Check for resize escape sequence anywhere in data: \x1b]RESIZE;cols;rows\x07
-                            while b'\x1b]RESIZE;' in data:
-                                start = data.index(b'\x1b]RESIZE;')
-                                try:
-                                    end = data.index(b'\x07', start)
-                                    resize_data = data[start+9:end].decode()
-                                    c, r = resize_data.split(';')
-                                    set_size(fd, int(c), int(r))
-                                    # Remove the resize command from data
-                                    data = data[:start] + data[end+1:]
-                                except (ValueError, IndexError):
-                                    break
-                            if data:
-                                os.write(fd, data)
+                        for kind, payload in reader.feed(data):
+                            if kind == "resize":
+                                set_size(fd, payload[0], payload[1])
+                            else:
+                                # Keyboard input — forwarded verbatim
+                                os.write(fd, payload)
                     except OSError:
                         running = False
                         break

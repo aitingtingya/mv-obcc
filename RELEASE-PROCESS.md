@@ -115,6 +115,8 @@ printf 'protocol=https\nhost=github.com\nusername=x-access-token\n\n' \
 
 这能避免发布仓因测试依赖链引入 `vite -> rolldown -> @napi-rs/wasm-runtime -> @emnapi/*`，导致 GitHub Actions 的 `npm ci` 失败。
 
+发布仓不含 `tests/` 和 `scripts.test`，`.github/workflows/ci.yml` 的 "Verify native Windows registry integration" 步骤已加 `Test-Path` 守卫：在开发仓正常执行注册表集成测试，在发布仓自动跳过，无需为该步骤额外清理。
+
 ## 官方静态审核自检
 
 发布前在本地跑一遍官方 scanner 的同类静态检查（对应 `DEVELOPMENT-GUIDELINES.md` 规范一/三/四）：

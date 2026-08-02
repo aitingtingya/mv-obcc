@@ -21,7 +21,13 @@ jobs:
       - run: npm run verify
       - name: Verify native Windows registry integration
         if: runner.os == 'Windows'
-        run: npm test -- tests/windows-registry.integration.test.ts
+        shell: pwsh
+        run: |
+          if (Test-Path 'tests/windows-registry.integration.test.ts') {
+            npm test -- tests/windows-registry.integration.test.ts
+          } else {
+            Write-Host 'tests/ not shipped in this checkout; skipping registry integration test'
+          }
         env:
           MV_AIDE_WINDOWS_REGISTRY_INTEGRATION: '1'
 

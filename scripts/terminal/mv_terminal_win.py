@@ -4,9 +4,22 @@
 Design principle: this wrapper is a FAITHFUL transport. Input from xterm.js
 is forwarded to ConPTY verbatim and output from ConPTY is forwarded back
 verbatim — nothing is added, removed, or rewritten, so no terminal feature
-is ever filtered out for any application. The single exception is the
-plugin's private OSC channel ("\x1b]RESIZE;cols;rows"), which is consumed
-here to resize the ConPTY and never reaches the child.
+is ever filtered out for any application.
+
+stdin speaks a length-prefixed frame protocol so message boundaries never
+have to be guessed from the byte stream:
+
+    [type: 1 byte][length: 4 bytes little-endian][payload]
+
+    type 0 (FRAME_INPUT):  keyboard input, forwarded verbatim
+    type 1 (FRAME_RESIZE): "cols;rows", applied to the ConPTY
+
+The previous design multiplexed a private OSC resize channel onto the raw
+input stream and parsed escape-sequence boundaries to recover it. In such a
+stream a lone ESC byte (the Escape key) is indistinguishable from the start
+of an escape sequence, so it was held back waiting for bytes that never
+came — Escape (and the keystroke after it) never reached ConPTY. Explicit
+frame lengths remove the ambiguity entirely; no parser, no timeouts.
 """
 import sys
 import threading
@@ -19,10 +32,9 @@ import time
 # latency imperceptible while dropping idle CPU to near zero.
 IDLE_SLEEP_S = 0.01
 
-RESIZE_PREFIX = b'\x1b]RESIZE;'
-_BEL = 0x07
-_ESC = 0x1B
-_C1_ST = 0x9C
+FRAME_INPUT = 0
+FRAME_RESIZE = 1
+FRAME_HEADER_SIZE = 5
 
 
 def read_utf8_char(buffer):
@@ -59,22 +71,18 @@ def read_utf8_char(buffer):
         return None, buffer
 
 
-class InputParser:
-    """Incremental parser that recognizes only escape-sequence BOUNDARIES.
+class FrameReader:
+    """Reassemble length-prefixed stdin frames (see module docstring).
 
-    Every byte is emitted verbatim — ("text", bytes) for ordinary input,
-    ("esc", bytes) for a complete escape sequence (terminator included).
-    The plugin's private OSC RESIZE channel is the sole exception and
-    surfaces as ("resize", (cols, rows)) instead of being forwarded.
+    feed() returns events in arrival order: ("input", bytes) for keyboard
+    input and ("resize", (cols, rows)) for resize control frames. Split and
+    coalesced frames are handled by buffering until a whole frame arrives —
+    a deterministic wait, since the header states the exact payload length.
+    Unknown frame types are treated as input so a newer frontend degrades
+    gracefully instead of jamming.
 
-    Terminators follow ECMA-48: OSC ends at BEL or ST (ESC \\ or C1 0x9C),
-    DCS/APC/PM/SOS end at ST, CSI ends at a final byte in 0x40-0x7E,
-    charset designations are 3 bytes, other escapes are 2 bytes.
-
-    An earlier version only accepted BEL for OSC and swallowed everything
-    following an ST-terminated reply (xterm.js answers OSC color queries
-    with ST), freezing all input for full-screen TUIs such as kimi until a
-    BEL happened to arrive (the resize channel) and flushed the backlog.
+    NOTE: mv_terminal_pty.py carries an identical copy of this class (the
+    two wrappers are standalone single files); keep them in sync.
     """
 
     def __init__(self):
@@ -84,105 +92,23 @@ class InputParser:
         """Consume bytes, return a list of events in input order."""
         self.buf += data
         events = []
-        text = bytearray()
-
-        def flush_text():
-            if text:
-                events.append(("text", bytes(text)))
-                text.clear()
-
-        i = 0
-        n = len(self.buf)
-        while i < n:
-            if self.buf[i] != _ESC:
-                text.append(self.buf[i])
-                i += 1
-                continue
-            if i + 1 >= n:
-                break  # lone ESC — wait for the next byte
-            second = self.buf[i + 1]
-            if second == ord(']') or second in (ord('P'), ord('_'), ord('^'), ord('X')):
-                # OSC / DCS / APC / PM / SOS: read until BEL or ST
-                end = self._find_string_end(i + 2, n)
-                if end is None:
-                    break  # incomplete sequence — wait for more data
-                seq = bytes(self.buf[i:end])
-                i = end
-                flush_text()
-                resize = self._match_resize(seq)
-                if resize is not None:
-                    events.append(("resize", resize))
-                else:
-                    events.append(("esc", seq))
-            elif second == ord('['):
-                # CSI: read until the final byte (0x40-0x7E)
-                j = i + 2
-                while j < n and not (0x40 <= self.buf[j] <= 0x7E):
-                    j += 1
-                if j >= n:
-                    break  # incomplete sequence
-                flush_text()
-                events.append(("esc", bytes(self.buf[i:j + 1])))
-                i = j + 1
-            elif second in (ord('('), ord(')'), ord('*'), ord('+')):
-                # Charset designation: 3 bytes total
-                if i + 2 >= n:
-                    break
-                flush_text()
-                events.append(("esc", bytes(self.buf[i:i + 3])))
-                i += 3
+        while len(self.buf) >= FRAME_HEADER_SIZE:
+            frame_type = self.buf[0]
+            length = int.from_bytes(self.buf[1:FRAME_HEADER_SIZE], "little")
+            end = FRAME_HEADER_SIZE + length
+            if len(self.buf) < end:
+                break  # incomplete frame — wait for the rest of the payload
+            payload = bytes(self.buf[FRAME_HEADER_SIZE:end])
+            del self.buf[:end]
+            if frame_type == FRAME_RESIZE:
+                try:
+                    cols, rows = payload.decode("ascii").split(";")
+                    events.append(("resize", (int(cols), int(rows))))
+                except (ValueError, UnicodeDecodeError):
+                    pass  # malformed control frame — drop it, keep the stream alive
             else:
-                # Two-byte escape (SS2/SS3, Alt+<key>, ...): forward verbatim
-                flush_text()
-                events.append(("esc", bytes(self.buf[i:i + 2])))
-                i += 2
-
-        del self.buf[:i]
-        flush_text()
+                events.append(("input", payload))
         return events
-
-    def _find_string_end(self, start, n):
-        """Return the index just past the terminator of a string sequence
-        (OSC/DCS/APC/PM/SOS) whose payload starts at `start`, or None when
-        the sequence is still incomplete. A stray ESC other than ST aborts
-        the string per ECMA-48; the bytes before it are emitted as the
-        aborted sequence so no byte is ever lost."""
-        j = start
-        while j < n:
-            c = self.buf[j]
-            if c == _BEL or c == _C1_ST:
-                return j + 1
-            if c == _ESC:
-                if j + 1 >= n:
-                    return None  # possible ST split across chunks
-                if self.buf[j + 1] == ord('\\'):
-                    return j + 2
-                return j  # aborted string; the new ESC starts a fresh sequence
-            j += 1
-        return None
-
-    def _match_resize(self, seq):
-        """Parse \\x1b]RESIZE;cols;rows<BEL|ST> into (cols, rows), else None."""
-        if not seq.startswith(RESIZE_PREFIX):
-            return None
-        body = seq[len(RESIZE_PREFIX):]
-        if body.endswith(b'\x07') or body.endswith(bytes([_C1_ST])):
-            body = body[:-1]
-        elif body.endswith(b'\x1b\\'):
-            body = body[:-2]
-        try:
-            cols, rows = body.decode('ascii').split(';')
-            return (int(cols), int(rows))
-        except (ValueError, UnicodeDecodeError):
-            return None
-
-    def flush(self):
-        """EOF on stdin: emit every remaining byte so nothing is lost."""
-        if not self.buf:
-            return []
-        rest = bytes(self.buf)
-        self.buf.clear()
-        return [("text", rest)]
 
 
 def main():
@@ -240,24 +166,22 @@ def main():
         output_thread = threading.Thread(target=read_output, daemon=True)
         output_thread.start()
 
-        parser = InputParser()
+        reader = FrameReader()
         pending_text = bytearray()
+        stdin_fd = sys.stdin.fileno()
 
         while running and pty.isalive():
             try:
-                data = sys.stdin.buffer.read(1)
+                # Blocks until at least one byte arrives; b"" means EOF.
+                data = os.read(stdin_fd, 65536)
                 if not data:
                     break
-                for kind, payload in parser.feed(data):
+                for kind, payload in reader.feed(data):
                     if kind == "resize":
                         try:
                             pty.set_size(payload[0], payload[1])
                         except Exception:
                             pass
-                    elif kind == "esc":
-                        # Escape sequences from xterm are 7-bit ASCII; latin-1
-                        # is a lossless byte->str mapping for the write() below.
-                        pty.write(payload.decode('latin-1'))
                     else:
                         pending_text.extend(payload)
 
@@ -276,13 +200,10 @@ def main():
             except Exception:
                 break
 
-        # stdin closed — flush any bytes still held by the parser
-        for kind, payload in parser.flush():
+        # stdin closed — flush any partial UTF-8 sequence still held
+        if pending_text:
             try:
-                if kind == "esc":
-                    pty.write(payload.decode('latin-1'))
-                else:
-                    pty.write(payload.decode('utf-8', errors='replace'))
+                pty.write(bytes(pending_text).decode('utf-8', errors='replace'))
             except Exception:
                 pass
 
