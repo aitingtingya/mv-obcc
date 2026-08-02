@@ -29,6 +29,7 @@ import {
   createSourceAssistProfile,
   normalizeSourceAssistExtension,
 } from "./source-assist/source-assist-settings";
+import { parseTexMathFormats } from "./source-assist/tex-math";
 import { externalFileAllowedExtensions } from "./external-file-opener";
 import { t } from "./i18n";
 import { normalizeExternalFileMirrorFolder } from "./external-file-mirror-path";
@@ -2304,6 +2305,28 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
         );
     }
 
+    if (profile.extension === "tex") {
+      this.renderTexMathCustomFormatsSetting(wrap, profile, idx);
+    }
+
+    if (profile.extension === "tex") {
+      new Setting(wrap)
+        .setName(t("在核心大纲中显示章节"))
+        .setDesc(
+          t("将 \\section、\\subsection 等章节命令显示为 Obsidian 核心大纲中的标题层级，允许在编辑器中按章节折叠，并按标题层级渲染章节标题（光标不在该行时隐藏命令外壳、按层级区分字号）。需要核心“大纲”插件开启，行为与 Markdown 标题一致。"),
+        )
+        .addToggle((toggle) =>
+          toggle
+            .setValue(profile.texOutlineEnabled)
+            .onChange(async (value) => {
+              const target = this.plugin.settings.sourceAssist.profiles[idx];
+              if (!target) return;
+              target.texOutlineEnabled = value;
+              await this.plugin.saveSourceAssistSettings();
+            }),
+        );
+    }
+
     this.renderSourceAssistSnippetsEditor(wrap, profile, idx);
     this.renderSourceAssistHotkeyIntro(wrap);
 
@@ -2479,6 +2502,42 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
         const target = this.plugin.settings.sourceAssist.profiles[idx];
         if (!target || target.snippets === value) return;
         target.snippets = value;
+        await this.plugin.saveSourceAssistSettings();
+      },
+    });
+    this.sourceAssistSnippetEditors.push(view);
+  }
+
+  private renderTexMathCustomFormatsSetting(
+    containerEl: HTMLElement,
+    profile: SourceAssistProfile,
+    idx: number,
+  ): void {
+    const setting = new Setting(containerEl)
+      .setName(t("自定义数学环境（行内 / 行间）"))
+      .setDesc(
+        t("格式与 snippets 面板一致，每项为 { 开头, 结尾, 设置 }；设置填 n=行内、j=行间、nl=行内环境、jl=行间环境。"),
+      )
+      .setClass("mv-senceai-source-assist-snippets-setting");
+    setting.controlEl.empty();
+
+    const editorWrap = setting.settingEl.createDiv({
+      cls: "mv-senceai-snippets-editor-wrapper",
+    });
+    const footer = setting.settingEl.createDiv({
+      cls: "mv-senceai-snippets-footer",
+    });
+    const view = createSourceAssistSnippetsEditor({
+      containerEl: editorWrap,
+      footerEl: footer,
+      initialValue: profile.texMathFormats,
+      validate: async (value) => {
+        await parseTexMathFormats(value);
+      },
+      onValidChange: async (value) => {
+        const target = this.plugin.settings.sourceAssist.profiles[idx];
+        if (!target || target.texMathFormats === value) return;
+        target.texMathFormats = value;
         await this.plugin.saveSourceAssistSettings();
       },
     });

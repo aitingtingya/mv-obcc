@@ -801,7 +801,7 @@
 	text-decoration: line-through;
 }
 
-/* Keep these scoped xterm.js decoration rules in sync with node_modules/xterm/css/xterm.css.
+/* Keep these scoped xterm.js decoration rules in sync with node_modules/@xterm/xterm/css/xterm.css.
    The terminal DOM renderer draws selection as a z-index: 1 overlay and lifts selected text
    with .xterm-decoration-top; removing these rules makes selection cover the text. */
 .vault-terminal-host .xterm-screen .xterm-decoration-container .xterm-decoration {

@@ -7,12 +7,22 @@ import {
 import { editorInfoField } from "obsidian";
 import type MvSenceAiIdePlugin from "../../main";
 import type { SourceAssistSettings } from "../types";
+import {
+  EMPTY_TEX_MATH_CUSTOM_CONFIG,
+  parseTexMathFormats,
+  texMathAnalysisExtension,
+  type TexMathCustomConfig,
+} from "./tex-math";
+import { texMathLatexSuiteBridgeExtension } from "./tex-math-latex-suite-bridge";
 import { texDisplayMathPreviewExtension } from "./tex-math-preview";
 import {
   buildLatexSuiteProfileRuntime,
   type LatexSuiteProfileRuntime,
 } from "./latex-suite-blackbox";
-import { sourceAssistTexEnhancedRenderEnabled } from "./source-assist-settings";
+import {
+  EMPTY_LATEX_SUITE_SNIPPETS,
+  sourceAssistTexEnhancedRenderEnabled,
+} from "./source-assist-settings";
 
 export class SourceAssistFeature {
   readonly extensions: Extension[] = [];
@@ -35,24 +45,52 @@ export class SourceAssistFeature {
       this.plugin.settings.sourceAssist,
     );
     if (generation !== this.rebuildGeneration) return;
-    const next = this.sourceAssistExtensions(runtime);
+    const mathConfig = await this.texMathConfig();
+    if (generation !== this.rebuildGeneration) return;
+    const next = this.sourceAssistExtensions(runtime, mathConfig);
     this.extensions.splice(0, this.extensions.length, ...next);
     this.plugin.app.workspace.updateOptions();
   }
 
-  private sourceAssistExtensions(runtime: LatexSuiteProfileRuntime): Extension[] {
+  private async texMathConfig(): Promise<TexMathCustomConfig> {
+    const texProfile = this.plugin.settings.sourceAssist.profiles.find(
+      (profile) => profile.extension === "tex",
+    );
+    const text = texProfile?.texMathFormats ?? EMPTY_LATEX_SUITE_SNIPPETS;
+    try {
+      return await parseTexMathFormats(text);
+    } catch {
+      return EMPTY_TEX_MATH_CUSTOM_CONFIG;
+    }
+  }
+
+  private sourceAssistExtensions(
+    runtime: LatexSuiteProfileRuntime,
+    mathConfig: TexMathCustomConfig,
+  ): Extension[] {
     if (!this.plugin.settings.sourceAssist.enabled) return [];
+    const extensionsByFileExtension = {
+      ...runtime.extensionsByFileExtension,
+    };
+    const texExtensions = extensionsByFileExtension.tex;
+    if (texExtensions !== undefined) {
+      extensionsByFileExtension.tex = [
+        texMathAnalysisExtension(mathConfig),
+        texMathLatexSuiteBridgeExtension(),
+        ...texExtensions,
+        ...(sourceAssistTexEnhancedRenderEnabled(
+          this.plugin.settings.sourceAssist,
+        )
+          ? [texDisplayMathPreviewExtension()]
+          : []),
+      ];
+    }
     const profileCompartment = new Compartment();
     return [
       profileCompartment.of([]),
-      sourceAssistProfileRouter(profileCompartment, runtime),
-      sourceAssistTexEnhancedRenderEnabled(this.plugin.settings.sourceAssist)
-        ? texDisplayMathPreviewExtension({
-            positionIsAbove:
-              this.plugin.settings.sourceAssist.mathPreviewPositionIsAbove,
-            cursor: this.plugin.settings.sourceAssist.mathPreviewCursor,
-          })
-        : [],
+      sourceAssistProfileRouter(profileCompartment, {
+        extensionsByFileExtension,
+      }),
     ];
   }
 }

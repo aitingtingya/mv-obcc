@@ -18,16 +18,16 @@ execution, math context, keymaps, tabstops, or parser semantics.
    `js-base64`, CodeMirror, and Lezer packages.
 5. Keep the esbuild external boundary aligned with upstream. CodeMirror and
    Lezer runtime packages used by Obsidian editor state should remain external.
-6. Reapply the documented Obsidian source-check compatibility patches below.
-   These patches must stay non-semantic: DOM/CSS/type/lint-boundary changes
-   only, never snippet execution behavior.
+6. Reapply the documented compatibility patches and the generic external math
+   region input below. The generic input changes only where math bounds come
+   from; snippet execution and replacement semantics remain upstream-owned.
 7. Update `tests/latex-suite-vendor-integrity.test.ts` to compare against the
    exact upstream tag directory and to list only the patched files below.
 
 ## Hard Boundaries
 
 - Do not edit files under `src/vendor/latex-suite/src` except for the
-  documented Obsidian source-check compatibility patches.
+  documented compatibility patches and generic external math region input.
 - Do not call or wrap `runSnippets`, `Context`, `mathBoundsPlugin`,
   `keyboardEventPlugin`, `handleUpdate`, `onInput`, `getKeymaps`,
   `latexSuiteConfig`, tabstop helpers, or snippet queue internals from Source
@@ -35,6 +35,10 @@ execution, math context, keymaps, tabstops, or parser semantics.
 - Source Assist may instantiate the upstream plugin host and pass settings data
   for the active profile. The rest of the snippet behavior must run inside the
   vendored Latex Suite implementation.
+- Source Assist may provide pre-analyzed math bounds through
+  `externalMathRegionsFacet`. Latex Suite must consume those bounds as the
+  highest-priority source for math mode, snippets, brackets, and tooltips; it
+  must not import Source Assist or parse three-part format settings itself.
 - TeX preview enhancements are separate from Latex Suite snippets and must be
   fail-closed: preview failure must never stop a file from opening.
 - TeX preview enhancements must stay lazy. The initial Markdown editor
@@ -44,6 +48,23 @@ execution, math context, keymaps, tabstops, or parser semantics.
   must retry briefly until the extension is stable. Any activation failure must
   disable preview for that editor session.
 
+## Generic External Math Region Input
+
+These semantic integration points are intentionally narrow and must be
+reapplied after replacing the vendored source:
+
+- `utils/context.ts`: define `externalMathRegionsFacet`, query it before syntax
+  tree math bounds, and merge it with non-overlapping native bounds. External
+  regions are authoritative; Latex Suite continues to own all context and
+  snippet behavior after receiving their boundaries and mode.
+- `editor_extensions/math_tooltip.ts`: initialize tooltip state when a dynamic
+  editor profile is installed while the cursor is already inside an external
+  math region. Tooltip rendering itself remains the upstream implementation.
+
+The facet is generic. It contains only boundaries, inline/display mode, preview
+source, and preview source offset. Vendor code must not import
+`source-assist/tex-math` or read `n/j/nl/jl` settings.
+
 ## Obsidian Source-Check Compatibility Patches
 
 These files are allowed to differ from upstream, and no other vendor file
@@ -51,6 +72,7 @@ should differ:
 
 - `features/run_snippets.ts`: build the debug Notice with DOM APIs instead of
   assigning `innerHTML`.
+- `settings/settings.ts`: keep the current Obsidian type compatibility update.
 - `settings/settings_tab.ts`: use a CSS class instead of direct style
   assignment, and build trigger help text with DOM APIs.
 - `settings/ui/suggest.ts`: replace explicit `any` casts with a local

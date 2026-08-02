@@ -65,6 +65,7 @@ import {
 import { migrateLlm } from "./src/llm-migrate";
 import { migrateInlineCompletion } from "./src/inline-completion/inline-completion-migrate";
 import { SourceAssistFeature } from "./src/source-assist/source-assist-feature";
+import { TexOutlineFeature } from "./src/source-assist/tex-outline-feature";
 import {
   CUSTOM_MARKDOWN_PLAIN_VISUALS_CLASS,
   customMarkdownPlainVisualsEnabled,
@@ -390,6 +391,7 @@ export default class MvSenceAiIdePlugin extends Plugin {
   private llmFeature: LlmFeature | null = null;
   private inlineCompletion: InlineCompletionFeature | null = null;
   private sourceAssist: SourceAssistFeature | null = null;
+  private texOutline: TexOutlineFeature | null = null;
   private externalFileOpener: ExternalFileOpenerFeature | null = null;
   private readonly externalFileOpenerSystem = new ExternalFileOpenerSystem();
   private externalFileFallbackDecision:
@@ -606,6 +608,12 @@ export default class MvSenceAiIdePlugin extends Plugin {
     );
     await this.sourceAssist.load();
     this.registerEditorExtension(this.sourceAssist.extensions);
+    this.texOutline = new TexOutlineFeature(this.app, () =>
+      this.texOutlineFeatureEnabled(),
+    );
+    this.register(() => this.texOutline?.dispose());
+    this.registerEditorExtension(this.texOutline.editorExtension());
+    this.texOutline.activate();
     this.registerEditorExtension(this.customMarkdownPlainVisualsExtension());
     this.registerEditorExtension(this.customMarkdownHighlightThemeExtension());
     this.registerEditorExtension(this.customMarkdownHighlightExtension());
@@ -761,6 +769,20 @@ export default class MvSenceAiIdePlugin extends Plugin {
     await this.saveData(this.settings);
     this.syncCustomMarkdownExtensions();
     await this.sourceAssist?.settingsChanged();
+    await this.texOutline?.settingsChanged();
+  }
+
+  private texOutlineFeatureEnabled(): boolean {
+    const settings = this.settings.sourceAssist;
+    return (
+      settings.enabled &&
+      settings.profiles.some(
+        (profile) =>
+          profile.extension === "tex" &&
+          profile.enabled &&
+          profile.texOutlineEnabled,
+      )
+    );
   }
 
   private registerStaticCommands(): void {

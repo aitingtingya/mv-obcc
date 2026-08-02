@@ -1,5 +1,5 @@
 import { ItemView, WorkspaceLeaf, TFile, Menu, Platform } from "obsidian";
-import { Terminal } from "xterm";
+import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import * as os from "os";
 import * as fs from "fs";
@@ -134,7 +134,11 @@ export class TerminalView extends ItemView {
       theme: resolvedTheme.palette,
       minimumContrastRatio: resolvedTheme.minimumContrastRatio,
       scrollback: 10000,
-      macOptionIsMeta: false
+      macOptionIsMeta: false,
+      // CJK glyphs come from a fallback font whose metrics don't match the
+      // measured monospace cell; without rescaling they overflow and paint
+      // over the following characters.
+      rescaleOverlappingGlyphs: true
     });
 
     this.fitAddon = new FitAddon();
@@ -143,6 +147,16 @@ export class TerminalView extends ItemView {
 
     this.term.parser?.registerCsiHandler({ final: "I" }, () => true);
     this.term.parser?.registerCsiHandler({ final: "O" }, () => true);
+
+    // 视口位置是钉住状态的唯一真相（stick-to-bottom）：任何来源的滚动
+    // （wheel/触控板/刻度轮/滚动条拖拽/键盘翻页）都实时重判——滚离底部
+    // 立即停止一切程序化滚动，滚回底部当场恢复跟随。我们自己的
+    // scrollToBottom 只在已钉住时执行且落点必为底部，其触发的 onScroll
+    // 只是把 true 再确认一遍，因此无需区分程序化滚动与用户滚动。
+    // 监听器随 onClose 的 term.dispose() 一并销毁，无需额外清理。
+    this.term.onScroll(() => {
+      this.followPinned = this.isAtBottom();
+    });
 
     // Single key pipeline on the window capture phase: it runs before both
     // Obsidian's hotkey system and xterm's own textarea handler, so a focused
@@ -154,8 +168,13 @@ export class TerminalView extends ItemView {
       { capture: true },
     );
 
-    // 滚轮/触控板滚动是用户翻历史的主要途径，滚动结束后重新采样钉住状态。
-    this.registerDomEvent(this.termHost, "wheel", () => this.scheduleFollowSync(), {
+    // 滚轮/触控板滚动是用户翻历史的主要途径。输入事件先于 xterm 应用
+    // 滚动、更先于异步的 scroll 事件：在此同步解钉，封死手势期间 write
+    // 回调唯一可能拉底的窗口。不看方向——钉住状态由 onScroll 按视口
+    // 实际位置实时重判（见上方注册处）。
+    this.registerDomEvent(this.termHost, "wheel", () => {
+      this.followPinned = false;
+    }, {
       passive: true,
     });
 
@@ -284,11 +303,11 @@ export class TerminalView extends ItemView {
       applicationCursorKeys: term.modes.applicationCursorKeysMode,
     });
     if (encoded === null) {
-      // Shift+PageUp/Down 走 xterm 默认的滚动缓冲翻页（见 terminal-keys.ts），
-      // 翻页结束后重新采样钉住状态。
+      // Shift+PageUp/Down 走 xterm 默认的滚动缓冲翻页（见 terminal-keys.ts）。
+      // 与 wheel 同理：同步解钉，钉住状态交给 onScroll 按视口位置实时重判。
       if (event.shiftKey && !event.ctrlKey && !event.altKey &&
           (event.key === "PageUp" || event.key === "PageDown")) {
-        this.scheduleFollowSync();
+        this.followPinned = false;
       }
       return;
     }
@@ -510,13 +529,6 @@ export class TerminalView extends ItemView {
     const buffer = this.term?.buffer.active;
     // 1 行容差吸收平滑滚动带来的小数位置。
     return !!buffer && buffer.viewportY >= buffer.baseY - 1;
-  }
-
-  private scheduleFollowSync(): void {
-    // 等 xterm 处理完本次滚动输入再采样，否则读到的还是滚动前的位置。
-    setTimeout(() => {
-      this.followPinned = this.isAtBottom();
-    }, 0);
   }
 
   private fit() {

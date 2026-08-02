@@ -7,7 +7,7 @@ The production bundle includes portions of the following MIT-licensed packages:
 - reduced source-highlight palettes derived from PrismJS / Prism themes CSS
 - `valibot`
 - `ws`
-- `xterm` / `@xterm/addon-fit` terminal runtime and scoped terminal CSS rules
+- `@xterm/xterm` / `@xterm/addon-fit` terminal runtime and scoped terminal CSS rules
 
 Obsidian, `@codemirror/state`, and `@codemirror/view` are runtime externals and
 are not bundled into `main.js`.
@@ -32,4 +32,4 @@ The integrated terminal uses MIT-licensed xterm.js packages and scoped copies
 of the official xterm CSS layer rules:
 
 - xterm.js, Source: <https://github.com/xtermjs/xterm.js>
-- Packages: `xterm`, `@xterm/addon-fit`
+- Packages: `@xterm/xterm`, `@xterm/addon-fit`

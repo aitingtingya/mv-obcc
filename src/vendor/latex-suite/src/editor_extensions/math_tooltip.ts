@@ -1,4 +1,4 @@
-import { Tooltip, showTooltip, EditorView, ViewUpdate } from "@codemirror/view";
+import { Tooltip, showTooltip, EditorView, ViewPlugin, ViewUpdate } from "@codemirror/view";
 import { StateField, EditorState, EditorSelection, StateEffect } from "@codemirror/state";
 import { renderMath, finishRenderMath, editorLivePreviewField } from "obsidian";
 import { Bounds, Context, getContextPlugin } from "src/utils/context";
@@ -12,6 +12,26 @@ type MathTooltip = {
 	tooltip: Tooltip,
 }
 const updateTooltipEffect = StateEffect.define<MathTooltip[]>();
+const refreshMathTooltipEffect = StateEffect.define<null>();
+
+export const mathTooltipBootstrapPlugin = ViewPlugin.fromClass(
+	class {
+		private destroyed = false;
+
+		constructor(private readonly view: EditorView) {
+			queueMicrotask(() => {
+				if (this.destroyed) return;
+				this.view.dispatch({
+					effects: refreshMathTooltipEffect.of(null),
+				});
+			});
+		}
+
+		destroy() {
+			this.destroyed = true;
+		}
+	},
+);
 
 export const cursorTooltipField = StateField.define<readonly MathTooltip[]>({
 	create: () => [],
@@ -24,7 +44,10 @@ export const cursorTooltipField = StateField.define<readonly MathTooltip[]>({
 		return tooltips;
 	},
 
-	provide: (f) => showTooltip.computeN([f], (state) => state.field(f).map(t=> t.tooltip)),
+	provide: (f) => [
+		showTooltip.computeN([f], (state) => state.field(f).map(t=> t.tooltip)),
+		mathTooltipBootstrapPlugin.extension,
+	],
 });
 	
 const findMatchingBrackets = (text: string, cursorPos: number, openBracket: string, closeBracket: string): {left: number, right: number} => {
@@ -49,7 +72,14 @@ const findMatchingBrackets = (text: string, cursorPos: number, openBracket: stri
 
 // update the tooltip by dispatching an updateTooltipEffect
 export function handleMathTooltip(update: ViewUpdate) {
-	const shouldUpdate = update.docChanged || update.selectionSet;
+	const shouldUpdate =
+		update.docChanged ||
+		update.selectionSet ||
+		update.transactions.some((transaction) =>
+			transaction.effects.some((effect) =>
+				effect.is(refreshMathTooltipEffect),
+			),
+		);
 	if (!shouldUpdate) return;
 	const settings = getLatexSuiteConfig(update.state);
 	
@@ -75,7 +105,10 @@ export function handleMathTooltip(update: ViewUpdate) {
 	* process when there is a need to show the tooltip: from here
 	*/
 
-	const eqn = update.state.sliceDoc(eqnBounds.inner_start, eqnBounds.inner_end);
+	const eqnSourceStart = eqnBounds.preview_source_start ?? eqnBounds.inner_start;
+	const eqn =
+		eqnBounds.preview_source ??
+		update.state.sliceDoc(eqnBounds.inner_start, eqnBounds.inner_end);
 	const pos = ctx.pos;
 
 	const tree = syntaxTree(update.state);
@@ -87,7 +120,7 @@ export function handleMathTooltip(update: ViewUpdate) {
 	} else {
 		normalizedPos = pos
 	}
-	const eqnPos = normalizedPos - eqnBounds.inner_start;
+	const eqnPos = normalizedPos - eqnSourceStart;
 
 	let eqnWithDecorations: string;
 	// skip \{\} as thats not an argument to a macro
@@ -220,8 +253,10 @@ function shouldShowTooltip(state: EditorState, ctx: Context): Bounds | null {
 	if (!eqnBounds) return null;
 
 	// Don't render an empty equation
-	const eqn = state.sliceDoc(eqnBounds.inner_start, eqnBounds.inner_end).trim();
-	if (eqn === "") return null;
+	const eqn =
+		eqnBounds.preview_source ??
+		state.sliceDoc(eqnBounds.inner_start, eqnBounds.inner_end);
+	if (eqn.trim() === "") return null;
 
 	return eqnBounds;
 }
