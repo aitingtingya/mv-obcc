@@ -178,6 +178,13 @@ export const DEFAULT_SETTINGS = {
     highlightThemeId: "builtin:obsidian",
     customHighlightThemes: [],
   },
+  sourceLint: {
+    profiles: [],
+    fileOverrides: {},
+  },
+  mvRun: {
+    profiles: [],
+  },
   externalFileOpener: {
     enabled: false,
     extensionMode: "markdown-only" as const,

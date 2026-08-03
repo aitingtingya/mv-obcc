@@ -269,6 +269,11 @@ export class TerminalView extends ItemView {
     });
   }
 
+  /** 向 PTY 发送原始输入（文件底部指令等外部触发用）。 */
+  sendInput(text: string): void {
+    this.writeTerminalFrame(TERMINAL_FRAME_INPUT, text);
+  }
+
   private writeTerminalFrame(type: number, payload: string): void {
     const proc = this.proc;
     if (!proc?.stdin || proc.killed) return;
