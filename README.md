@@ -12,8 +12,8 @@
 1. **IDE 桥接**：向 Claude Code、Codex CLI 与通用 MCP Agent 提供 Obsidian 上下文（当前标签、选区、打开的文件），暴露 8 个 IDE 工具，支持 Diff 审核。
 2. **划词助手**：在 Markdown / PDF / Web Viewer 中划词，用自定义提示词模板流式调用 LLM，结果输出到可拖拽、可固定的悬浮窗。
 3. **行内补全**：Markdown 编辑器内的 ghost text 续写，支持接受、取消与拒绝后重生成。
-4. **终端**：在 Obsidian 内拉起全功能系统终端（macOS/Linux PTY、Windows ConPTY），支持主题、自定义字体与文件路径联动。
-5. **源码编写辅助**：把 `.tex` 等非 md 后缀注册为 Markdown view，按后缀配置 latex-suite 风格 Snippets、源码高亮与可选 TeX 增强渲染。
+4. **终端**：在 Obsidian 内拉起全功能系统终端（macOS/Linux PTY、Windows ConPTY），支持主题、自定义字体、文件路径联动与运行文件底部注释指令（mv-run）。
+5. **源码编写辅助**：把 `.tex` 等非 md 后缀注册为 Markdown view，按后缀配置 latex-suite 风格 Snippets、源码高亮、可扩展代码 Lint 诊断与可选 TeX 增强渲染。
 6. **默认文件打开器**：把 `.md` 及源码后缀注册为系统默认打开方式，库外文件经镜像目录在指定 vault 中打开。
 
 另内置多提供商的 **API 提供商** 管理（划词助手与行内补全共用，见下文专节）。
@@ -128,6 +128,7 @@ pattern = "Write(F:/path/to/vault/**)"
 - **字体与字号**：**自定义终端字体 (Font Family)**（可填 Nerd Font 如 `MesloLGS NF`，解决图标/分隔线乱码；留空默认 `Menlo, Monaco, monospace`）、**终端字号 (Font Size)**（默认 13px）、**终端按键直通 (Key passthrough)**（终端聚焦时把 Ctrl/Alt/F 键/方向键组合直接发给终端程序，不再触发 Obsidian 快捷键）。
 - **Python 与依赖**：**Python 可执行文件路径**（留空则在 PATH 中自动寻找）；Windows 下 **Windows 依赖管理 (pywinpty)** 提供 **检测依赖** 与 **更新依赖** 按钮。
 - **终端主题**：跟随 Obsidian / 浅色 / 深色 / 自定义；自定义主题从内置浅色或深色色板复制创建，只保存结构化颜色数据（不执行 CSS/JS），可 **恢复默认配色**。
+- **运行文件底部指令 (mv-run)**：在源码编写辅助的各 profile 中配置指令注释前缀（如 Python 填 `#;#:`，Markdown 填 `<!--`，TeX 填 `%`，JS 填 `//`）。在笔记或源码文件底部书写带 `mv-run: <命令>` 的注释行（如 `# mv-run: python script.py` 或 `<!-- mv-run: npm run test -->`），在命令面板运行「运行文件底部指令」即可将指令自动提取并顺序送入激活终端执行。
 - 终端内双击或 Ctrl+点击文件路径，可直接在编辑器中定位对应笔记。
 
 ### 5. 源码编写辅助
@@ -135,6 +136,7 @@ pattern = "Write(F:/path/to/vault/**)"
 - **启用源码编写辅助**：按后缀管理源码类型 profile（默认带固定的 `Markdown (.md)` profile）。**添加新源码类型**（如 `.tex`、`.bib`、`.m`）后，该后缀自动注册为 Markdown view，并出现在左侧功能区与命令面板的「新建非 MD 源码文件」中。
 - 每个 profile 提供：**启用该后缀的 snippets 替换**（关闭只停用该 profile 的 snippets、tabstop 与预览 runtime，不取消后缀注册、不影响高亮）与 **源码高亮主题**（内置主题 + 已载入的自定义主题）。
 - **Snippets**：latex-suite 风格内核；填写格式与 Latex Suite 的 snippets 设置一致，可直接粘贴原 snippets 数组，行首 `//` 按 JS 注释处理。**手动触发按键**（默认 Tab）、**下一 tabstop**、**上一 tabstop** 可下拉选择或 **录制**。内核内置行为：IME 输入抑制与 snippet 去空白默认开启，调试输出默认关闭。
+- **Lint 命令与 Lint 常驻**：按 profile 配置外部检查命令（如 Python 配置 `ruff check --output-format=concise {file}`，TeX 配置 `chktex -f%f -v0 {file}`）。支持 `{file}` 占位符。命令输出只要符合 `文件:行:列: 消息` 规则即可在编辑器中自动标注错误波浪线与诊断问题。开启「Lint 常驻」可在文件打开及编辑停顿后自动更新 diagnostics，亦可通过命令面板运行「Lint 当前文件」手动检查。**注意：用户需提前在电脑上手动安装对应的外部 Lint CLI 工具（如 chktex, ruff, eslint 等），并确保可在系统 PATH 中运行。**
 - `.tex` profile 额外提供 **打开 TeX 增强渲染**（实验功能，默认关闭）：用插件自定义 Live Preview 扩展渲染 `\(...\)`、`\[...\]` 和常见数学环境（公式预览显示在公式上方，带 `▶` 光标指示）；要求该 profile 的 snippets 替换开关处于开启状态，否则不会加载。
 - **自定义代码高亮主题**：从本地 `.css` / `.json` 文件 **载入自定义代码高亮主题**，支持 Prism CSS、highlight.js CSS、VS Code / Shiki / TextMate JSON 与 mv-AIDE JSON（可自动检测格式）；非 Prism 格式会转换为近似效果，不能完全还原。
 - **兼容性提醒**：若某后缀已由 Obsidian 或其它插件注册为其它 view，本插件会尝试解除原注册并改为 Markdown view，可能影响其它插件对同后缀文件的打开方式；TeX 增强渲染也可能影响光标移动、折叠或其它编辑器插件兼容性，建议按需开启。

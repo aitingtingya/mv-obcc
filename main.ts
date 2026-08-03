@@ -64,6 +64,10 @@ import {
 } from "./src/lock-file";
 import { migrateLlm } from "./src/llm-migrate";
 import { migrateInlineCompletion } from "./src/inline-completion/inline-completion-migrate";
+import { LintFeature } from "./src/lint/lint-feature";
+import { normalizeLintSettings } from "./src/lint/lint-types";
+import { runFileBottomCommand } from "./src/terminal/file-bottom-command";
+import { normalizeMvRunSettings } from "./src/terminal/mv-run-types";
 import { SourceAssistFeature } from "./src/source-assist/source-assist-feature";
 import { TexOutlineFeature } from "./src/source-assist/tex-outline-feature";
 import {
@@ -391,6 +395,7 @@ export default class MvSenceAiIdePlugin extends Plugin {
   private llmFeature: LlmFeature | null = null;
   private inlineCompletion: InlineCompletionFeature | null = null;
   private sourceAssist: SourceAssistFeature | null = null;
+  private lintFeature: LintFeature | null = null;
   private texOutline: TexOutlineFeature | null = null;
   private externalFileOpener: ExternalFileOpenerFeature | null = null;
   private readonly externalFileOpenerSystem = new ExternalFileOpenerSystem();
@@ -466,6 +471,8 @@ export default class MvSenceAiIdePlugin extends Plugin {
       llm: migrateLlm(loaded.llm),
       inlineCompletion: migrateInlineCompletion(loaded.inlineCompletion),
       sourceAssist: normalizeSourceAssistSettings(loaded.sourceAssist),
+      sourceLint: normalizeLintSettings(loaded.sourceLint),
+      mvRun: normalizeMvRunSettings(loaded.mvRun),
       externalFileOpener: {
         ...DEFAULT_SETTINGS.externalFileOpener,
         ...(loaded.externalFileOpener ?? {}),
@@ -608,6 +615,10 @@ export default class MvSenceAiIdePlugin extends Plugin {
     );
     await this.sourceAssist.load();
     this.registerEditorExtension(this.sourceAssist.extensions);
+    this.lintFeature = new LintFeature(this);
+    this.registerEditorExtension(this.lintFeature.extensions);
+    this.lintFeature.registerCommand();
+    this.lintFeature.registerHooks();
     this.texOutline = new TexOutlineFeature(this.app, () =>
       this.texOutlineFeatureEnabled(),
     );
@@ -701,7 +712,7 @@ export default class MvSenceAiIdePlugin extends Plugin {
     void this.finishUnload();
   }
 
-  async activateTerminalView() {
+  async activateTerminalView(): Promise<WorkspaceLeaf | null> {
     const { workspace } = this.app;
     const position = this.settings.terminalOpenPosition || "right";
     let leaf: any;
@@ -742,7 +753,9 @@ export default class MvSenceAiIdePlugin extends Plugin {
           view.focusTerminal();
         }
       }, 100);
+      return leaf;
     }
+    return null;
   }
 
   refreshTerminalThemes(): void {
@@ -818,6 +831,13 @@ export default class MvSenceAiIdePlugin extends Plugin {
     this.registeredStaticCommandIds.add("open-system-terminal");
 
     this.addCommand({
+      id: "run-file-bottom-command",
+      name: t("运行 mv-run 指令"),
+      editorCallback: () => void runFileBottomCommand(this),
+    });
+    this.registeredStaticCommandIds.add("run-file-bottom-command");
+
+    this.addCommand({
       id: "new-custom-markdown-file",
       name: t("新建非 MD 源码文件"),
       callback: () => this.activateCustomMarkdownFileCreation(false),
@@ -875,6 +895,7 @@ export default class MvSenceAiIdePlugin extends Plugin {
     this.registeredCustomMarkdownCommandIds.clear();
     this.syncCustomMarkdownFileCommands();
     this.llmFeature?.registerCommands();
+    this.lintFeature?.registerCommand();
   }
 
   private refreshRibbonIcons(): void {

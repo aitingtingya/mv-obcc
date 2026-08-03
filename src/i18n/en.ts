@@ -790,4 +790,28 @@ export const en: Record<string, string> = {
   "用户 ~/.claude/settings.json": "User ~/.claude/settings.json",
   "Obsidian 进程环境变量": "Obsidian process environment",
   "未找到": "Not found",
+
+  // ── Lint 诊断命令 / Lint diagnostics ────────────────────────────────
+  "Lint 当前文件": "Lint current file",
+  "清除当前文件的 Lint 诊断": "Clear lint diagnostics for the current file",
+  "开启 lint 常驻": "Enable persistent lint",
+  "关闭 lint 常驻": "Disable persistent lint",
+  "Lint 常驻": "Persistent lint",
+  "当前 lint 已常驻，无法执行命令": "Persistent lint is active for this file; command unavailable",
+  "该类型源码文件打开即自动 Lint，编辑停顿后自动更新；可用命令对单个文件单独开启/关闭。": "Files of this type auto-lint on open and re-lint after you pause editing; use the commands to enable/disable per file.",
+  "Lint 命令": "Lint command",
+  "当前没有可 Lint 的 Markdown 视图": "No Markdown view available to lint",
+  "未配置该文件类型的 Lint 命令": "No Lint command configured for this file type",
+  "Lint 命令执行失败：{message}": "Lint command failed: {message}",
+  "留空则跳过该类型的 Lint。手动触发「Lint 当前文件」时执行。支持 {file} 占位符（当前文件路径，自动带引号）；无 {file} 时追加到命令末尾。输出需符合 文件:行:列: 消息（列号可省）。示例：chktex -f%f -v0 {file}；ruff check --output-format=concise {file}": "Leave empty to skip Lint for this type. Runs when you trigger “Lint current file”. Supports the {file} placeholder (current file path, quoted automatically); if absent, the path is appended to the command. Output should follow file:line:col: message (column optional). Examples: chktex -f%f -v0 {file}; ruff check --output-format=concise {file}",
+  "如 ruff check --output-format=concise {file}": "e.g. ruff check --output-format=concise {file}",
+
+  // ── 文件底部指令 / File bottom command ──────────────────────────────
+  "运行 mv-run 指令": "Run mv-run command",
+  "当前没有打开的 Markdown 视图": "No Markdown view is open",
+  "指令注释前缀": "Command comment prefix",
+  "未配置该文件类型的指令注释前缀": "No command comment prefix configured for this file type",
+  "未在文件中找到 mv-run 指令": "No mv-run instruction found in the file",
+  "用于「运行文件底部指令」：文件注释里的 mv-run: <命令> 行会发送到终端。填写该文件类型的注释前缀，多个用分号分隔（如 Python 填 #;#:，Markdown 填 <!--，TeX 填 %，JS 填 //）。留空则禁用该类型。": "Used by “Run file bottom command”: a `mv-run: <command>` line in a file comment is sent to the terminal. Enter the comment prefix(es) for this file type, separated by semicolons (e.g. Python `#;#:`, Markdown `<!--`, TeX `%`, JS `//`). Leave empty to disable this type.",
+  "如 #;#: 或 <!-- 或 %": "e.g. #;#: or <!-- or %",
 };

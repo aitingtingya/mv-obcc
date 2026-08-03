@@ -37,38 +37,21 @@ FRAME_RESIZE = 1
 FRAME_HEADER_SIZE = 5
 
 
-def read_utf8_char(buffer):
-    """Read a complete UTF-8 character from buffer, handling multi-byte sequences."""
-    if not buffer:
-        return None, buffer
+def frame_payload_to_text(payload: bytes) -> str:
+    """Decode a whole input frame for a single pty.write() call.
 
-    first_byte = buffer[0]
-
-    # Determine the number of bytes in this UTF-8 character
-    if first_byte < 0x80:
-        # ASCII (1 byte)
-        return buffer[0:1], buffer[1:]
-    elif first_byte < 0xC0:
-        # Invalid start byte (continuation byte)
-        return buffer[0:1], buffer[1:]
-    elif first_byte < 0xE0:
-        # 2-byte sequence
-        needed = 2
-    elif first_byte < 0xF0:
-        # 3-byte sequence (CJK characters fall here)
-        needed = 3
-    elif first_byte < 0xF8:
-        # 4-byte sequence
-        needed = 4
-    else:
-        # Invalid byte
-        return buffer[0:1], buffer[1:]
-
-    if len(buffer) >= needed:
-        return buffer[0:needed], buffer[needed:]
-    else:
-        # Not enough bytes yet, need more data
-        return None, buffer
+    ConPTY must receive an escape sequence (e.g. arrow keys "\\x1b[A") in a
+    single write. Writing it character-by-character splits the sequence across
+    writes: ConPTY flushes the lone ESC and forwards the remaining "[A" as
+    literal text, which shows up on screen as [A/[B/[C/[D
+    (microsoft/terminal#4037). Each frontend frame is a complete keystroke
+    encoding (a valid UTF-8 string), so decoding the whole frame and writing
+    it in one call is safe and gives ConPTY the full sequence at once.
+    """
+    try:
+        return payload.decode("utf-8")
+    except UnicodeDecodeError:
+        return payload.decode("latin-1")
 
 
 class FrameReader:
@@ -167,7 +150,6 @@ def main():
         output_thread.start()
 
         reader = FrameReader()
-        pending_text = bytearray()
         stdin_fd = sys.stdin.fileno()
 
         while running and pty.isalive():
@@ -183,29 +165,15 @@ def main():
                         except Exception:
                             pass
                     else:
-                        pending_text.extend(payload)
-
-                # pywinpty's write() takes str and encodes it as UTF-8, so
-                # input bytes are re-assembled into complete UTF-8 characters
-                # before writing (partials are held until they complete).
-                while pending_text:
-                    char_bytes, rest = read_utf8_char(bytes(pending_text))
-                    if char_bytes is None:
-                        break
-                    pending_text = bytearray(rest)
-                    try:
-                        pty.write(char_bytes.decode('utf-8'))
-                    except UnicodeDecodeError:
-                        pty.write(char_bytes.decode('latin-1'))
+                        # Write the whole frame in one call: ConPTY parses input
+                        # between writes, so splitting "\x1b[A" into separate
+                        # writes would flush the lone ESC and forward "[A" as
+                        # literal text (microsoft/terminal#4037). Each frame is
+                        # a complete keystroke, so one write always delivers a
+                        # complete escape sequence (see frame_payload_to_text).
+                        pty.write(frame_payload_to_text(payload))
             except Exception:
                 break
-
-        # stdin closed — flush any partial UTF-8 sequence still held
-        if pending_text:
-            try:
-                pty.write(bytes(pending_text).decode('utf-8', errors='replace'))
-            except Exception:
-                pass
 
         running = False
         sys.exit(0)

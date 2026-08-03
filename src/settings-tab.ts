@@ -32,6 +32,8 @@ import {
 import { parseTexMathFormats } from "./source-assist/tex-math";
 import { externalFileAllowedExtensions } from "./external-file-opener";
 import { t } from "./i18n";
+import { renderLintSetting } from "./lint/lint-settings-ui";
+import { renderMvRunSetting } from "./terminal/mv-run-settings-ui";
 import { normalizeExternalFileMirrorFolder } from "./external-file-mirror-path";
 import type {
   DefaultOpenerOperationResult,
@@ -2326,6 +2328,9 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
             }),
         );
     }
+
+    renderLintSetting(wrap, this.plugin, profile.extension);
+    renderMvRunSetting(wrap, this.plugin, profile.extension);
 
     this.renderSourceAssistSnippetsEditor(wrap, profile, idx);
     this.renderSourceAssistHotkeyIntro(wrap);

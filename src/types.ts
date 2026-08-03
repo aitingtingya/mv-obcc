@@ -1,4 +1,6 @@
 import type { ManagedCopyState } from "./managed-copy-fallback";
+import type { LintSettings } from "./lint/lint-types";
+import type { MvRunSettings } from "./terminal/mv-run-types";
 
 export type UpstreamMode = "native" | "compatibility";
 
@@ -319,6 +321,8 @@ export interface BridgeSettings {
   llm: LlmFeatureSettings;
   inlineCompletion: InlineCompletionSettings;
   sourceAssist: SourceAssistSettings;
+  sourceLint: LintSettings;
+  mvRun: MvRunSettings;
   externalFileOpener: ExternalFileOpenerSettings;
   mcpEnabled: boolean;
   mcpAuthToken: string;
