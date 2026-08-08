@@ -82,13 +82,8 @@ allowlist=(
   "package.json"
   "package-lock.json"
   "README.md"
-  "DEVELOPMENT-GUIDELINES.md"
-  "LATEX-SUITE-UPGRADE.md"
-  "RELEASE-PROCESS.md"
   "THIRD_PARTY_NOTICES.md"
   "LICENSE"
-  "TEST-REPORT.md"
-  "WINDOWS-VALIDATION.md"
   "versions.json"
 )
 
@@ -101,9 +96,10 @@ done
 
 cd "$CLEAN_ROOT"
 rm -rf tests vitest.config.ts node_modules dist release .obsidian .DS_Store
-# 清理嵌套目录里的本机产物，防止随 scripts/ 的整目录拷贝混入 GitHub 仓库。
+# 清理嵌套目录里的非生产文件与调试测试脚本，保证 GitHub 仓库 100% 纯净
 find "$CLEAN_ROOT" -type d -name "__pycache__" -prune -exec rm -rf {} +
 find "$CLEAN_ROOT" -type f \( -name "*.pyc" -o -name ".DS_Store" \) -delete
+rm -f "$CLEAN_ROOT/scripts/test-"*.mjs "$CLEAN_ROOT/scripts/live-ide-tools-check.mjs" "$CLEAN_ROOT/scripts/measure-repair-script-eval.mjs" "$CLEAN_ROOT/DEVELOPMENT-GUIDELINES.md" "$CLEAN_ROOT/LATEX-SUITE-UPGRADE.md" "$CLEAN_ROOT/RELEASE-PROCESS.md" "$CLEAN_ROOT/TEST-REPORT.md" "$CLEAN_ROOT/WINDOWS-VALIDATION.md"
 
 node <<'NODE'
 const fs = require("node:fs");
@@ -186,17 +182,12 @@ for item in \
   package.json \
   package-lock.json \
   README.md \
-  DEVELOPMENT-GUIDELINES.md \
-  LATEX-SUITE-UPGRADE.md \
-  RELEASE-PROCESS.md \
   THIRD_PARTY_NOTICES.md \
   LICENSE \
-  TEST-REPORT.md \
-  WINDOWS-VALIDATION.md \
   versions.json; do
   [[ -e "$item" ]] && stage_items+=("$item")
 done
-git add -- "${stage_items[@]}"
+git add -A -- "${stage_items[@]}"
 
 if git diff --cached --name-only | grep -E '^(node_modules|dist|release|tests|\.obsidian|vitest\.config\.ts)'; then
   echo "Forbidden development/test path staged. Abort." >&2

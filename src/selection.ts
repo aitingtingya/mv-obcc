@@ -47,6 +47,9 @@ export function selectionChangedParams(state: SelectionState): Record<string, un
     ...(state.resourceType ? { resourceType: state.resourceType } : {}),
     ...(state.url ? { url: state.url } : {}),
     ...(state.page !== undefined ? { page: state.page } : {}),
+    ...(state.headingBreadcrumb
+      ? { headingBreadcrumb: state.headingBreadcrumb }
+      : {}),
     selection: {
       start: state.selection.start,
       end: state.selection.isEmpty

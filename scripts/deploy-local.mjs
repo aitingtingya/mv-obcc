@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -15,6 +16,40 @@ const enabledPluginsPath = path.join(
   ".obsidian",
   "community-plugins.json",
 );
+
+function runningObsidianProcesses() {
+  try {
+    if (process.platform === "win32") {
+      const script = [
+        "$ErrorActionPreference='SilentlyContinue'",
+        "Get-Process -Name Obsidian | ForEach-Object {",
+        "  [Console]::WriteLine(('{0}|{1}' -f $_.Id, $_.StartTime.ToString('o')))",
+        "}",
+      ].join("; ");
+      const result = spawnSync(
+        "powershell.exe",
+        ["-NoProfile", "-NonInteractive", "-Command", script],
+        { encoding: "utf8", windowsHide: true },
+      );
+      if (result.status !== 0) return [];
+      return result.stdout
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter(Boolean);
+    }
+    const result = spawnSync("pgrep", ["-x", process.platform === "darwin" ? "Obsidian" : "obsidian"], {
+      encoding: "utf8",
+    });
+    if (result.status !== 0) return [];
+    return result.stdout
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((pid) => `${pid}|start-time-unavailable`);
+  } catch {
+    return [];
+  }
+}
 
 for (const duplicateId of duplicateIds) {
   const duplicate = path.join(pluginsRoot, duplicateId);
@@ -73,3 +108,13 @@ for (const [sourceName, destinationName] of files) {
 fs.rmSync(path.join(destination, "latex-suite-blackbox.cjs"), { force: true });
 
 console.log(`Deployed ${manifest.id} to ${destination}`);
+const running = runningObsidianProcesses();
+if (running.length > 0) {
+  console.warn(
+    "WARNING: Obsidian is still running; copied plugin files are not hot-reloaded.",
+  );
+  for (const processInfo of running) {
+    console.warn(`  Obsidian ${processInfo}`);
+  }
+  console.warn("Fully exit and restart Obsidian before manual validation.");
+}

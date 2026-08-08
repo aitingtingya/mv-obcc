@@ -7,15 +7,18 @@ import {
   FuzzySuggestModal,
   Keymap,
   loadPrism,
+  MarkdownView,
   Modal,
   Notice,
   Plugin,
   Setting,
+  TFile,
   type App,
   type PaneType,
   type TFolder,
   type WorkspaceLeaf,
 } from "obsidian";
+import { breadcrumbAtLine } from "./src/heading-breadcrumb";
 import { StateEffect, type EditorState } from "@codemirror/state";
 import {
   Decoration,
@@ -66,6 +69,11 @@ import { migrateLlm } from "./src/llm-migrate";
 import { migrateInlineCompletion } from "./src/inline-completion/inline-completion-migrate";
 import { LintFeature } from "./src/lint/lint-feature";
 import { normalizeLintSettings } from "./src/lint/lint-types";
+import { normalizeRegexReplaceSettings } from "./src/regex-replace/regex-replace-types";
+import { RegexReplaceFeature } from "./src/regex-replace/regex-replace-feature";
+import { BrowserHistoryButtonFeature } from "./src/browser-history-button";
+import { BrowserDownloadsButtonFeature } from "./src/browser-downloads-button";
+import { parseTexSections } from "./src/source-assist/tex-outline";
 import { runFileBottomCommand } from "./src/terminal/file-bottom-command";
 import { normalizeMvRunSettings } from "./src/terminal/mv-run-types";
 import { SourceAssistFeature } from "./src/source-assist/source-assist-feature";
@@ -396,6 +404,8 @@ export default class MvSenceAiIdePlugin extends Plugin {
   private inlineCompletion: InlineCompletionFeature | null = null;
   private sourceAssist: SourceAssistFeature | null = null;
   private lintFeature: LintFeature | null = null;
+  private lintPushSignature: string | null = null;
+  private regexReplace: RegexReplaceFeature | null = null;
   private texOutline: TexOutlineFeature | null = null;
   private externalFileOpener: ExternalFileOpenerFeature | null = null;
   private readonly externalFileOpenerSystem = new ExternalFileOpenerSystem();
@@ -444,6 +454,10 @@ export default class MvSenceAiIdePlugin extends Plugin {
     this.settings = normalizeTerminalThemeSettings({
       ...DEFAULT_SETTINGS,
       ...loaded,
+      // 旧版曾用该字段启用 UA/WebAuthn 登录补丁。该方案会制造矛盾的
+      // 浏览器指纹，现仅保留数据结构兼容；无论旧 data.json 为何值，
+      // 当前运行时都必须保持原生 Web Viewer 身份。
+      webviewStripElectronUa: false,
       activityTracking: {
         ...DEFAULT_SETTINGS.activityTracking,
         ...(loaded.activityTracking ?? {}),
@@ -472,6 +486,7 @@ export default class MvSenceAiIdePlugin extends Plugin {
       inlineCompletion: migrateInlineCompletion(loaded.inlineCompletion),
       sourceAssist: normalizeSourceAssistSettings(loaded.sourceAssist),
       sourceLint: normalizeLintSettings(loaded.sourceLint),
+      regexReplace: normalizeRegexReplaceSettings(loaded.regexReplace),
       mvRun: normalizeMvRunSettings(loaded.mvRun),
       externalFileOpener: {
         ...DEFAULT_SETTINGS.externalFileOpener,
@@ -556,6 +571,7 @@ export default class MvSenceAiIdePlugin extends Plugin {
       (context) => this.latestSelectionFor(context),
       () => this.latestWebLeaf,
       () => this.settings.toolContextLimits.readCurrentWebPage,
+      () => this.lintFeature?.diagnosticsSnapshot() ?? [],
     );
 
     this.codexIdeProvider = new CodexIdeProvider({
@@ -619,6 +635,12 @@ export default class MvSenceAiIdePlugin extends Plugin {
     this.registerEditorExtension(this.lintFeature.extensions);
     this.lintFeature.registerCommand();
     this.lintFeature.registerHooks();
+    this.register(() => this.lintFeature?.dispose());
+    this.regexReplace = new RegexReplaceFeature(this);
+    this.registerEditorExtension(this.regexReplace.extensions);
+    this.regexReplace.registerCommands();
+    new BrowserHistoryButtonFeature(this).register();
+    new BrowserDownloadsButtonFeature(this).register();
     this.texOutline = new TexOutlineFeature(this.app, () =>
       this.texOutlineFeatureEnabled(),
     );
@@ -833,7 +855,11 @@ export default class MvSenceAiIdePlugin extends Plugin {
     this.addCommand({
       id: "run-file-bottom-command",
       name: t("运行 mv-run 指令"),
-      editorCallback: () => void runFileBottomCommand(this),
+      editorCallback: (_editor, view) =>
+        void runFileBottomCommand(
+          this,
+          view instanceof MarkdownView ? view : undefined,
+        ),
     });
     this.registeredStaticCommandIds.add("run-file-bottom-command");
 
@@ -896,6 +922,7 @@ export default class MvSenceAiIdePlugin extends Plugin {
     this.syncCustomMarkdownFileCommands();
     this.llmFeature?.registerCommands();
     this.lintFeature?.registerCommand();
+    this.regexReplace?.registerCommands();
   }
 
   private refreshRibbonIcons(): void {
@@ -2245,6 +2272,78 @@ export default class MvSenceAiIdePlugin extends Plugin {
     }
   }
 
+  /** LintFeature 每次跑完/清除诊断后回调：按规则做错误计数的被动推送。 */
+  handleLintDiagnosticsChanged(_filePath: string): void {
+    // 被动推送只传错误、不传警告；只有 lint 实际跑过（或清除）才会走到这里，
+    // 未开启 lint 的类型天然不推。细节由 AI 用 getDiagnostics 工具主动拉。
+    if (!this.settings.activityTracking.pushLintErrors) return;
+    const server = this.universalMcpServer;
+    if (!server?.isRunning) return;
+    const summary = this.lintDiagnosticsSummary();
+    const signature = JSON.stringify(summary);
+    if (signature === this.lintPushSignature) return;
+    this.lintPushSignature = signature;
+    server.publishBridgeEvent("diagnostics_changed", summary);
+  }
+
+  private lintDiagnosticsSummary(): Array<{
+    filePath: string;
+    errorCount: number;
+    updatedAt: number;
+  }> {
+    return (this.lintFeature?.diagnosticsSnapshot() ?? [])
+      .map((entry) => ({
+        filePath: entry.filePath,
+        errorCount: entry.diagnostics.filter((d) => d.severity === "error")
+          .length,
+        updatedAt: entry.updatedAt,
+      }))
+      .sort((a, b) => a.filePath.localeCompare(b.filePath));
+  }
+
+  /** 给 markdown 快照（md/tex）附 heading 面包屑；其它类型不加字段。 */
+  private async attachHeadingBreadcrumb(
+    state: SelectionState | null,
+  ): Promise<void> {
+    if (!state) return;
+    if (state.resourceType !== "markdown") {
+      delete state.headingBreadcrumb;
+      return;
+    }
+    if (!this.settings.activityTracking.includeHeadingBreadcrumb) {
+      delete state.headingBreadcrumb;
+      return;
+    }
+    const file = this.app.vault.getAbstractFileByPath(state.relativePath);
+    if (!(file instanceof TFile)) return;
+    const extension = file.extension.toLowerCase();
+    let breadcrumb: string | null = null;
+    if (extension === "md") {
+      const headings =
+        this.app.metadataCache.getFileCache(file)?.headings ?? [];
+      breadcrumb = breadcrumbAtLine(
+        headings.map((h) => ({
+          heading: h.heading,
+          level: h.level,
+          line: h.position.start.line,
+        })),
+        state.cursor.line,
+      );
+    } else if (extension === "tex") {
+      const content = await this.app.vault.cachedRead(file);
+      breadcrumb = breadcrumbAtLine(
+        parseTexSections(content).map((s) => ({
+          heading: s.heading,
+          level: s.latexLevel,
+          line: s.line,
+        })),
+        state.cursor.line,
+      );
+    }
+    if (breadcrumb) state.headingBreadcrumb = breadcrumb;
+    else delete state.headingBreadcrumb;
+  }
+
   private codexRuntimeDir(): string {
     return path.join(
       getVaultRoot(this.app),
@@ -2411,6 +2510,7 @@ export default class MvSenceAiIdePlugin extends Plugin {
       (await currentWorkspaceContext(this.app, leaf)) ??
       currentSelection(this.app);
     if (generation !== this.broadcastGeneration) return;
+    if (activeState) await this.attachHeadingBreadcrumb(activeState);
     this.terminalTracker?.scan();
     if (
       leaf?.view.getViewType() === "webviewer" &&
@@ -2446,6 +2546,7 @@ export default class MvSenceAiIdePlugin extends Plugin {
       page: state.page,
       cursor: state.cursor,
       selection: state.selection,
+      headingBreadcrumb: state.headingBreadcrumb,
     });
     if (signature === this.previousBroadcasts.get(client.clientId)) return;
     this.previousBroadcasts.set(client.clientId, signature);
@@ -2483,6 +2584,7 @@ export default class MvSenceAiIdePlugin extends Plugin {
     const activeState =
       (await currentWorkspaceContext(this.app, leaf)) ??
       currentSelection(this.app);
+    if (activeState) await this.attachHeadingBreadcrumb(activeState);
     const current = this.resolveTrackedState(undefined, leaf, activeState);
     if (current) this.rememberState("global", current);
     return {

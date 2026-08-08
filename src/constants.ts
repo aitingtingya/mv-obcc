@@ -60,13 +60,23 @@ export const DEFAULT_SETTINGS = {
     trackMarkdown: true,
     trackPdf: true,
     trackWebview: true,
+    pushLintErrors: true,
+    includeHeadingBreadcrumb: true,
   },
   preserveSelectionHighlights: true,
+  webviewStripElectronUa: false,
   toolToggles: {
     getLatestSelection: true,
     getOpenEditors: true,
     openFile: true,
     readCurrentWebPage: false,
+    getDiagnostics: true,
+    getTerminalOutput: true,
+    searchVaultSymbols: true,
+    getBacklinks: true,
+    getOutgoingLinks: true,
+    searchTags: true,
+    listNotesByTag: true,
   },
   toolContextLimits: {
     readCurrentWebPage: null,
@@ -181,6 +191,10 @@ export const DEFAULT_SETTINGS = {
   sourceLint: {
     profiles: [],
     fileOverrides: {},
+  },
+  regexReplace: {
+    mdScope: "file" as const,
+    profiles: [],
   },
   mvRun: {
     profiles: [],

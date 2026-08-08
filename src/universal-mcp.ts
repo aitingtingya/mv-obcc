@@ -20,6 +20,7 @@ export const UNIVERSAL_MCP_RESOURCE_URIS = {
   openEditors: "obsidian://mv-aide/workspace/open-editors",
   latestSelection: "obsidian://mv-aide/workspace/latest-selection",
   latestMention: "obsidian://mv-aide/workspace/latest-mention",
+  diagnostics: "obsidian://mv-aide/workspace/diagnostics",
 } as const;
 
 export type UniversalMcpProtocolVersion =
@@ -87,6 +88,7 @@ export interface UniversalMcpServerOptions {
 export type UniversalBridgeEvent =
   | "selection_changed"
   | "at_mentioned"
+  | "diagnostics_changed"
   | "workspace_changed";
 
 type JsonRpcId = string | number | null;
@@ -227,6 +229,13 @@ const RESOURCE_DEFINITIONS: Array<{
     name: "latest-mention",
     title: "Latest explicit Obsidian mention",
     description: "The latest selection explicitly sent to an agent by the user.",
+  },
+  {
+    uri: UNIVERSAL_MCP_RESOURCE_URIS.diagnostics,
+    name: "workspace-diagnostics",
+    title: "Workspace lint diagnostics",
+    description:
+      "Per-file lint error counts pushed by the IDE bridge (errors only; populated only while the 'push lint error counts' setting is enabled).",
   },
 ];
 
@@ -596,6 +605,7 @@ export class UniversalMcpServer {
   private modernTasks = new Map<string, ModernTask>();
   private latestSelection: unknown;
   private latestMention: unknown = null;
+  private latestDiagnostics: unknown = null;
   private keepalive: NodeJS.Timeout | null = null;
 
   constructor(private readonly options: UniversalMcpServerOptions) {
@@ -755,6 +765,11 @@ export class UniversalMcpServer {
         UNIVERSAL_MCP_RESOURCE_URIS.context,
         UNIVERSAL_MCP_RESOURCE_URIS.latestMention,
       ]);
+      return;
+    }
+    if (event === "diagnostics_changed") {
+      this.latestDiagnostics = payload ?? null;
+      this.publishResourceUpdates([UNIVERSAL_MCP_RESOURCE_URIS.diagnostics]);
       return;
     }
     this.publishResourceUpdates([
@@ -1867,6 +1882,9 @@ export class UniversalMcpServer {
 
   private async readResource(uri: UniversalMcpResourceUri): Promise<unknown> {
     if (uri === UNIVERSAL_MCP_RESOURCE_URIS.latestMention) return this.latestMention;
+    if (uri === UNIVERSAL_MCP_RESOURCE_URIS.diagnostics) {
+      return this.latestDiagnostics ?? [];
+    }
     const snapshot = await Promise.resolve(this.options.capabilities.getContextSnapshot());
     if (uri === UNIVERSAL_MCP_RESOURCE_URIS.context) return snapshot;
     if (uri === UNIVERSAL_MCP_RESOURCE_URIS.openEditors) {

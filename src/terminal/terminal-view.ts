@@ -56,6 +56,20 @@ export class TerminalView extends ItemView {
     this.updateTheme(true);
   }
 
+  /** 读取终端缓冲区末尾若干行（供 MCP getTerminalOutput 工具）。 */
+  readTailLines(maxLines: number): string[] {
+    const buffer = this.term?.buffer.active;
+    if (!buffer) return [];
+    const total = buffer.length;
+    const start = Math.max(0, total - Math.max(1, Math.floor(maxLines)));
+    const lines: string[] = [];
+    for (let y = start; y < total; y++) {
+      lines.push(buffer.getLine(y)?.translateToString(true) ?? "");
+    }
+    while (lines.length > 0 && lines[lines.length - 1].trim() === "") lines.pop();
+    return lines;
+  }
+
   getViewType(): string {
     return TERMINAL_VIEW_TYPE;
   }

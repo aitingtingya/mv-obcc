@@ -42,6 +42,112 @@ const PUBLIC_TOOL_DEFINITIONS: ToolDefinition[] = [
       "Convert the complete currently loaded, rendered content of the most recently viewed, still-open Obsidian Web Viewer page into Markdown-compatible text without navigating or reloading it. This reads the whole loaded scrolling document, not only the visible viewport. Use this tool whenever the user wants the full webpage, its main content, or a page summary. getLatestSelection only returns selected text and cannot show the whole page.",
     inputSchema: { type: "object", properties: {}, additionalProperties: false },
   },
+  {
+    name: "getDiagnostics",
+    description:
+      "Return lint diagnostics collected by the MV AIDE lint feature. Filter by severity and optionally by file path.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        severity: {
+          type: "string",
+          enum: ["error", "warning", "all"],
+          description: "Which diagnostics to return. Defaults to error.",
+        },
+        filePath: {
+          type: "string",
+          description: "Optional vault-relative path suffix filter.",
+        },
+      },
+      additionalProperties: true,
+    },
+  },
+  {
+    name: "getTerminalOutput",
+    description:
+      "Read the trailing output lines of MV AIDE integrated terminal tabs.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        lastN: {
+          type: "number",
+          description: "Number of trailing lines per tab (1-500, default 50).",
+        },
+        tabName: {
+          type: "string",
+          description:
+            "Optional exact terminal tab filter: instance label like '系统终端 #1' (numbered in tab order) or the shared display name.",
+        },
+      },
+      additionalProperties: true,
+    },
+  },
+  {
+    name: "searchVaultSymbols",
+    description:
+      "Search headings (markdown and supported outlines) across the vault by substring.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        query: { type: "string" },
+        maxResults: {
+          type: "number",
+          description: "Maximum results (default 50, capped at 200).",
+        },
+      },
+      required: ["query"],
+      additionalProperties: true,
+    },
+  },
+  {
+    name: "getBacklinks",
+    description: "List vault files that link to the given file.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        filePath: { type: "string", description: "Vault-relative file path." },
+      },
+      required: ["filePath"],
+      additionalProperties: true,
+    },
+  },
+  {
+    name: "getOutgoingLinks",
+    description: "List vault files the given file links to.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        filePath: { type: "string", description: "Vault-relative file path." },
+      },
+      required: ["filePath"],
+      additionalProperties: true,
+    },
+  },
+  {
+    name: "searchTags",
+    description:
+      "Search tags used in the vault by substring (returns #tag, capped at 100).",
+    inputSchema: {
+      type: "object",
+      properties: {
+        query: { type: "string" },
+      },
+      required: ["query"],
+      additionalProperties: true,
+    },
+  },
+  {
+    name: "listNotesByTag",
+    description: "List vault files carrying the given tag.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        tag: { type: "string", description: "Tag with or without leading #." },
+      },
+      required: ["tag"],
+      additionalProperties: true,
+    },
+  },
 ];
 
 const INTERNAL_TOOL_DEFINITIONS: ToolDefinition[] = [
@@ -64,11 +170,6 @@ const INTERNAL_TOOL_DEFINITIONS: ToolDefinition[] = [
   {
     name: "closeAllDiffTabs",
     description: "Close all MV AIDE IDE diff tabs and reject pending diffs.",
-    inputSchema: { type: "object", properties: {}, additionalProperties: true },
-  },
-  {
-    name: "getDiagnostics",
-    description: "Return Obsidian diagnostics. Obsidian has no language diagnostics.",
     inputSchema: { type: "object", properties: {}, additionalProperties: true },
   },
   {

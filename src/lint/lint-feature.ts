@@ -12,14 +12,29 @@ import type MvSenceAiIdePlugin from "../../main";
 import { t } from "../i18n";
 import { lintCommandFor, lintPersistentFor } from "./lint-types";
 import { buildLintCommand, diagnosticRangeFor, parseLintOutput } from "./lint-parse";
+import type { ParsedLintDiagnostic } from "./lint-parse";
 
 const AUTO_LINT_DELAY_MS = 600;
+
+/** 单文件的 lint 诊断快照（供 MCP getDiagnostics 工具与被动推送读取）。 */
+export interface LintDiagnosticsFile {
+  filePath: string;
+  updatedAt: number;
+  diagnostics: ParsedLintDiagnostic[];
+}
 
 export class LintFeature {
   readonly extensions: Extension[];
   private readonly compartment = new Compartment();
   private autoLintTimer: number | null = null;
   private pendingAutoView: MarkdownView | null = null;
+  /** 布局就绪前不自动触发 lint（规范二：外部系统命令必须等 workspace 布局就绪）。 */
+  private layoutReady = false;
+  /** 诊断在 CM state 里，这里另存一份中央快照供桥接层读取。 */
+  private readonly diagnosticsByFile = new Map<
+    string,
+    { updatedAt: number; diagnostics: ParsedLintDiagnostic[] }
+  >();
 
   constructor(private readonly plugin: MvSenceAiIdePlugin) {
     this.extensions = [
@@ -63,15 +78,28 @@ export class LintFeature {
 
   /** 常驻自动触发：文件切换/打开时自动 lint。在 main.ts onload 调用一次。 */
   registerHooks(): void {
+    this.plugin.app.workspace.onLayoutReady(() => {
+      this.layoutReady = true;
+    });
     this.plugin.registerEvent(
       this.plugin.app.workspace.on("active-leaf-change", () => {
         const view = this.plugin.app.workspace.getActiveViewOfType(MarkdownView);
         if (!view) return;
         this.maybeAutoLintFor(
-          (view.editor as unknown as { cm: EditorView }).cm,
+          (view.editor as unknown as { cm?: EditorView }).cm,
         );
       }),
     );
+  }
+
+  /** 卸载清理：取消挂起的防抖定时器，避免卸载后仍派生子进程。 */
+  dispose(): void {
+    if (this.autoLintTimer !== null) {
+      activeWindow.clearTimeout(this.autoLintTimer);
+      this.autoLintTimer = null;
+    }
+    this.pendingAutoView = null;
+    this.diagnosticsByFile.clear();
   }
 
   /** 开启/关闭当前文件的 lint 常驻（持久化到设置）。 */
@@ -132,6 +160,19 @@ export class LintFeature {
     const cm = (view.editor as unknown as { cm: EditorView }).cm;
     if (isDestroyed(cm)) return;
     cm.dispatch(setDiagnostics(cm.state, []));
+    if (view.file) {
+      this.diagnosticsByFile.delete(view.file.path);
+      this.plugin.handleLintDiagnosticsChanged(view.file.path);
+    }
+  }
+
+  /** 全部已采集诊断的快照（每文件一份，含解析后的行/列/严重级/消息）。 */
+  diagnosticsSnapshot(): LintDiagnosticsFile[] {
+    return [...this.diagnosticsByFile.entries()].map(([filePath, entry]) => ({
+      filePath,
+      updatedAt: entry.updatedAt,
+      diagnostics: entry.diagnostics,
+    }));
   }
 
   private async runLint(view: MarkdownView): Promise<void> {
@@ -143,10 +184,14 @@ export class LintFeature {
       new Notice(t("未配置该文件类型的 Lint 命令"));
       return;
     }
-    const cm = (view.editor as unknown as { cm: EditorView }).cm;
-    if (isDestroyed(cm)) return;
+    const cm = (view.editor as unknown as { cm?: EditorView }).cm;
+    if (!cm || isDestroyed(cm)) return;
     const vaultRoot =
       (this.plugin.app.vault.adapter as any).getBasePath?.() ?? "";
+    if (!vaultRoot) {
+      new Notice(t("无法确定仓库根路径，Lint 未执行"));
+      return;
+    }
     const fullPath = path.join(vaultRoot, file.path);
 
     const { stdout, stderr, error } = await execCapture(
@@ -163,10 +208,15 @@ export class LintFeature {
     }
     if (isDestroyed(cm)) return;
 
+    const parsed = parseLintOutput(`${stdout}\n${stderr}`);
+    this.diagnosticsByFile.set(file.path, {
+      updatedAt: Date.now(),
+      diagnostics: parsed,
+    });
+    this.plugin.handleLintDiagnosticsChanged(file.path);
+
     const doc = cm.state.doc;
-    const diagnostics: Diagnostic[] = parseLintOutput(
-      `${stdout}\n${stderr}`,
-    ).map((d) => {
+    const diagnostics: Diagnostic[] = parsed.map((d) => {
       const line = doc.line(Math.min(Math.max(d.line, 1), doc.lines));
       const { from, to } = diagnosticRangeFor(line, d.col);
       return {
@@ -181,7 +231,8 @@ export class LintFeature {
   }
 
   /** 常驻触发入口：文件常驻则防抖自动 lint。 */
-  private maybeAutoLintFor(cm: EditorView): void {
+  private maybeAutoLintFor(cm: EditorView | undefined): void {
+    if (!cm || !this.layoutReady) return;
     const view = this.mdViewForCm(cm);
     if (!view?.file) return;
     if (
@@ -202,7 +253,7 @@ export class LintFeature {
       const pending = this.pendingAutoView;
       this.pendingAutoView = null;
       if (!pending?.file) return;
-      const cm = (pending.editor as unknown as { cm: EditorView }).cm;
+      const cm = (pending.editor as unknown as { cm?: EditorView }).cm;
       if (isDestroyed(cm)) return;
       void this.runLint(pending);
     }, AUTO_LINT_DELAY_MS);
@@ -247,6 +298,8 @@ function lintProfileRouter(
         this.updateQueued = true;
         queueMicrotask(() => {
           this.updateQueued = false;
+          // 微任务可能在视图销毁后执行，dispatch 已销毁的 EditorView 会抛错
+          if (isDestroyed(this.view)) return;
           const next = currentFileExtension(this.view);
           if (next === this.currentExtension) return;
           this.currentExtension = next;
@@ -284,8 +337,10 @@ function fileChanged(update: ViewUpdate): boolean {
   );
 }
 
-function isDestroyed(view: EditorView): boolean {
-  return (view as unknown as { destroyed?: boolean }).destroyed === true;
+function isDestroyed(view: EditorView | null | undefined): boolean {
+  return (
+    !view || (view as unknown as { destroyed?: boolean }).destroyed === true
+  );
 }
 
 function execCapture(

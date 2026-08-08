@@ -12,9 +12,11 @@ export interface ParsedLintDiagnostic {
 /** 按平台给路径做 shell 引号包裹，避免空格/中文/特殊字符破坏命令。 */
 export function shellQuotePath(p: string): string {
   if (process.platform === "win32") {
-    // cmd 会把双引号内的反斜杠当作转义引号前缀而吞掉（child_process.exec 走 cmd），
-    // 换成正斜杠让 Windows 路径在 shell 里安全、且被 cmd/ruff 原生接受。
-    return `"${p.replace(/\\/g, "/").replace(/"/g, '\\"')}"`;
+    // child_process.exec 在 Windows 走 cmd：双引号内的反斜杠可能被当转义引号
+    // 前缀吞掉，换成正斜杠后 cmd 与常见 CLI 都原生接受。注意 cmd 不做 \" 转义
+    // （且 Windows 文件名本就不允许 `"`，无需处理）；路径含 `%` 时 cmd 会尝试
+    // 环境变量展开，属已知限制。
+    return `"${p.replace(/\\/g, "/")}"`;
   }
   return `'${p.replace(/'/g, `'\\''`)}'`;
 }

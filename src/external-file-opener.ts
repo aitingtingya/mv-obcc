@@ -322,8 +322,13 @@ function focusElectronWindow(): boolean {
     currentWindow?.show?.();
     currentWindow?.focus?.();
     if (currentWindow?.show || currentWindow?.focus) focused = true;
-    electron?.remote?.app?.focus?.({ steal: true });
-    if (electron?.remote?.app?.focus) focused = true;
+    // Windows 上 app.focus 聚焦的是该进程"第一个窗口"：多仓库共用同一
+    // obsidian.exe 主进程时会把先开的仓库窗口弹到前台，盖掉上面已置前的
+    // 正确窗口；steal 选项又是 macOS-only。因此仅 macOS 调用。
+    if (process.platform === "darwin") {
+      electron?.remote?.app?.focus?.({ steal: true });
+      if (electron?.remote?.app?.focus) focused = true;
+    }
   } catch {
     // Electron focus is best effort; platform fallback may still work.
   }
