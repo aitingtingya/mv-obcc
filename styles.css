@@ -928,6 +928,16 @@
 	padding: 0 12px 12px;
 }
 
+.mv-senceai-ide-subsection {
+	margin: 8px 0;
+	border: 1px solid var(--background-modifier-border);
+	border-radius: 8px;
+}
+
+.mv-senceai-ide-subsection[open] .mv-senceai-settings-section-summary::before {
+	transform: rotate(90deg);
+}
+
 .mv-senceai-source-assist-profile {
 	margin: 12px 0;
 	border: 1px solid var(--background-modifier-border);
@@ -1230,4 +1240,124 @@ body.mv-fti-tabs .mod-root .workspace-tab-header[data-type="markdown"] .workspac
 body.mv-fti-tabs .workspace-tab-header-inner-icon svg.svg-icon[class*="mv-fti-"] {
 	--icon-size: 16px;
 	margin-right: 2px;
+}
+
+/* 正则查找替换（多文件）Modal */
+.mv-regex-modal .mv-regex-query {
+  width: 100%;
+}
+
+.mv-regex-file-list {
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  margin-bottom: 12px;
+  max-height: 45vh;
+  overflow-y: auto;
+  padding: 6px 10px;
+}
+
+.mv-regex-file-row {
+  border-bottom: 1px solid var(--background-modifier-border);
+  padding: 6px 0;
+}
+
+.mv-regex-file-row:last-child {
+  border-bottom: none;
+}
+
+.mv-regex-file-head {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+}
+
+.mv-regex-file-path {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mv-regex-file-count {
+  color: var(--text-muted);
+  flex-shrink: 0;
+  margin-left: auto;
+}
+
+.mv-regex-snippets {
+  color: var(--text-muted);
+  font-family: var(--font-monospace);
+  font-size: var(--font-ui-smaller);
+  margin-left: 24px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.mv-regex-skipped {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  margin-bottom: 12px;
+}
+
+.modal.mv-senceai-downloads-modal {
+	box-sizing: border-box;
+	max-height: calc(100vh - 32px);
+	max-width: calc(100vw - 32px);
+	width: min(560px, calc(100vw - 32px));
+}
+
+.mv-senceai-downloads-modal .mv-senceai-downloads-list {
+	max-height: min(50vh, 420px);
+	overflow-y: auto;
+}
+
+.mv-senceai-downloads-modal .mv-senceai-downloads-row {
+	align-items: center;
+	border-radius: 6px;
+	display: flex;
+	gap: 2px;
+	min-width: 0;
+	padding: 0 2px;
+}
+
+.mv-senceai-downloads-modal .mv-senceai-downloads-row:hover,
+.mv-senceai-downloads-modal .mv-senceai-downloads-open-target:focus-visible {
+	background: var(--background-modifier-hover);
+}
+
+.mv-senceai-downloads-modal .mv-senceai-downloads-open-target {
+	align-items: baseline;
+	cursor: pointer;
+	display: flex;
+	flex: 1 1 auto;
+	gap: 8px;
+	justify-content: space-between;
+	min-width: 0;
+	padding: 4px;
+}
+
+.mv-senceai-downloads-modal .mv-senceai-downloads-name {
+	flex: 1 1 auto;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.mv-senceai-downloads-modal .mv-senceai-downloads-meta {
+	flex: 0 0 auto;
+	white-space: nowrap;
+}
+
+.mv-senceai-downloads-modal .mv-senceai-downloads-reveal {
+	color: var(--text-muted);
+	flex: 0 0 auto;
+	height: 28px;
+	padding: 5px;
+	width: 28px;
+}
+
+.mv-senceai-downloads-modal .mv-senceai-downloads-reveal:hover,
+.mv-senceai-downloads-modal .mv-senceai-downloads-reveal:focus-visible {
+	color: var(--text-normal);
 }

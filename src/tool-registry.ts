@@ -1,10 +1,18 @@
 import path from "node:path";
-import { MarkdownView, TFile, type App, type WorkspaceLeaf } from "obsidian";
+import {
+  MarkdownView,
+  TFile,
+  getAllTags,
+  type App,
+  type WorkspaceLeaf,
+} from "obsidian";
 import { randomUUID } from "node:crypto";
 import { DIFF_VIEW_TYPE, TERMINAL_VIEW_TYPE } from "./constants";
 import { resolveVaultPath } from "./path-utils";
 import { getVaultRoot } from "./selection";
 import { ObsidianDiffView } from "./diff-view";
+import { TerminalView } from "./terminal/terminal-view";
+import type { LintDiagnosticsFile } from "./lint/lint-feature";
 import {
   getOpenWorkspaceTabs,
   readCurrentWebPage,
@@ -42,6 +50,7 @@ export class ToolRegistry {
     ) => SelectionState | null,
     private readonly getLatestWebLeaf: () => WorkspaceLeaf | null,
     private readonly getWebPageMaxCharacters: () => number | null,
+    private readonly getDiagnosticsSnapshot: () => LintDiagnosticsFile[] = () => [],
   ) {}
 
   async call(
@@ -71,7 +80,19 @@ export class ToolRegistry {
       case "closeAllDiffTabs":
         return result(await this.closeAllDiffTabs());
       case "getDiagnostics":
-        return result([]);
+        return result(this.collectDiagnostics(args));
+      case "getTerminalOutput":
+        return result(this.collectTerminalOutput(args));
+      case "searchVaultSymbols":
+        return result(this.searchVaultSymbols(args));
+      case "getBacklinks":
+        return result(this.collectLinks(args, "backlinks"));
+      case "getOutgoingLinks":
+        return result(this.collectLinks(args, "outgoing"));
+      case "searchTags":
+        return result(this.searchTags(args));
+      case "listNotesByTag":
+        return result(this.listNotesByTag(args));
       case "close_tab":
         return result(await this.closeDiffTab(asString(args.tab_name ?? args.tabName)));
       default:
@@ -280,5 +301,142 @@ export class ToolRegistry {
       closed += 1;
     }
     return { closed };
+  }
+
+  private collectDiagnostics(
+    args: Record<string, unknown>,
+  ): Record<string, unknown> {
+    const severityRaw = asString(args.severity);
+    const severity = ["error", "warning", "all"].includes(severityRaw)
+      ? severityRaw
+      : "error";
+    const pathFilter = asString(args.filePath);
+    const files = this.getDiagnosticsSnapshot()
+      .filter((file) => !pathFilter || file.filePath.endsWith(pathFilter))
+      .map((file) => ({
+        filePath: file.filePath,
+        updatedAt: file.updatedAt,
+        diagnostics:
+          severity === "all"
+            ? file.diagnostics
+            : file.diagnostics.filter((d) => d.severity === severity),
+      }))
+      .filter((file) => file.diagnostics.length > 0);
+    return { severity, files };
+  }
+
+  private collectTerminalOutput(
+    args: Record<string, unknown>,
+  ): Record<string, unknown> {
+    const rawLastN = typeof args.lastN === "number" ? args.lastN : 50;
+    const lastN = Math.min(500, Math.max(1, Math.floor(rawLastN)));
+    const tabNameFilter = asString(args.tabName);
+    const terminals: Array<{
+      tabName: string;
+      displayName: string;
+      lines: string[];
+    }> = [];
+    // getDisplayText() 对所有终端标签恒为同一名称，按遍历顺序给实例编号
+    // （系统终端 #N）作为可过滤的稳定名；过滤同时接受编号名与显示名。
+    let index = 0;
+    this.app.workspace.iterateAllLeaves((leaf) => {
+      if (leaf.view.getViewType() !== TERMINAL_VIEW_TYPE) return;
+      if (!(leaf.view instanceof TerminalView)) return;
+      index += 1;
+      const displayName = leaf.view.getDisplayText();
+      const tabName = `${displayName} #${index}`;
+      if (
+        tabNameFilter &&
+        tabNameFilter !== tabName &&
+        tabNameFilter !== displayName
+      ) {
+        return;
+      }
+      terminals.push({
+        tabName,
+        displayName,
+        lines: leaf.view.readTailLines(lastN),
+      });
+    });
+    return { terminals };
+  }
+
+  private searchVaultSymbols(
+    args: Record<string, unknown>,
+  ): Record<string, unknown> {
+    const query = asString(args.query).toLowerCase();
+    if (!query) return { symbols: [] };
+    const rawMax = typeof args.maxResults === "number" ? args.maxResults : 50;
+    const max = Math.min(200, Math.max(1, Math.floor(rawMax)));
+    const symbols: Array<{
+      filePath: string;
+      line: number;
+      level: number;
+      heading: string;
+    }> = [];
+    for (const file of this.app.vault.getFiles()) {
+      if (symbols.length >= max) break;
+      const headings = this.app.metadataCache.getFileCache(file)?.headings;
+      if (!headings) continue;
+      for (const heading of headings) {
+        if (symbols.length >= max) break;
+        if (!heading.heading.toLowerCase().includes(query)) continue;
+        symbols.push({
+          filePath: file.path,
+          line: heading.position.start.line,
+          level: heading.level,
+          heading: heading.heading,
+        });
+      }
+    }
+    return { symbols };
+  }
+
+  private collectLinks(
+    args: Record<string, unknown>,
+    direction: "backlinks" | "outgoing",
+  ): Record<string, unknown> {
+    const requestedPath = asString(args.filePath);
+    const file = findFile(this.app, requestedPath);
+    if (!file) return { error: `File not found: ${requestedPath}`, files: [] };
+    const resolved = this.app.metadataCache.resolvedLinks;
+    const files =
+      direction === "outgoing"
+        ? Object.keys(resolved[file.path] ?? {})
+        : Object.entries(resolved)
+            .filter(([, targets]) => targets[file.path])
+            .map(([source]) => source);
+    return { filePath: file.path, files };
+  }
+
+  private searchTags(args: Record<string, unknown>): Record<string, unknown> {
+    const query = asString(args.query).toLowerCase();
+    if (!query) return { tags: [] };
+    const tags = new Set<string>();
+    for (const file of this.app.vault.getFiles()) {
+      if (tags.size >= 100) break;
+      const cache = this.app.metadataCache.getFileCache(file);
+      if (!cache) continue;
+      for (const tag of getAllTags(cache) ?? []) {
+        if (tags.size >= 100) break;
+        if (tag.toLowerCase().includes(query)) tags.add(tag);
+      }
+    }
+    return { tags: [...tags].sort() };
+  }
+
+  private listNotesByTag(
+    args: Record<string, unknown>,
+  ): Record<string, unknown> {
+    const raw = asString(args.tag);
+    if (!raw) return { files: [] };
+    const wanted = raw.startsWith("#") ? raw : `#${raw}`;
+    const files: string[] = [];
+    for (const file of this.app.vault.getFiles()) {
+      const cache = this.app.metadataCache.getFileCache(file);
+      if (!cache) continue;
+      if ((getAllTags(cache) ?? []).includes(wanted)) files.push(file.path);
+    }
+    return { tag: wanted, files: files.sort() };
   }
 }

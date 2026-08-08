@@ -9,8 +9,11 @@ import { TerminalView } from "./terminal-view";
 /** 手动触发「运行文件底部指令」：解析当前文件的 mv-run 注释指令并逐行送入终端。 */
 export async function runFileBottomCommand(
   plugin: MvSenceAiIdePlugin,
+  activeView?: MarkdownView,
 ): Promise<void> {
-  const view = plugin.app.workspace.getActiveViewOfType(MarkdownView);
+  // editorCallback 已传入触发命令的视图，优先使用；缺省回退到当前活跃视图
+  const view =
+    activeView ?? plugin.app.workspace.getActiveViewOfType(MarkdownView);
   if (!view?.file) {
     new Notice(t("当前没有打开的 Markdown 视图"));
     return;

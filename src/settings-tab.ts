@@ -34,6 +34,7 @@ import { externalFileAllowedExtensions } from "./external-file-opener";
 import { t } from "./i18n";
 import { renderLintSetting } from "./lint/lint-settings-ui";
 import { renderMvRunSetting } from "./terminal/mv-run-settings-ui";
+import { renderRegexScopeSetting } from "./regex-replace/regex-replace-settings-ui";
 import { normalizeExternalFileMirrorFolder } from "./external-file-mirror-path";
 import type {
   DefaultOpenerOperationResult,
@@ -41,6 +42,11 @@ import type {
 } from "./external-file-opener-system";
 import { getDefaultSourceAssistSnippetVariables } from "./source-assist/default-snippet-variables";
 import { createSourceAssistSnippetsEditor } from "./source-assist/snippets-editor";
+import {
+  browserLoginRuntimeStatus,
+  openObsidianDownloadPage,
+  WINDOWS_LOGIN_BASELINE,
+} from "./webview-ua-compat";
 import { parseSnippets } from "./vendor/latex-suite/src/snippets/parse";
 import {
   importSourceHighlightTheme,
@@ -815,6 +821,7 @@ function createCollapsibleSettingsSection(
 
 export class MvSenceAiIdeSettingTab extends PluginSettingTab {
   private readonly openSettingsSections = new Set<MainSettingsSectionId>();
+  private readonly openIdeSubsectionIds = new Set<string>(["agents", "passive", "active"]);
   private readonly openSourceAssistProfileIds = new Set<string>();
   private readonly sourceAssistSnippetEditors: EditorView[] = [];
   private forceOpenSection: MainSettingsSectionId | null = null;
@@ -866,448 +873,39 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
     );
     let containerEl = ideEl;
 
-    const claudeSetting = new Setting(containerEl)
-      .setName(t("启用 Claude Code IDE 功能"))
-      .setDesc(t("默认开启。关闭后不写 Claude IDE lock、不注册 Claude MCP、不接管 Claude 设置。"))
-      .addToggle((toggle) =>
-        toggle
-          .setValue(this.plugin.settings.ideIntegrations.claudeCode)
-          .onChange(async (value) => {
-            this.plugin.settings.ideIntegrations.claudeCode = value;
-            await this.plugin.saveAndApplySettings();
-            this.rerenderSettings("ide");
-          }),
-      );
+    this.renderIdeUniversalMcpSettings(containerEl);
 
-    const claudeStatusEl = claudeSetting.settingEl.createEl("span", {
-      cls: "mv-senceai-status-indicator",
-    });
-    if (!this.plugin.settings.ideIntegrations.claudeCode) {
-      claudeStatusEl.setText(t("状态：已禁用"));
-      claudeStatusEl.addClass("mv-senceai-status-muted");
-    } else if (this.plugin.claudeIdeError) {
-      claudeStatusEl.setText(t("● 启动失败: {error}", { error: this.plugin.claudeIdeError }));
-      claudeStatusEl.addClass("mv-senceai-status-error");
-    } else {
-      claudeStatusEl.setText(t("● 运行中"));
-      claudeStatusEl.addClass("mv-senceai-status-success");
-    }
+    const agentsEl = this.createIdeSubsection(
+      containerEl,
+      "agents",
+      t("已适配 agent"),
+    );
+    this.renderIdeUpstreamSettings(agentsEl);
+    this.renderIdeClaudeSettings(agentsEl);
+    this.renderIdeCodexSettings(agentsEl);
 
-    const codexSetting = new Setting(containerEl)
-      .setName(t("启用 Codex IDE 功能"))
-      .setDesc(t("默认关闭。开启后支持 Codex CLI /ide，并把本插件 MCP 工具写入 Codex 配置。"))
-      .addToggle((toggle) =>
-        toggle
-          .setValue(this.plugin.settings.ideIntegrations.codex)
-          .onChange(async (value) => {
-            this.plugin.settings.ideIntegrations.codex = value;
-            await this.plugin.saveAndApplySettings();
-            this.rerenderSettings("ide");
-          }),
-      );
+    const passiveEl = this.createIdeSubsection(
+      containerEl,
+      "passive",
+      t("被动工具"),
+    );
+    this.renderIdeVisualAssistSettings(passiveEl);
+    this.renderIdeActivityTrackingSettings(passiveEl);
+    this.renderIdeDiffSettings(passiveEl);
+    this.renderIdeMaintenanceSettings(passiveEl);
 
-    const codexStatusEl = codexSetting.settingEl.createEl("span", {
-      cls: "mv-senceai-status-indicator",
-    });
-    if (!this.plugin.settings.ideIntegrations.codex) {
-      codexStatusEl.setText(t("状态：已禁用"));
-      codexStatusEl.addClass("mv-senceai-status-muted");
-    } else if (this.plugin.codexIdeError) {
-      codexStatusEl.setText(t("● 启动失败: {error}", { error: this.plugin.codexIdeError }));
-      codexStatusEl.addClass("mv-senceai-status-error");
-    } else {
-      codexStatusEl.setText(t("● 运行中"));
-      codexStatusEl.addClass("mv-senceai-status-success");
-    }
-
-    const universalSetting = new Setting(containerEl)
-      .setName(t("暴露 mv-AIDE 协议"))
-      .setDesc(
-        t("默认关闭。开启后通过标准 MCP 协议完整暴露 IDE 桥接能力：全部 8 个 IDE 工具（含 openDiff 人工审核）与状态感知资源（工作区上下文、打开的标签、最新选区、@ 提及），用户可以自行接入其它 agent。仅本机 127.0.0.1 提供 Streamable HTTP 与 stdio 接入，在 Obsidian 启动完成后的空闲阶段加载；不影响 Claude Code、Codex 与 MCP 工具开关。"),
-      )
-      .addToggle((toggle) =>
-        toggle
-          .setValue(this.plugin.settings.universalMcp.enabled)
-          .onChange(async (value) => {
-            this.plugin.settings.universalMcp.enabled = value;
-            await this.plugin.saveAndApplySettings();
-            this.rerenderSettings("ide");
-          }),
-      );
-    universalSetting.settingEl.addClass("mv-senceai-universal-mcp-setting");
-
-    const universalStatus = new Setting(containerEl)
-      .setName(t("mv-AIDE 协议状态"))
-      .setDesc(this.plugin.universalMcpStatus);
-    universalStatus.settingEl.addClass("mv-senceai-universal-mcp-setting");
-    universalStatus.descEl.setAttribute("aria-live", "polite");
-
-    if (this.plugin.settings.universalMcp.enabled) {
-      const protocolSetting = new Setting(containerEl)
-        .setName(t("通用 MCP 协议版本"))
-        .setDesc(t("2026-07-28、2025-11-25、2025-03-26（由客户端协商）"));
-      protocolSetting.settingEl.addClass("mv-senceai-universal-mcp-setting");
-
-      const copyConfig = async (
-        config: string | null,
-        label: string,
-      ): Promise<void> => {
-        if (!config) {
-          new Notice(t("mv-AIDE 协议尚未就绪，请在 Obsidian 启动完成后刷新状态。"));
-          return;
-        }
-        try {
-          await navigator.clipboard.writeText(config);
-          new Notice(t("{label}已复制", { label }));
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          new Notice(t("复制失败：{message}", { message }), 8000);
-        }
-      };
-
-      const connectionSetting = new Setting(containerEl)
-        .setName(t("通用 Agent 连接配置"))
-        .setDesc(
-          t("HTTP 和 stdio 使用同一套标准能力。stdio 只连接已经运行的 Obsidian，不会自行启动 Obsidian。"),
-        )
-        .addButton((button) => {
-          const config = this.plugin.getUniversalMcpHttpConfig();
-          button
-            .setButtonText(t("复制 HTTP 配置"))
-            .setDisabled(!config)
-            .onClick(() => copyConfig(config, t("HTTP 配置")));
-        })
-        .addButton((button) => {
-          // 禁用判断只查运行时是否就绪；配置在用户点击时才生成，
-          // 避免设置页渲染时同步探测系统 Node（spawnSync）卡住主线程。
-          button
-            .setButtonText(t("复制 stdio 配置"))
-            .setDisabled(!this.plugin.hasUniversalMcpRuntime())
-            .onClick(async () =>
-              copyConfig(await this.plugin.getUniversalMcpStdioConfig(), t("stdio 配置")),
-            );
-        })
-        .addButton((button) =>
-          button.setButtonText(t("刷新状态")).onClick(() => {
-            this.rerenderSettings("ide");
-          }),
-        )
-        .addButton((button) =>
-          button.setButtonText(t("轮换令牌")).onClick(async () => {
-            await this.plugin.rotateUniversalMcpToken();
-            new Notice(t("mv-AIDE 协议令牌已轮换，请更新所有客户端配置。"));
-            this.rerenderSettings("ide");
-          }),
-        );
-      connectionSetting.settingEl.addClass("mv-senceai-universal-mcp-setting");
-    }
-
-    addHeading(containerEl, t("功能与工具"));
-
-    addHeading(containerEl, t("被动"));
-
-    addHeading(containerEl, t("状态感知"));
-    new Setting(containerEl)
-      .setName(t("支持所有活动页面"))
-      .setDesc(
-        t("默认关闭。开启后追踪任意 Obsidian 标签，并通过 Claude 会话 PID 和终端标题标记精确忽略该会话自己的终端；改变后请重新启动 Claude Code。"),
-      )
-      .addToggle((toggle) =>
-        toggle
-          .setValue(this.plugin.settings.activityTracking.supportAllActivePages)
-          .onChange(async (value) => {
-            this.plugin.settings.activityTracking.supportAllActivePages = value;
-            await this.plugin.saveAndApplySettings();
-            this.rerenderSettings("ide");
-          }),
-      );
-
-    const pageTypes: Array<{
-      key: "trackMarkdown" | "trackPdf" | "trackWebview";
-      name: string;
-      description: string;
-    }> = [
-      {
-        key: "trackMarkdown",
-        name: t("追踪 Markdown 页面"),
-        description: t("追踪当前 Markdown 文件、光标和选区。"),
-      },
-      {
-        key: "trackPdf",
-        name: t("追踪 PDF 页面"),
-        description: t("追踪当前 PDF 文件、页码和文本选区。"),
-      },
-      {
-        key: "trackWebview",
-        name: t("追踪 Web Viewer 页面"),
-        description: t("追踪 Obsidian 内置浏览器的标题、URL 和文本选区。"),
-      },
-    ];
-    for (const pageType of pageTypes) {
-      new Setting(containerEl)
-        .setName(pageType.name)
-        .setDesc(
-          this.plugin.settings.activityTracking.supportAllActivePages
-            ? t("“支持所有活动页面”已开启，此选项不再单独生效。")
-            : pageType.description,
-        )
-        .addToggle((toggle) =>
-          toggle
-            .setValue(this.plugin.settings.activityTracking[pageType.key])
-            .setDisabled(
-              this.plugin.settings.activityTracking.supportAllActivePages,
-            )
-            .onChange(async (value) => {
-              this.plugin.settings.activityTracking[pageType.key] = value;
-              await this.plugin.saveAndApplySettings();
-            }),
-        );
-    }
+    const activeEl = this.createIdeSubsection(
+      containerEl,
+      "active",
+      t("主动工具"),
+    );
+    this.renderIdeMcpToolSettings(activeEl);
 
     containerEl = sourceAssistEl;
     this.renderSourceAssistSettings(containerEl);
 
     containerEl = externalFileOpenerEl;
     this.renderExternalFileOpenerSettings(containerEl);
-
-    containerEl = ideEl;
-    addHeading(containerEl, t("视觉辅助"));
-    new Setting(containerEl)
-      .setName(t("切换标签时保留选区高亮"))
-      .setDesc(
-        t("默认开启。切换到终端等特殊标签后仍显示 Markdown、PDF 和网页中最后一次划词；回到原页面空点或重新划词时继续遵循 Obsidian 原有行为。此功能不影响发送给 Claude 的选区。"),
-      )
-      .addToggle((toggle) =>
-        toggle
-          .setValue(this.plugin.settings.preserveSelectionHighlights)
-          .onChange(async (value) => {
-            await this.plugin.setSelectionHighlightsEnabled(value);
-          }),
-      );
-
-    addHeading(containerEl, t("主动：MCP 工具"));
-    new Setting(containerEl)
-      .setName(t("启用 MCP 主动工具"))
-      .setDesc(
-        t("主动工具通过标准 MCP 提供给 Claude Code 和 Codex CLI。改变后请重启对应客户端或重新执行 /mcp。"),
-      )
-      .addToggle((toggle) =>
-        toggle
-          .setValue(this.plugin.settings.mcpEnabled)
-          .onChange(async (value) => {
-            this.plugin.settings.mcpEnabled = value;
-            await this.plugin.saveAndApplySettings();
-            this.rerenderSettings("ide");
-          }),
-      );
-
-    if (this.plugin.settings.mcpEnabled) {
-      const tools: Array<{
-        key: keyof ToolToggles;
-        name: string;
-        description: string;
-      }> = [
-        {
-          key: "getLatestSelection",
-          name: t("获取最近标签与选区"),
-          description: t("焦点离开 Obsidian 后仍可读取最近一次状态。"),
-        },
-        {
-          key: "getOpenEditors",
-          name: t("获取全部打开标签"),
-          description: t("包括 Markdown、PDF、图片、网页、终端和其他插件页面。"),
-        },
-        {
-          key: "openFile",
-          name: t("在 Obsidian 中打开文件"),
-          description: t("允许 Claude 主动定位仓库内文件和文本范围。"),
-        },
-        {
-          key: "readCurrentWebPage",
-          name: t("读取最近网页为 Markdown"),
-          description:
-            t("把最近浏览且仍打开的 Web Viewer 页面转换为 Markdown，不刷新或跳转页面。用于让 Claude 查看网页全貌，而不是只读取选区。"),
-        },
-      ];
-      for (const tool of tools) {
-        new Setting(containerEl)
-          .setName(tool.name)
-          .setDesc(tool.description)
-          .addToggle((toggle) =>
-            toggle
-              .setValue(this.plugin.settings.toolToggles[tool.key])
-              .onChange(async (value) => {
-                this.plugin.settings.toolToggles[tool.key] = value;
-                await this.plugin.saveAndApplySettings();
-              }),
-          );
-        if (tool.key === "readCurrentWebPage") {
-          new Setting(containerEl)
-            .setName(t("网页工具最大返回字符数"))
-            .setDesc(
-              t("留空或填写 0 表示不限，插件会忠实返回当前已加载页面的完整可见内容；填写正整数时才截断。"),
-            )
-            .addText((text) => {
-              text.inputEl.type = "number";
-              text.inputEl.min = "0";
-              text.inputEl.step = "1";
-              text
-                .setPlaceholder(t("不限"))
-                .setValue(
-                  this.plugin.settings.toolContextLimits.readCurrentWebPage?.toString() ??
-                    "",
-                )
-                .onChange(async (value) => {
-                  const trimmed = value.trim();
-                  if (!trimmed) {
-                    this.plugin.settings.toolContextLimits.readCurrentWebPage =
-                      null;
-                  } else {
-                    const parsed = Number(trimmed);
-                    if (!Number.isFinite(parsed) || parsed < 0) return;
-                    this.plugin.settings.toolContextLimits.readCurrentWebPage =
-                      parsed === 0 ? null : Math.floor(parsed);
-                  }
-                  await this.plugin.saveData(this.plugin.settings);
-                });
-            });
-        }
-      }
-
-      new Setting(containerEl)
-        .setName(t("MCP 注册状态"))
-        .setDesc(this.plugin.mcpStatus)
-        .addButton((button) =>
-          button.setButtonText(t("重新注册")).onClick(async () => {
-            await this.plugin.retryMcpRegistration();
-            new Notice(this.plugin.mcpStatus);
-            this.rerenderSettings("ide");
-          }),
-        )
-        .addButton((button) =>
-          button.setButtonText(t("清理注册")).onClick(async () => {
-            await this.plugin.cleanMcpRegistration();
-            new Notice(this.plugin.mcpStatus);
-            this.rerenderSettings("ide");
-          }),
-        );
-
-      new Setting(containerEl)
-        .setName(t("Claude 可执行文件"))
-        .setDesc(t("通常自动检测。Windows 或自定义安装位置可在此填写完整路径。"))
-        .addText((text) =>
-          text
-            .setPlaceholder(t("自动检测"))
-            .setValue(this.plugin.settings.claudeExecutable)
-            .onChange(async (value) => {
-              this.plugin.settings.claudeExecutable = value.trim();
-              await this.plugin.saveData(this.plugin.settings);
-            }),
-        );
-
-      new Setting(containerEl)
-        .setName(t("Codex 可执行文件"))
-        .setDesc(t("通常自动检测为 codex。自定义安装位置可在此填写完整路径。"))
-        .addText((text) =>
-          text
-            .setPlaceholder("codex")
-            .setValue(this.plugin.settings.codexExecutable)
-            .onChange(async (value) => {
-              this.plugin.settings.codexExecutable = value.trim();
-              await this.plugin.saveData(this.plugin.settings);
-            }),
-        );
-    }
-
-    addHeading(containerEl, t("上游兼容"));
-    new Setting(containerEl)
-      .setName(t("上游模式"))
-      .setDesc(
-        t("原生模式不改请求；兼容模式会把 IDE system 上下文移动到对应 user 消息中，不会复制两份。"),
-      )
-      .addDropdown((dropdown) =>
-        dropdown
-          .addOption("native", t("原生"))
-          .addOption("compatibility", t("兼容"))
-          .setValue(this.plugin.settings.upstreamMode)
-          .onChange(async (value) => {
-            this.plugin.settings.upstreamMode =
-              value === "compatibility" ? "compatibility" : "native";
-            await this.plugin.saveAndApplySettings();
-            this.rerenderSettings("ide");
-          }),
-      );
-
-    if (this.plugin.settings.upstreamMode === "compatibility") {
-      const resolved = this.plugin.resolvedUpstream();
-      new Setting(containerEl)
-        .setName(t("Anthropic 上游地址（可选）"))
-        .setDesc(
-          t("留空时自动读取 Claude 配置。只有需要覆盖自动结果时才填写。"),
-        )
-        .addText((text) =>
-          text
-            .setPlaceholder(t("留空以自动读取"))
-            .setValue(this.plugin.settings.upstreamBaseUrl)
-            .onChange(async (value) => {
-              this.plugin.settings.upstreamBaseUrl = value.trim();
-              await this.plugin.saveAndApplySettings();
-            }),
-        );
-
-      new Setting(containerEl)
-        .setName(t("当前识别的上游"))
-        .setDesc(t("来源：{source}", { source: t(SOURCE_LABELS[resolved.source]) }))
-        .addText((text) =>
-          text.setValue(resolved.url || t("未找到 ANTHROPIC_BASE_URL")).setDisabled(true),
-        );
-
-      new Setting(containerEl)
-        .setName(t("自动管理当前仓库的 Claude 设置"))
-        .setDesc(
-          t("仅把当前仓库的 ANTHROPIC_BASE_URL 指向本地兼容端点；关闭时恢复插件接管前的值。"),
-        )
-        .addToggle((toggle) =>
-          toggle
-            .setValue(this.plugin.settings.autoManageClaudeSettings)
-            .onChange(async (value) => {
-              this.plugin.settings.autoManageClaudeSettings = value;
-              await this.plugin.saveAndApplySettings();
-              this.rerenderSettings("ide");
-            }),
-        );
-    }
-
-    addHeading(containerEl, t("Diff 与维护"));
-    new Setting(containerEl)
-      .setName(t("Diff 审核行为"))
-      .setDesc(
-        t("完全跟随 Claude Code 权限模式：默认权限会显示审核；acceptEdits 会直接接受编辑，插件不会额外弹窗。"),
-      );
-
-    new Setting(containerEl)
-      .setName(t("重启桥接"))
-      .setDesc(t("重建本地服务和 Claude Code IDE lock 文件。"))
-      .addButton((button) =>
-        button.setButtonText(t("重启")).onClick(async () => {
-          await this.plugin.restartBridge();
-          new Notice(t("mv-AIDE 桥接已重启。"));
-          this.rerenderSettings("ide");
-        }),
-      );
-
-    new Setting(containerEl)
-      .setName(t("恢复插件管理的 Claude 设置"))
-      .setDesc(t("只恢复本插件替换过的 ANTHROPIC_BASE_URL，不改其他配置。"))
-      .addButton((button) =>
-        button.setButtonText(t("恢复")).onClick(async () => {
-          await this.plugin.restoreClaudeSettings();
-          new Notice(t("已恢复 mv-AIDE 管理的 Claude 设置。"));
-          this.rerenderSettings("ide");
-        }),
-      );
-
-
 
     containerEl = llmEl;
     containerEl.createEl("div", {
@@ -1602,7 +1200,9 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
       return pythonCmd;
     };
 
-    new Setting(containerEl)
+    // pywinpty 仅 Windows 需要，非 Windows 不渲染该区块
+    if (process.platform === "win32")
+      new Setting(containerEl)
       .setName(t("Windows 依赖管理 (pywinpty)"))
       .setDesc(t("Windows 用户运行终端必须安装 winpty 依赖。点击右侧按钮进行检测或一键更新。"))
       .addButton((button) =>
@@ -1718,6 +1318,598 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
       this.openSettingsSections.add(id);
     } else {
       this.openSettingsSections.delete(id);
+    }
+  }
+
+  private createIdeSubsection(
+    containerEl: HTMLElement,
+    id: string,
+    title: string,
+  ): HTMLElement {
+    const details = containerEl.createEl("details", {
+      cls: "mv-senceai-ide-subsection",
+    });
+    details.dataset.subsectionId = id;
+    details.open = this.openIdeSubsectionIds.has(id);
+    details.addEventListener("toggle", () => {
+      if (details.open) {
+        this.openIdeSubsectionIds.add(id);
+      } else {
+        this.openIdeSubsectionIds.delete(id);
+      }
+    });
+    details.createEl("summary", {
+      text: title,
+      cls: "mv-senceai-settings-section-summary setting-item-name",
+    });
+    return details.createDiv({ cls: "mv-senceai-settings-section-body" });
+  }
+
+  private renderIdeUniversalMcpSettings(containerEl: HTMLElement): void {
+    const universalSetting = new Setting(containerEl)
+      .setName(t("暴露 mv-AIDE 协议"))
+      .setDesc(
+        t("默认关闭。开启后通过标准 MCP 协议完整暴露 IDE 桥接能力：全部 8 个 IDE 工具（含 openDiff 人工审核）与状态感知资源（工作区上下文、打开的标签、最新选区、@ 提及），用户可以自行接入其它 agent。仅本机 127.0.0.1 提供 Streamable HTTP 与 stdio 接入，在 Obsidian 启动完成后的空闲阶段加载；不影响 Claude Code、Codex 与 MCP 工具开关。"),
+      )
+      .addToggle((toggle) =>
+        toggle
+          .setValue(this.plugin.settings.universalMcp.enabled)
+          .onChange(async (value) => {
+            this.plugin.settings.universalMcp.enabled = value;
+            await this.plugin.saveAndApplySettings();
+            this.rerenderSettings("ide");
+          }),
+      );
+    universalSetting.settingEl.addClass("mv-senceai-universal-mcp-setting");
+
+    const universalStatus = new Setting(containerEl)
+      .setName(t("mv-AIDE 协议状态"))
+      .setDesc(this.plugin.universalMcpStatus);
+    universalStatus.settingEl.addClass("mv-senceai-universal-mcp-setting");
+    universalStatus.descEl.setAttribute("aria-live", "polite");
+
+    if (this.plugin.settings.universalMcp.enabled) {
+      const protocolSetting = new Setting(containerEl)
+        .setName(t("通用 MCP 协议版本"))
+        .setDesc(t("2026-07-28、2025-11-25、2025-03-26（由客户端协商）"));
+      protocolSetting.settingEl.addClass("mv-senceai-universal-mcp-setting");
+
+      const copyConfig = async (
+        config: string | null,
+        label: string,
+      ): Promise<void> => {
+        if (!config) {
+          new Notice(t("mv-AIDE 协议尚未就绪，请在 Obsidian 启动完成后刷新状态。"));
+          return;
+        }
+        try {
+          await navigator.clipboard.writeText(config);
+          new Notice(t("{label}已复制", { label }));
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          new Notice(t("复制失败：{message}", { message }), 8000);
+        }
+      };
+
+      const connectionSetting = new Setting(containerEl)
+        .setName(t("通用 Agent 连接配置"))
+        .setDesc(
+          t("HTTP 和 stdio 使用同一套标准能力。stdio 只连接已经运行的 Obsidian，不会自行启动 Obsidian。"),
+        )
+        .addButton((button) => {
+          const config = this.plugin.getUniversalMcpHttpConfig();
+          button
+            .setButtonText(t("复制 HTTP 配置"))
+            .setDisabled(!config)
+            .onClick(() => copyConfig(config, t("HTTP 配置")));
+        })
+        .addButton((button) => {
+          // 禁用判断只查运行时是否就绪；配置在用户点击时才生成，
+          // 避免设置页渲染时同步探测系统 Node（spawnSync）卡住主线程。
+          button
+            .setButtonText(t("复制 stdio 配置"))
+            .setDisabled(!this.plugin.hasUniversalMcpRuntime())
+            .onClick(async () =>
+              copyConfig(await this.plugin.getUniversalMcpStdioConfig(), t("stdio 配置")),
+            );
+        })
+        .addButton((button) =>
+          button.setButtonText(t("刷新状态")).onClick(() => {
+            this.rerenderSettings("ide");
+          }),
+        )
+        .addButton((button) =>
+          button.setButtonText(t("轮换令牌")).onClick(async () => {
+            await this.plugin.rotateUniversalMcpToken();
+            new Notice(t("mv-AIDE 协议令牌已轮换，请更新所有客户端配置。"));
+            this.rerenderSettings("ide");
+          }),
+        );
+      connectionSetting.settingEl.addClass("mv-senceai-universal-mcp-setting");
+    }
+  }
+
+  private renderIdeUpstreamSettings(containerEl: HTMLElement): void {
+    addHeading(containerEl, t("上游兼容"));
+    new Setting(containerEl)
+      .setName(t("上游模式"))
+      .setDesc(
+        t("原生模式不改请求；兼容模式会把 IDE system 上下文移动到对应 user 消息中，不会复制两份。"),
+      )
+      .addDropdown((dropdown) =>
+        dropdown
+          .addOption("native", t("原生"))
+          .addOption("compatibility", t("兼容"))
+          .setValue(this.plugin.settings.upstreamMode)
+          .onChange(async (value) => {
+            this.plugin.settings.upstreamMode =
+              value === "compatibility" ? "compatibility" : "native";
+            await this.plugin.saveAndApplySettings();
+            this.rerenderSettings("ide");
+          }),
+      );
+
+    if (this.plugin.settings.upstreamMode === "compatibility") {
+      const resolved = this.plugin.resolvedUpstream();
+      new Setting(containerEl)
+        .setName(t("Anthropic 上游地址（可选）"))
+        .setDesc(
+          t("留空时自动读取 Claude 配置。只有需要覆盖自动结果时才填写。"),
+        )
+        .addText((text) =>
+          text
+            .setPlaceholder(t("留空以自动读取"))
+            .setValue(this.plugin.settings.upstreamBaseUrl)
+            .onChange(async (value) => {
+              this.plugin.settings.upstreamBaseUrl = value.trim();
+              await this.plugin.saveAndApplySettings();
+            }),
+        );
+
+      new Setting(containerEl)
+        .setName(t("当前识别的上游"))
+        .setDesc(t("来源：{source}", { source: t(SOURCE_LABELS[resolved.source]) }))
+        .addText((text) =>
+          text.setValue(resolved.url || t("未找到 ANTHROPIC_BASE_URL")).setDisabled(true),
+        );
+
+      new Setting(containerEl)
+        .setName(t("自动管理当前仓库的 Claude 设置"))
+        .setDesc(
+          t("仅把当前仓库的 ANTHROPIC_BASE_URL 指向本地兼容端点；关闭时恢复插件接管前的值。"),
+        )
+        .addToggle((toggle) =>
+          toggle
+            .setValue(this.plugin.settings.autoManageClaudeSettings)
+            .onChange(async (value) => {
+              this.plugin.settings.autoManageClaudeSettings = value;
+              await this.plugin.saveAndApplySettings();
+              this.rerenderSettings("ide");
+            }),
+        );
+    }
+  }
+
+  private renderIdeClaudeSettings(containerEl: HTMLElement): void {
+    addHeading(containerEl, t("Claude Code"));
+    const claudeSetting = new Setting(containerEl)
+      .setName(t("启用 Claude Code IDE 功能"))
+      .setDesc(t("默认开启。关闭后不写 Claude IDE lock、不注册 Claude MCP、不接管 Claude 设置。"))
+      .addToggle((toggle) =>
+        toggle
+          .setValue(this.plugin.settings.ideIntegrations.claudeCode)
+          .onChange(async (value) => {
+            this.plugin.settings.ideIntegrations.claudeCode = value;
+            await this.plugin.saveAndApplySettings();
+            this.rerenderSettings("ide");
+          }),
+      );
+
+    const claudeStatusEl = claudeSetting.settingEl.createEl("span", {
+      cls: "mv-senceai-status-indicator",
+    });
+    if (!this.plugin.settings.ideIntegrations.claudeCode) {
+      claudeStatusEl.setText(t("状态：已禁用"));
+      claudeStatusEl.addClass("mv-senceai-status-muted");
+    } else if (this.plugin.claudeIdeError) {
+      claudeStatusEl.setText(t("● 启动失败: {error}", { error: this.plugin.claudeIdeError }));
+      claudeStatusEl.addClass("mv-senceai-status-error");
+    } else {
+      claudeStatusEl.setText(t("● 运行中"));
+      claudeStatusEl.addClass("mv-senceai-status-success");
+    }
+
+    new Setting(containerEl)
+      .setName(t("Claude 可执行文件"))
+      .setDesc(t("通常自动检测。Windows 或自定义安装位置可在此填写完整路径。"))
+      .addText((text) =>
+        text
+          .setPlaceholder(t("自动检测"))
+          .setValue(this.plugin.settings.claudeExecutable)
+          .onChange(async (value) => {
+            this.plugin.settings.claudeExecutable = value.trim();
+            await this.plugin.saveData(this.plugin.settings);
+          }),
+      );
+  }
+
+  private renderIdeCodexSettings(containerEl: HTMLElement): void {
+    addHeading(containerEl, t("Codex"));
+    const codexSetting = new Setting(containerEl)
+      .setName(t("启用 Codex IDE 功能"))
+      .setDesc(t("默认关闭。开启后支持 Codex CLI /ide，并把本插件 MCP 工具写入 Codex 配置。"))
+      .addToggle((toggle) =>
+        toggle
+          .setValue(this.plugin.settings.ideIntegrations.codex)
+          .onChange(async (value) => {
+            this.plugin.settings.ideIntegrations.codex = value;
+            await this.plugin.saveAndApplySettings();
+            this.rerenderSettings("ide");
+          }),
+      );
+
+    const codexStatusEl = codexSetting.settingEl.createEl("span", {
+      cls: "mv-senceai-status-indicator",
+    });
+    if (!this.plugin.settings.ideIntegrations.codex) {
+      codexStatusEl.setText(t("状态：已禁用"));
+      codexStatusEl.addClass("mv-senceai-status-muted");
+    } else if (this.plugin.codexIdeError) {
+      codexStatusEl.setText(t("● 启动失败: {error}", { error: this.plugin.codexIdeError }));
+      codexStatusEl.addClass("mv-senceai-status-error");
+    } else {
+      codexStatusEl.setText(t("● 运行中"));
+      codexStatusEl.addClass("mv-senceai-status-success");
+    }
+
+    new Setting(containerEl)
+      .setName(t("Codex 可执行文件"))
+      .setDesc(t("通常自动检测为 codex。自定义安装位置可在此填写完整路径。"))
+      .addText((text) =>
+        text
+          .setPlaceholder("codex")
+          .setValue(this.plugin.settings.codexExecutable)
+          .onChange(async (value) => {
+            this.plugin.settings.codexExecutable = value.trim();
+            await this.plugin.saveData(this.plugin.settings);
+          }),
+      );
+  }
+
+  private renderIdeVisualAssistSettings(containerEl: HTMLElement): void {
+    addHeading(containerEl, t("视觉辅助"));
+    new Setting(containerEl)
+      .setName(t("切换标签时保留选区高亮"))
+      .setDesc(
+        t("默认开启。切换到终端等特殊标签后仍显示 Markdown、PDF 和网页中最后一次划词；回到原页面空点或重新划词时继续遵循 Obsidian 原有行为。此功能不影响发送给 Claude 的选区。"),
+      )
+      .addToggle((toggle) =>
+        toggle
+          .setValue(this.plugin.settings.preserveSelectionHighlights)
+          .onChange(async (value) => {
+            await this.plugin.setSelectionHighlightsEnabled(value);
+          }),
+      );
+
+    addHeading(containerEl, t("内置浏览器"));
+    const runtime = browserLoginRuntimeStatus(process.platform, {
+      electron: process.versions.electron,
+      chrome: process.versions.chrome,
+    });
+    const electronVersion = runtime.electronVersion ?? t("未知");
+    const chromiumVersion = runtime.chromiumVersion ?? t("未知");
+    let runtimeDescription: string;
+    if (runtime.state === "supported") {
+      runtimeDescription = t(
+        "当前 Electron {electron} / Chromium {chromium} 已达到登录验收基线。插件保持原生 Windows Chromium 身份，不再伪装 Safari 或修改 WebAuthn。",
+        { electron: electronVersion, chromium: chromiumVersion },
+      );
+    } else if (runtime.state === "outdated") {
+      runtimeDescription = t(
+        "当前 Electron {electron} / Chromium {chromium} 低于登录验收基线 Electron {electronBaseline} / Chromium {chromiumBaseline}。Obsidian 核心自动更新不会升级浏览器内核，请覆盖安装最新版 installer；无需卸载。插件不会用 UA 伪装绕过此限制。",
+        {
+          electron: electronVersion,
+          chromium: chromiumVersion,
+          electronBaseline: String(WINDOWS_LOGIN_BASELINE.electronMajor),
+          chromiumBaseline: String(WINDOWS_LOGIN_BASELINE.chromiumMajor),
+        },
+      );
+    } else if (runtime.state === "unknown") {
+      runtimeDescription = t(
+        "无法读取当前 Electron/Chromium 版本。插件不会修改浏览器 UA、WebAuthn、Cookie 或网络请求；建议覆盖安装最新版 Obsidian installer 后重试登录。",
+      );
+    } else {
+      runtimeDescription = t(
+        "插件保持 Obsidian 内置浏览器的原生平台身份，不修改 UA、WebAuthn、Cookie 或网络请求。",
+      );
+    }
+    const runtimeSetting = new Setting(containerEl)
+      .setName(t("内置浏览器登录环境"))
+      .setDesc(runtimeDescription);
+    if (runtime.state === "outdated" || runtime.state === "unknown") {
+      runtimeSetting.addButton((button) =>
+        button
+          .setButtonText(t("下载最新版 Obsidian"))
+          .setCta()
+          .onClick(async () => {
+            try {
+              await openObsidianDownloadPage();
+            } catch (error) {
+              new Notice(
+                t("无法打开 Obsidian 下载页：{message}", {
+                  message: error instanceof Error ? error.message : String(error),
+                }),
+                8000,
+              );
+            }
+          }),
+      );
+    }
+  }
+
+  private renderIdeActivityTrackingSettings(containerEl: HTMLElement): void {
+    addHeading(containerEl, t("状态感知"));
+    new Setting(containerEl)
+      .setName(t("支持所有活动页面"))
+      .setDesc(
+        t("默认关闭。开启后追踪任意 Obsidian 标签，并通过 Claude 会话 PID 和终端标题标记精确忽略该会话自己的终端；改变后请重新启动 Claude Code。"),
+      )
+      .addToggle((toggle) =>
+        toggle
+          .setValue(this.plugin.settings.activityTracking.supportAllActivePages)
+          .onChange(async (value) => {
+            this.plugin.settings.activityTracking.supportAllActivePages = value;
+            await this.plugin.saveAndApplySettings();
+            this.rerenderSettings("ide");
+          }),
+      );
+
+    new Setting(containerEl)
+      .setName(t("推送 lint 错误计数"))
+      .setDesc(
+        t("lint 诊断更新时向 MCP 客户端推送各文件错误计数；只推错误，不推警告。"),
+      )
+      .addToggle((toggle) =>
+        toggle
+          .setValue(this.plugin.settings.activityTracking.pushLintErrors)
+          .onChange(async (value) => {
+            this.plugin.settings.activityTracking.pushLintErrors = value;
+            await this.plugin.saveAndApplySettings();
+          }),
+      );
+
+    new Setting(containerEl)
+      .setName(t("快照附 heading 面包屑"))
+      .setDesc(
+        t("在选区快照中附带光标所在 heading 层级路径；仅对 Markdown 和 LaTeX 文件生效。"),
+      )
+      .addToggle((toggle) =>
+        toggle
+          .setValue(this.plugin.settings.activityTracking.includeHeadingBreadcrumb)
+          .onChange(async (value) => {
+            this.plugin.settings.activityTracking.includeHeadingBreadcrumb = value;
+            await this.plugin.saveAndApplySettings();
+          }),
+      );
+
+    const pageTypes: Array<{
+      key: "trackMarkdown" | "trackPdf" | "trackWebview";
+      name: string;
+      description: string;
+    }> = [
+      {
+        key: "trackMarkdown",
+        name: t("追踪 Markdown 页面"),
+        description: t("追踪当前 Markdown 文件、光标和选区。"),
+      },
+      {
+        key: "trackPdf",
+        name: t("追踪 PDF 页面"),
+        description: t("追踪当前 PDF 文件、页码和文本选区。"),
+      },
+      {
+        key: "trackWebview",
+        name: t("追踪 Web Viewer 页面"),
+        description: t("追踪 Obsidian 内置浏览器的标题、URL 和文本选区。"),
+      },
+    ];
+    for (const pageType of pageTypes) {
+      new Setting(containerEl)
+        .setName(pageType.name)
+        .setDesc(
+          this.plugin.settings.activityTracking.supportAllActivePages
+            ? t("“支持所有活动页面”已开启，此选项不再单独生效。")
+            : pageType.description,
+        )
+        .addToggle((toggle) =>
+          toggle
+            .setValue(this.plugin.settings.activityTracking[pageType.key])
+            .setDisabled(
+              this.plugin.settings.activityTracking.supportAllActivePages,
+            )
+            .onChange(async (value) => {
+              this.plugin.settings.activityTracking[pageType.key] = value;
+              await this.plugin.saveAndApplySettings();
+            }),
+        );
+    }
+  }
+
+  private renderIdeDiffSettings(containerEl: HTMLElement): void {
+    addHeading(containerEl, t("diff"));
+    new Setting(containerEl)
+      .setName(t("Diff 审核行为"))
+      .setDesc(
+        t("完全跟随 Claude Code 权限模式：默认权限会显示审核；acceptEdits 会直接接受编辑，插件不会额外弹窗。"),
+      );
+  }
+
+  private renderIdeMaintenanceSettings(containerEl: HTMLElement): void {
+    addHeading(containerEl, t("维护"));
+    new Setting(containerEl)
+      .setName(t("重启桥接"))
+      .setDesc(t("重建本地服务和 Claude Code IDE lock 文件。"))
+      .addButton((button) =>
+        button.setButtonText(t("重启")).onClick(async () => {
+          await this.plugin.restartBridge();
+          new Notice(t("mv-AIDE 桥接已重启。"));
+          this.rerenderSettings("ide");
+        }),
+      );
+
+    new Setting(containerEl)
+      .setName(t("恢复插件管理的 Claude 设置"))
+      .setDesc(t("只恢复本插件替换过的 ANTHROPIC_BASE_URL，不改其他配置。"))
+      .addButton((button) =>
+        button.setButtonText(t("恢复")).onClick(async () => {
+          await this.plugin.restoreClaudeSettings();
+          new Notice(t("已恢复 mv-AIDE 管理的 Claude 设置。"));
+          this.rerenderSettings("ide");
+        }),
+      );
+  }
+
+  private renderIdeMcpToolSettings(containerEl: HTMLElement): void {
+    new Setting(containerEl)
+      .setName(t("启用 MCP 主动工具"))
+      .setDesc(
+        t("主动工具通过标准 MCP 提供给 Claude Code 和 Codex CLI。改变后请重启对应客户端或重新执行 /mcp。"),
+      )
+      .addToggle((toggle) =>
+        toggle
+          .setValue(this.plugin.settings.mcpEnabled)
+          .onChange(async (value) => {
+            this.plugin.settings.mcpEnabled = value;
+            await this.plugin.saveAndApplySettings();
+            this.rerenderSettings("ide");
+          }),
+      );
+
+    if (this.plugin.settings.mcpEnabled) {
+      const tools: Array<{
+        key: keyof ToolToggles;
+        name: string;
+        description: string;
+      }> = [
+        {
+          key: "getLatestSelection",
+          name: t("获取最近标签与选区"),
+          description: t("焦点离开 Obsidian 后仍可读取最近一次状态。"),
+        },
+        {
+          key: "getOpenEditors",
+          name: t("获取全部打开标签"),
+          description: t("包括 Markdown、PDF、图片、网页、终端和其他插件页面。"),
+        },
+        {
+          key: "openFile",
+          name: t("在 Obsidian 中打开文件"),
+          description: t("允许 Claude 主动定位仓库内文件和文本范围。"),
+        },
+        {
+          key: "readCurrentWebPage",
+          name: t("读取最近网页为 Markdown"),
+          description:
+            t("把最近浏览且仍打开的 Web Viewer 页面转换为 Markdown，不刷新或跳转页面。用于让 Claude 查看网页全貌，而不是只读取选区。"),
+        },
+        {
+          key: "getDiagnostics",
+          name: t("获取 lint 诊断"),
+          description: t("按严重级别（错误/警告/全部）和文件路径过滤读取 lint 诊断。"),
+        },
+        {
+          key: "getTerminalOutput",
+          name: t("读取终端输出"),
+          description: t("读取插件集成终端标签的末尾输出行，可按标签名过滤。"),
+        },
+        {
+          key: "searchVaultSymbols",
+          name: t("搜索库内符号"),
+          description: t("按子串搜索全库 Markdown heading 等符号。"),
+        },
+        {
+          key: "getBacklinks",
+          name: t("获取反向链接"),
+          description: t("列出链接到指定文件的库内文件。"),
+        },
+        {
+          key: "getOutgoingLinks",
+          name: t("获取出链"),
+          description: t("列出指定文件链接出去的库内文件。"),
+        },
+        {
+          key: "searchTags",
+          name: t("搜索标签"),
+          description: t("按子串搜索库内使用中的标签（返回 #tag）。"),
+        },
+        {
+          key: "listNotesByTag",
+          name: t("按标签列笔记"),
+          description: t("列出携带指定标签的库内文件。"),
+        },
+      ];
+      for (const tool of tools) {
+        new Setting(containerEl)
+          .setName(tool.name)
+          .setDesc(tool.description)
+          .addToggle((toggle) =>
+            toggle
+              .setValue(this.plugin.settings.toolToggles[tool.key])
+              .onChange(async (value) => {
+                this.plugin.settings.toolToggles[tool.key] = value;
+                await this.plugin.saveAndApplySettings();
+              }),
+          );
+        if (tool.key === "readCurrentWebPage") {
+          new Setting(containerEl)
+            .setName(t("网页工具最大返回字符数"))
+            .setDesc(
+              t("留空或填写 0 表示不限，插件会忠实返回当前已加载页面的完整可见内容；填写正整数时才截断。"),
+            )
+            .addText((text) => {
+              text.inputEl.type = "number";
+              text.inputEl.min = "0";
+              text.inputEl.step = "1";
+              text
+                .setPlaceholder(t("不限"))
+                .setValue(
+                  this.plugin.settings.toolContextLimits.readCurrentWebPage?.toString() ??
+                    "",
+                )
+                .onChange(async (value) => {
+                  const trimmed = value.trim();
+                  if (!trimmed) {
+                    this.plugin.settings.toolContextLimits.readCurrentWebPage =
+                      null;
+                  } else {
+                    const parsed = Number(trimmed);
+                    if (!Number.isFinite(parsed) || parsed < 0) return;
+                    this.plugin.settings.toolContextLimits.readCurrentWebPage =
+                      parsed === 0 ? null : Math.floor(parsed);
+                  }
+                  await this.plugin.saveData(this.plugin.settings);
+                });
+            });
+        }
+      }
+
+      new Setting(containerEl)
+        .setName(t("MCP 注册状态"))
+        .setDesc(this.plugin.mcpStatus)
+        .addButton((button) =>
+          button.setButtonText(t("重新注册")).onClick(async () => {
+            await this.plugin.retryMcpRegistration();
+            new Notice(this.plugin.mcpStatus);
+            this.rerenderSettings("ide");
+          }),
+        )
+        .addButton((button) =>
+          button.setButtonText(t("清理注册")).onClick(async () => {
+            await this.plugin.cleanMcpRegistration();
+            new Notice(this.plugin.mcpStatus);
+            this.rerenderSettings("ide");
+          }),
+        );
     }
   }
 
@@ -2329,9 +2521,14 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
         );
     }
 
+    new Setting(wrap).setName(t("Lint 诊断")).setHeading();
     renderLintSetting(wrap, this.plugin, profile.extension);
+    new Setting(wrap).setName(t("mv-run 指令")).setHeading();
     renderMvRunSetting(wrap, this.plugin, profile.extension);
+    new Setting(wrap).setName(t("正则替换")).setHeading();
+    renderRegexScopeSetting(wrap, this.plugin, profile.extension);
 
+    new Setting(wrap).setName(t("Snippets")).setHeading();
     this.renderSourceAssistSnippetsEditor(wrap, profile, idx);
     this.renderSourceAssistHotkeyIntro(wrap);
 
@@ -2479,7 +2676,6 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
     idx: number,
   ): void {
     const setting = new Setting(containerEl)
-      .setName("Snippets")
       .setDesc(
         t("填写格式与 Latex Suite 的 snippets 设置一致；可以直接粘贴原 snippets 数组。行首 // 会按 JS 注释处理。"),
       )

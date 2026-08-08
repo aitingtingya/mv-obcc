@@ -1,5 +1,6 @@
 import type { ManagedCopyState } from "./managed-copy-fallback";
 import type { LintSettings } from "./lint/lint-types";
+import type { RegexReplaceSettings } from "./regex-replace/regex-replace-types";
 import type { MvRunSettings } from "./terminal/mv-run-types";
 
 export type UpstreamMode = "native" | "compatibility";
@@ -9,6 +10,13 @@ export interface ToolToggles {
   getOpenEditors: boolean;
   openFile: boolean;
   readCurrentWebPage: boolean;
+  getDiagnostics: boolean;
+  getTerminalOutput: boolean;
+  searchVaultSymbols: boolean;
+  getBacklinks: boolean;
+  getOutgoingLinks: boolean;
+  searchTags: boolean;
+  listNotesByTag: boolean;
 }
 
 export interface ActivityTrackingSettings {
@@ -16,6 +24,10 @@ export interface ActivityTrackingSettings {
   trackMarkdown: boolean;
   trackPdf: boolean;
   trackWebview: boolean;
+  /** 被动推送 lint 错误计数（只推错误不推警告；仅在该类型 lint 跑过时产生）。 */
+  pushLintErrors: boolean;
+  /** selection_changed 快照附 heading 面包屑（仅 md/tex）。 */
+  includeHeadingBreadcrumb: boolean;
 }
 
 export interface ToolContextLimits {
@@ -314,6 +326,8 @@ export interface BridgeSettings {
   managedLocalBaseUrl: string | null;
   activityTracking: ActivityTrackingSettings;
   preserveSelectionHighlights: boolean;
+  /** @deprecated 旧版 UA 补丁设置；保留读取兼容，不再产生运行时行为。 */
+  webviewStripElectronUa: boolean;
   toolToggles: ToolToggles;
   toolContextLimits: ToolContextLimits;
   ideIntegrations: IdeIntegrationSettings;
@@ -322,6 +336,7 @@ export interface BridgeSettings {
   inlineCompletion: InlineCompletionSettings;
   sourceAssist: SourceAssistSettings;
   sourceLint: LintSettings;
+  regexReplace: RegexReplaceSettings;
   mvRun: MvRunSettings;
   externalFileOpener: ExternalFileOpenerSettings;
   mcpEnabled: boolean;
@@ -372,6 +387,8 @@ export interface SelectionState {
   resourceType?: "markdown" | "web" | "pdf" | "file" | "view";
   url?: string;
   page?: number;
+  /** 光标所在 heading 链（仅 md/tex，如 "第 3 章 > 3.2 路径积分"）。 */
+  headingBreadcrumb?: string;
   cursor: EditorPoint;
   selection: EditorSelection;
 }

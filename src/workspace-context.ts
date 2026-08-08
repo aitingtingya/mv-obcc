@@ -11,6 +11,14 @@ import { fileUrl } from "./path-utils";
 import { getVaultRoot } from "./selection";
 import type { OpenEditorTab, SelectionState } from "./types";
 
+/** 浏览器视图的 viewType 随 Obsidian 版本不同：新版（1.13.4 实测）为
+ * "webviewer"，旧版（1.6.7 asar 实证）为 "browser"，两者都接受。 */
+const BROWSER_VIEW_TYPES = new Set(["browser", "webviewer"]);
+
+export function isBrowserViewType(viewType: string): boolean {
+  return BROWSER_VIEW_TYPES.has(viewType);
+}
+
 interface WebViewElement extends HTMLElement {
   executeJavaScript(script: string): Promise<unknown>;
   getURL?: () => string;
@@ -164,7 +172,7 @@ export async function currentWorkspaceContext(
     };
   }
 
-  if (viewType === "webviewer") {
+  if (isBrowserViewType(viewType)) {
     const webView = view as WebViewerView;
     const { url, title } = webViewState(webView);
     let text = "";
@@ -256,14 +264,14 @@ export function getOpenWorkspaceTabs(app: App): { tabs: OpenEditorTab[] } {
       viewType,
     };
 
-    if (viewType === "webviewer") {
+    if (isBrowserViewType(viewType)) {
       const loaded = webViewState(view as WebViewerView);
       const url =
         loaded.url ||
         (typeof leafState.state?.url === "string" ? leafState.state.url : "");
       tabs.push({
         ...base,
-        uri: url || `obsidian://view/webviewer/${index}`,
+        uri: url || `obsidian://view/${viewType}/${index}`,
         resourceType: "web",
         url,
       });
@@ -318,14 +326,15 @@ export async function readCurrentWebPage(
 ): Promise<Record<string, unknown>> {
   const activeLeaf = activeWorkspaceLeaf(app);
   const activeWebLeaf =
-    activeLeaf?.view.getViewType() === "webviewer" &&
+    activeLeaf &&
+    isBrowserViewType(activeLeaf.view.getViewType()) &&
     workspaceContainsLeaf(app, activeLeaf)
       ? activeLeaf
       : null;
   const leaf =
     activeWebLeaf ??
     (latestWebLeaf &&
-    latestWebLeaf.view.getViewType() === "webviewer" &&
+    isBrowserViewType(latestWebLeaf.view.getViewType()) &&
     workspaceContainsLeaf(app, latestWebLeaf)
       ? latestWebLeaf
       : null);

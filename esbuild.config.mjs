@@ -89,12 +89,33 @@ async function patchLatexSuiteStartupCycle(filePath) {
   await fs.writeFile(filePath, patched, "utf8");
 }
 
+async function assertBrowserLoginSafetyBoundary(filePath) {
+  const source = await fs.readFile(filePath, "utf8");
+  const forbiddenMarkers = [
+    "passkey disabled by mv-aide",
+    "UA -> Safari",
+    "navigator.credentials",
+    "isConditionalMediationAvailable",
+    "setUserAgent(",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)",
+  ];
+  const found = forbiddenMarkers.filter((marker) => source.includes(marker));
+  if (found.length > 0) {
+    throw new Error(
+      `Browser login safety boundary failed; production bundle contains: ${found.join(", ")}`,
+    );
+  }
+}
+
 const latexSuiteStartupPatchPlugin = {
   name: "latex-suite-startup-patch",
   setup(build) {
     build.onEnd(async (result) => {
       if (result.errors.length > 0) return;
       await patchLatexSuiteStartupCycle("dist/main.js");
+      if (production) {
+        await assertBrowserLoginSafetyBoundary("dist/main.js");
+      }
     });
   },
 };
