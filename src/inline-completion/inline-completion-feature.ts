@@ -24,7 +24,8 @@ import {
   finalCompletionText,
 } from "./inline-completion-protocol";
 import { buildRejectUserMessage } from "./inline-reject-prompt";
-import { readSuggestion } from "./inline-suggestion-state";
+import { hasSuggestion, readSuggestion } from "./inline-suggestion-state";
+import { matchInlineHotkey } from "./inline-hotkey-format";
 import { classifyInlineCompletionUpdate } from "./inline-trigger";
 
 /**
@@ -109,6 +110,20 @@ export class InlineCompletionFeature {
   /** The extension array for `registerEditorExtension`. */
   markdownExtension() {
     return this.controller.markdownExtension();
+  }
+
+  /** Let visible ghost-text actions consume their configured key before Vim. */
+  shouldHandleKeyBeforeVim(view: EditorView, event: KeyboardEvent): boolean {
+    if (!this.settings.enabled || !hasSuggestion(view)) return false;
+    const { accept, reject, cancel } = this.settings.keymap;
+    const isMacLike = process.platform === "darwin";
+    return [accept, reject, cancel].some((key) =>
+      matchInlineHotkey(key, event, isMacLike),
+    );
+  }
+
+  dismissForVimVisual(view: EditorView): void {
+    this.cancelView(view, true);
   }
 
   // ---- Lifecycle hooks (called from main.ts) ----

@@ -7,6 +7,8 @@ import { t } from "./i18n";
 // 新版（1.13.4 运行时实测）viewType 为 "webviewer"、命令为 webviewer:open-history。
 const BROWSER_VIEW_TYPES = new Set(["browser", "webviewer"]);
 const OPEN_HISTORY_COMMANDS = ["webviewer:open-history", "browser:open-history"];
+// 本按钮的锚点 class：创建时打上，供下载按钮定位与 DOM 级幂等判重。
+const HISTORY_ACTION_SELECTOR = ".mv-aide-history-action";
 
 /**
  * 给 web viewer（浏览器）视图的工具栏注入「浏览历史」按钮，点击执行官方
@@ -19,8 +21,9 @@ const OPEN_HISTORY_COMMANDS = ["webviewer:open-history", "browser:open-history"]
  * 按钮 insertBefore 到容器末尾元素前，即确定性落在「眼镜右、⋮ 左」。
  */
 export class BrowserHistoryButtonFeature {
-  private readonly installedViews = new WeakSet<View>();
+  private installedViews = new WeakSet<View>();
   private buttons: HTMLElement[] = [];
+  private enabled = true;
 
   constructor(private readonly plugin: MvSenceAiIdePlugin) {}
 
@@ -32,7 +35,22 @@ export class BrowserHistoryButtonFeature {
     this.plugin.register(() => this.removeAll());
   }
 
+  setEnabled(enabled: boolean): void {
+    this.enabled = enabled;
+    if (enabled) {
+      this.install();
+    } else {
+      this.removeAll();
+      // WeakSet 重建只放在禁用分支：按钮已从 DOM 移除，下次启用时允许
+      // 重新注入。若放在启用分支，运行时启用插件时 register() 的
+      // onLayoutReady 同步 install 与 setEnabled(true) 的 install 会
+      // 各注入一次（重复按钮）。
+      this.installedViews = new WeakSet();
+    }
+  }
+
   install(): void {
+    if (!this.enabled) return;
     const commands = (
       this.plugin.app as unknown as {
         commands?: {
@@ -53,6 +71,13 @@ export class BrowserHistoryButtonFeature {
       if (!BROWSER_VIEW_TYPES.has(view.getViewType())) return;
       if (this.installedViews.has(view)) return;
       if (typeof view.addAction !== "function") return;
+      // DOM 级幂等：即使 WeakSet 失效（多实例/重建时序）也不重复注入
+      const existing = view.containerEl.querySelector(HISTORY_ACTION_SELECTOR);
+      if (existing instanceof HTMLElement) {
+        this.installedViews.add(view);
+        if (!this.buttons.includes(existing)) this.buttons.push(existing);
+        return;
+      }
       this.installedViews.add(view);
       const el = view.addAction("history", t("浏览历史"), () => {
         executeCommandById(openHistoryCommand);

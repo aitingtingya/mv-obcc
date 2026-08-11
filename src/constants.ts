@@ -1,3 +1,5 @@
+import { EXTERNAL_FILE_MIRROR_FOLDER } from "./vault-storage-paths";
+
 export const DIFF_VIEW_TYPE = "mv-senceai-ide-diff";
 export const TERMINAL_VIEW_TYPE = "mv-terminal-view";
 export const IDE_NAME = "Obsidian";
@@ -64,6 +66,9 @@ export const DEFAULT_SETTINGS = {
     includeHeadingBreadcrumb: true,
   },
   preserveSelectionHighlights: true,
+  browserHistoryButton: true,
+  browserDownloadsButton: true,
+  fileExplorerPathBar: true,
   webviewStripElectronUa: false,
   toolToggles: {
     getLatestSelection: true,
@@ -174,7 +179,7 @@ export const DEFAULT_SETTINGS = {
       {
         id: "source-assist-md",
         extension: "md",
-        enabled: true,
+        latexSuiteEnabled: true,
         highlightThemeId: "builtin:obsidian",
         snippets: "export default []",
         snippetsTrigger: "Tab",
@@ -187,6 +192,13 @@ export const DEFAULT_SETTINGS = {
     ],
     highlightThemeId: "builtin:obsidian",
     customHighlightThemes: [],
+  },
+  vim: {
+    allowExternalCommands: false,
+    statusDisplay: "text" as const,
+    cursorColorTheme: "default",
+    cursorColorCustom: { r: 148, g: 103, b: 189 },
+    sources: {},
   },
   sourceLint: {
     profiles: [],
@@ -202,7 +214,8 @@ export const DEFAULT_SETTINGS = {
   externalFileOpener: {
     enabled: false,
     extensionMode: "markdown-only" as const,
-    mirrorFolder: "mv-aide-external-files/mirror",
+    disabledExtensions: [] as string[],
+    mirrorFolder: EXTERNAL_FILE_MIRROR_FOLDER,
     mappings: {},
     openerToken: "",
     fileTypeIcons: true,

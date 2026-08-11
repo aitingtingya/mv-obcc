@@ -13,9 +13,9 @@ import {
   Plugin,
   Setting,
   TFile,
+  TFolder,
   type App,
   type PaneType,
-  type TFolder,
   type WorkspaceLeaf,
 } from "obsidian";
 import { breadcrumbAtLine } from "./src/heading-breadcrumb";
@@ -73,9 +73,23 @@ import { normalizeRegexReplaceSettings } from "./src/regex-replace/regex-replace
 import { RegexReplaceFeature } from "./src/regex-replace/regex-replace-feature";
 import { BrowserHistoryButtonFeature } from "./src/browser-history-button";
 import { BrowserDownloadsButtonFeature } from "./src/browser-downloads-button";
+import { FileExplorerPathBarFeature } from "./src/file-explorer-path-bar";
+import {
+  FALLBACK_OPENABLE_EXTENSIONS,
+  extensionOfFileName,
+} from "./src/file-explorer-path-bar";
 import { parseTexSections } from "./src/source-assist/tex-outline";
 import { runFileBottomCommand } from "./src/terminal/file-bottom-command";
 import { normalizeMvRunSettings } from "./src/terminal/mv-run-types";
+import {
+  anyVimSourceEnabled,
+  normalizeVimSettings,
+} from "./src/vim/settings";
+import type {
+  VimFeatureHandle,
+  VimFeatureHost,
+  VimFeatureStatus,
+} from "./src/vim-host/public";
 import { SourceAssistFeature } from "./src/source-assist/source-assist-feature";
 import { TexOutlineFeature } from "./src/source-assist/tex-outline-feature";
 import {
@@ -139,8 +153,11 @@ import { InlineCompletionFeature } from "./src/inline-completion/inline-completi
 import {
   ExternalFileOpenerFeature,
   externalFileAllowedExtensions,
+  isExternalFileExtensionAllowed,
+  normalizeExternalFileDisabledExtensions,
   normalizeExternalFileOpenerExtensionMode,
   type ExternalFileOpenResult,
+  type ExternalFileStorageMigrationSummary,
   type ManagedCopyRestoreTask,
   type ManagedCopySymlinkRetrySummary,
 } from "./src/external-file-opener";
@@ -161,6 +178,14 @@ import {
 } from "./src/external-file-opener-system";
 import { readOrCreateExternalFileHostId } from "./src/external-file-host-identity";
 import { normalizeExternalFileMirrorFolder } from "./src/external-file-mirror-path";
+import {
+  EXTERNAL_FILE_MIRROR_FOLDER,
+  VIM_VAULT_CONFIG_PATH,
+} from "./src/vault-storage-paths";
+import {
+  openFileWithDefaultApp,
+  type DefaultFileOpenResult,
+} from "./src/reveal-in-folder";
 import type {
   ManagedCopyConflict,
   ManagedCopyConflictChoice,
@@ -403,10 +428,14 @@ export default class MvSenceAiIdePlugin extends Plugin {
   private llmFeature: LlmFeature | null = null;
   private inlineCompletion: InlineCompletionFeature | null = null;
   private sourceAssist: SourceAssistFeature | null = null;
+  private vimFeature: VimFeatureHandle | null = null;
   private lintFeature: LintFeature | null = null;
   private lintPushSignature: string | null = null;
   private regexReplace: RegexReplaceFeature | null = null;
   private texOutline: TexOutlineFeature | null = null;
+  private browserHistoryButton: BrowserHistoryButtonFeature | null = null;
+  private browserDownloadsButton: BrowserDownloadsButtonFeature | null = null;
+  private fileExplorerPathBar: FileExplorerPathBarFeature | null = null;
   private externalFileOpener: ExternalFileOpenerFeature | null = null;
   private readonly externalFileOpenerSystem = new ExternalFileOpenerSystem();
   private externalFileFallbackDecision:
@@ -485,6 +514,7 @@ export default class MvSenceAiIdePlugin extends Plugin {
       llm: migrateLlm(loaded.llm),
       inlineCompletion: migrateInlineCompletion(loaded.inlineCompletion),
       sourceAssist: normalizeSourceAssistSettings(loaded.sourceAssist),
+      vim: normalizeVimSettings(loaded.vim),
       sourceLint: normalizeLintSettings(loaded.sourceLint),
       regexReplace: normalizeRegexReplaceSettings(loaded.regexReplace),
       mvRun: normalizeMvRunSettings(loaded.mvRun),
@@ -503,6 +533,9 @@ export default class MvSenceAiIdePlugin extends Plugin {
         })(),
         extensionMode: normalizeExternalFileOpenerExtensionMode(
           loaded.externalFileOpener?.extensionMode,
+        ),
+        disabledExtensions: normalizeExternalFileDisabledExtensions(
+          loaded.externalFileOpener?.disabledExtensions,
         ),
         mappings: {
           ...(loaded.externalFileOpener?.mappings ?? {}),
@@ -550,7 +583,13 @@ export default class MvSenceAiIdePlugin extends Plugin {
         this.externalFileOpenerSystem.managedCopyFallbackEnabled(
           getVaultRoot(this.app),
         ),
-      getManagedCopyHostId: () => readOrCreateExternalFileHostId(),
+      getManagedCopyHostId: () => readOrCreateExternalFileHostId(
+        getVaultRoot(this.app),
+        path.join(os.homedir(), ".mv-aide", "external-file-host-id"),
+      ),
+      moveVaultDirectory: async (previousVaultPath, targetVaultPath) => {
+        await this.moveVaultDirectory(previousVaultPath, targetVaultPath);
+      },
       onManagedCopyConflict: (conflict, resolve) => {
         new ManagedCopyConflictModal(this.app, conflict, resolve).open();
       },
@@ -631,6 +670,7 @@ export default class MvSenceAiIdePlugin extends Plugin {
     );
     await this.sourceAssist.load();
     this.registerEditorExtension(this.sourceAssist.extensions);
+    await this.syncVimFeatureFromSettings();
     this.lintFeature = new LintFeature(this);
     this.registerEditorExtension(this.lintFeature.extensions);
     this.lintFeature.registerCommand();
@@ -639,8 +679,15 @@ export default class MvSenceAiIdePlugin extends Plugin {
     this.regexReplace = new RegexReplaceFeature(this);
     this.registerEditorExtension(this.regexReplace.extensions);
     this.regexReplace.registerCommands();
-    new BrowserHistoryButtonFeature(this).register();
-    new BrowserDownloadsButtonFeature(this).register();
+    this.browserHistoryButton = new BrowserHistoryButtonFeature(this);
+    this.browserHistoryButton.register();
+    this.browserHistoryButton.setEnabled(this.settings.browserHistoryButton);
+    this.browserDownloadsButton = new BrowserDownloadsButtonFeature(this);
+    this.browserDownloadsButton.register();
+    this.browserDownloadsButton.setEnabled(this.settings.browserDownloadsButton);
+    this.fileExplorerPathBar = new FileExplorerPathBarFeature(this);
+    this.fileExplorerPathBar.register();
+    this.fileExplorerPathBar.setEnabled(this.settings.fileExplorerPathBar);
     this.texOutline = new TexOutlineFeature(this.app, () =>
       this.texOutlineFeatureEnabled(),
     );
@@ -714,6 +761,8 @@ export default class MvSenceAiIdePlugin extends Plugin {
     this.llmFeature = null;
     this.inlineCompletion?.dispose();
     this.inlineCompletion = null;
+    this.vimFeature?.disable();
+    this.vimFeature = null;
     this.externalFileOpener?.dispose();
     this.externalFileOpener = null;
     this.fileTypeIconView?.dispose();
@@ -805,16 +854,191 @@ export default class MvSenceAiIdePlugin extends Plugin {
     this.syncCustomMarkdownExtensions();
     await this.sourceAssist?.settingsChanged();
     await this.texOutline?.settingsChanged();
+    await this.syncVimFeatureFromSettings();
+  }
+
+  vimGlobalConfigPath(): string {
+    return path.join(
+      getVaultRoot(this.app),
+      ...VIM_VAULT_CONFIG_PATH.split("/"),
+    );
+  }
+
+  vimLegacyConfigSources(): VimFeatureHost["legacyVimrcSources"] {
+    return [
+      {
+        filePath: path.join(os.homedir(), ".mv-aide", "vim", ".vimrc"),
+        removeAfterMigration: true,
+      },
+      {
+        filePath: path.join(
+          getVaultRoot(this.app),
+          this.app.vault.configDir,
+          "plugins",
+          this.manifest.id,
+          ".vimrc",
+        ),
+        removeAfterMigration: false,
+      },
+    ];
+  }
+
+  vimStatus(): VimFeatureStatus {
+    return this.vimFeature?.status() ?? {
+      state: "disabled",
+      message: this.vimSourceExtensionsEnabled()
+        ? t("Vim 尚未完成加载。")
+        : t("Vim 已关闭；未注册任何编辑器处理器。"),
+      editorCount: 0,
+      loadedFiles: [],
+    };
+  }
+
+  async saveVimSettings(): Promise<void> {
+    await this.saveData(this.settings);
+    await this.syncVimFeatureFromSettings();
+  }
+
+  async reloadVimConfiguration(): Promise<void> {
+    if (!this.vimSourceExtensionsEnabled()) return;
+    const feature = await this.ensureVimFeature();
+    await feature.reload();
+  }
+
+  async ensureVimConfigFile(): Promise<void> {
+    if (!this.vimSourceExtensionsEnabled()) return;
+    const feature = await this.ensureVimFeature();
+    await feature.ensureVimrcFile();
+  }
+
+  async openVimConfigFile(): Promise<void> {
+    if (!this.vimSourceExtensionsEnabled()) return;
+    const feature = await this.ensureVimFeature();
+    await feature.openVimrcFile();
+  }
+
+  async hasLegacyVimConfigFile(): Promise<boolean> {
+    if (!this.vimSourceExtensionsEnabled()) return false;
+    const feature = await this.ensureVimFeature();
+    return feature.hasLegacyVimrcFile();
+  }
+
+  async migrateLegacyVimConfigFile(): Promise<boolean> {
+    if (!this.vimSourceExtensionsEnabled()) return false;
+    const feature = await this.ensureVimFeature();
+    return feature.migrateLegacyVimrcFile();
+  }
+
+  private async syncVimFeatureFromSettings(): Promise<void> {
+    if (!this.vimSourceExtensionsEnabled()) {
+      this.vimFeature?.disable();
+      return;
+    }
+    const conflict = this.detectVimConflict();
+    if (conflict) {
+      for (const source of Object.values(this.settings.vim.sources)) {
+        source.enabled = false;
+      }
+      await this.saveData(this.settings);
+      new Notice(conflict, 8000);
+      return;
+    }
+    const feature = await this.ensureVimFeature();
+    await feature.settingsChanged();
+  }
+
+  private vimSourceExtensionsEnabled(): boolean {
+    return anyVimSourceEnabled(
+      this.settings.vim,
+      this.settings.sourceAssist.profiles.map((profile) => profile.extension),
+    );
+  }
+
+  private async ensureVimFeature(): Promise<VimFeatureHandle> {
+    if (this.vimFeature) return this.vimFeature;
+    const { createVimFeature } = await import("./src/vim-host/feature");
+    const host: VimFeatureHost = {
+      app: this.app,
+      pluginId: this.manifest.id,
+      globalVimrcPath: this.vimGlobalConfigPath(),
+      legacyVimrcSources: this.vimLegacyConfigSources(),
+      vaultRoot: getVaultRoot(this.app),
+      getSettings: () => this.settings.vim,
+      sourceExtensions: () =>
+        this.settings.sourceAssist.profiles.map((profile) => profile.extension),
+      latexSuiteRuntimeEnabled: (extension) => {
+        if (!this.settings.sourceAssist.enabled) return false;
+        return this.settings.sourceAssist.profiles.some(
+          (profile) =>
+            profile.extension === extension && profile.latexSuiteEnabled,
+        );
+      },
+      shouldYieldKey: (view, event) =>
+        this.inlineCompletion?.shouldHandleKeyBeforeVim(view, event) ?? false,
+      onEnterVisual: (view) => this.inlineCompletion?.dismissForVimVisual(view),
+      createStatusBarItem: () => this.addStatusBarItem(),
+      registerEditorExtension: (extension) =>
+        this.registerEditorExtension(extension),
+      refreshEditorExtensions: () => this.app.workspace.updateOptions(),
+      notify: (message, timeout) => new Notice(message, timeout),
+    };
+    this.vimFeature = createVimFeature(host);
+    return this.vimFeature;
+  }
+
+  private detectVimConflict(): string | null {
+    const vimEnabled = Reflect.get(this.app, "isVimEnabled");
+    if (
+      typeof vimEnabled === "function" &&
+      Reflect.apply(vimEnabled, this.app, []) === true
+    ) {
+      return t("无法启用 mv-AIDE Vim：请先在 Obsidian「编辑器」设置中关闭内置 Vim 键位。插件不会自动修改该设置。");
+    }
+    const pluginManager = Reflect.get(this.app, "plugins") as
+      | { enabledPlugins?: Set<string> }
+      | undefined;
+    const conflicts = ["vim-motions", "obsidian-vimrc-support"].filter((id) =>
+      pluginManager?.enabledPlugins?.has(id),
+    );
+    if (conflicts.length > 0) {
+      return t("无法启用 mv-AIDE Vim：请先关闭冲突插件 {plugins}。插件不会自动关闭其它插件。", {
+        plugins: conflicts.join(", "),
+      });
+    }
+    return null;
+  }
+
+  private logicalVimSelection(view: MarkdownView) {
+    const cm = (view.editor as unknown as { cm?: unknown }).cm;
+    return cm instanceof EditorView
+      ? this.vimFeature?.effectiveSelection(cm) ?? null
+      : null;
+  }
+
+  currentSelectionState(): SelectionState | null {
+    return currentSelection(this.app, (view) => this.logicalVimSelection(view));
+  }
+
+  currentWorkspaceContextState(
+    leaf?: WorkspaceLeaf | null,
+  ): Promise<SelectionState | null> {
+    return currentWorkspaceContext(
+      this.app,
+      leaf,
+      (view) => this.logicalVimSelection(view),
+    );
   }
 
   private texOutlineFeatureEnabled(): boolean {
     const settings = this.settings.sourceAssist;
+    // profile 级开关在 0.9.6 更名：enabled → latexSuiteEnabled（Code Suite
+    // 总开关），与 sourceAssistTexEnhancedRenderEnabled 的门控口径一致。
     return (
       settings.enabled &&
       settings.profiles.some(
         (profile) =>
           profile.extension === "tex" &&
-          profile.enabled &&
+          profile.latexSuiteEnabled &&
           profile.texOutlineEnabled,
       )
     );
@@ -830,7 +1054,7 @@ export default class MvSenceAiIdePlugin extends Plugin {
       id: "send-selection-to-claude-code",
       name: t("发送当前选中内容到 Claude Code"),
       editorCallback: () => {
-        const state = currentSelection(this.app);
+        const state = this.currentSelectionState();
         if (state) {
           const mention = atMentionedParams(state);
           this.universalLatestMention = mention;
@@ -1348,6 +1572,70 @@ export default class MvSenceAiIdePlugin extends Plugin {
     await this.saveData(this.settings);
   }
 
+  async setBrowserHistoryButtonEnabled(enabled: boolean): Promise<void> {
+    this.settings.browserHistoryButton = enabled;
+    this.browserHistoryButton?.setEnabled(enabled);
+    await this.saveData(this.settings);
+  }
+
+  async setBrowserDownloadsButtonEnabled(enabled: boolean): Promise<void> {
+    this.settings.browserDownloadsButton = enabled;
+    this.browserDownloadsButton?.setEnabled(enabled);
+    await this.saveData(this.settings);
+  }
+
+  async setFileExplorerPathBarEnabled(enabled: boolean): Promise<void> {
+    this.settings.fileExplorerPathBar = enabled;
+    this.fileExplorerPathBar?.setEnabled(enabled);
+    await this.saveData(this.settings);
+  }
+
+  /** 路径栏与下载弹窗共享的「全量显示」开关状态（会话级，不持久化）。 */
+  private externalListingShowAll = false;
+
+  getExternalListingShowAllFiles(): boolean {
+    return this.externalListingShowAll;
+  }
+
+  setExternalListingShowAllFiles(value: boolean): void {
+    this.externalListingShowAll = value;
+  }
+
+  /** 文件名是否可被 Obsidian 打开：优先查 viewRegistry，回落内置清单。 */
+  canOpenWithObsidian(fileName: string): boolean {
+    const extension = extensionOfFileName(fileName);
+    if (!extension) return false;
+    const registry = (
+      this.app as unknown as {
+        viewRegistry?: { getTypeByExtension?: (extension: string) => unknown };
+      }
+    ).viewRegistry;
+    if (typeof registry?.getTypeByExtension === "function") {
+      return Boolean(registry.getTypeByExtension(extension));
+    }
+    return FALLBACK_OPENABLE_EXTENSIONS.has(extension);
+  }
+
+  /**
+   * 下载/浏览弹窗点击文件：注入打开器已启用、Obsidian 有可注册视图且后缀在
+   * 注入打开器允许清单内时，用注入打开机制在当前 vault 直接打开（不经系统
+   * wrapper 的仓库选择，本仓库不一定是默认打开仓库）；否则回退系统默认应用。
+   * 不在此处弹 Notice：失败信息由调用方（弹窗行打开路径）统一展示。
+   */
+  async openExternalListingFile(
+    absolutePath: string,
+  ): Promise<DefaultFileOpenResult> {
+    if (
+      this.settings.externalFileOpener.enabled &&
+      this.canOpenWithObsidian(path.basename(absolutePath)) &&
+      isExternalFileExtensionAllowed(this.settings, absolutePath)
+    ) {
+      const result = await this.openExternalFileWithConsent(absolutePath, true);
+      return { ok: result.success, error: result.message };
+    }
+    return await openFileWithDefaultApp(absolutePath);
+  }
+
   async restartBridge(): Promise<void> {
     await this.stopBridge();
     await this.syncLocalServices(true);
@@ -1500,6 +1788,44 @@ export default class MvSenceAiIdePlugin extends Plugin {
       console.warn(`[mv-aide] Managed-copy migration warning: ${warning}`);
     }
     return summary;
+  }
+
+  externalFileStorageNeedsMigration(): boolean {
+    return this.settings.externalFileOpener.mirrorFolder !==
+      EXTERNAL_FILE_MIRROR_FOLDER;
+  }
+
+  async migrateExternalFileStorage(): Promise<ExternalFileStorageMigrationSummary> {
+    if (!this.externalFileOpener) {
+      throw new Error(t("外部文件打开器尚未完成加载。"));
+    }
+    const summary = await this.externalFileOpener.migrateStorageFolder(
+      EXTERNAL_FILE_MIRROR_FOLDER,
+    );
+    this.syncExternalFileOpenerRuntime();
+    return summary;
+  }
+
+  private async moveVaultDirectory(
+    previousVaultPath: string,
+    targetVaultPath: string,
+  ): Promise<void> {
+    const source = this.app.vault.getAbstractFileByPath(previousVaultPath);
+    if (!(source instanceof TFolder)) {
+      throw new Error(t("旧外部文件目录未被 Obsidian 识别为文件夹。"));
+    }
+    const targetParent = path.posix.dirname(targetVaultPath);
+    let current = "";
+    for (const segment of targetParent.split("/").filter(Boolean)) {
+      current = current ? `${current}/${segment}` : segment;
+      const existing = this.app.vault.getAbstractFileByPath(current);
+      if (existing instanceof TFolder) continue;
+      if (existing) {
+        throw new Error(t("外部文件目标父路径已被普通文件占用。"));
+      }
+      await this.app.vault.createFolder(current);
+    }
+    await this.app.fileManager.renameFile(source, targetVaultPath);
   }
 
   async repairWindowsDeveloperMode(): Promise<boolean> {
@@ -2507,8 +2833,8 @@ export default class MvSenceAiIdePlugin extends Plugin {
     const generation = ++this.broadcastGeneration;
     const leaf = activeWorkspaceLeaf(this.app);
     const activeState =
-      (await currentWorkspaceContext(this.app, leaf)) ??
-      currentSelection(this.app);
+      (await this.currentWorkspaceContextState(leaf)) ??
+      this.currentSelectionState();
     if (generation !== this.broadcastGeneration) return;
     if (activeState) await this.attachHeadingBreadcrumb(activeState);
     this.terminalTracker?.scan();
@@ -2582,8 +2908,8 @@ export default class MvSenceAiIdePlugin extends Plugin {
   private async codexIdeContextSnapshot(): Promise<CodexIdeContextSnapshot> {
     const leaf = activeWorkspaceLeaf(this.app);
     const activeState =
-      (await currentWorkspaceContext(this.app, leaf)) ??
-      currentSelection(this.app);
+      (await this.currentWorkspaceContextState(leaf)) ??
+      this.currentSelectionState();
     if (activeState) await this.attachHeadingBreadcrumb(activeState);
     const current = this.resolveTrackedState(undefined, leaf, activeState);
     if (current) this.rememberState("global", current);

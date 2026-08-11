@@ -37,6 +37,7 @@ import {
   renderFileTypeIco,
 } from "./file-type-icons-raster";
 import { officialLogoPngDataUrl } from "./official-logo";
+import { EXTERNAL_FILE_MIRROR_FOLDER } from "./vault-storage-paths";
 
 const execFile = promisify(childProcess.execFile);
 
@@ -454,7 +455,8 @@ export function preflightWindowsSymlink(
   const temporaryDirectory = runtime.temporaryDirectory?.() ?? os.tmpdir();
   const sourceDir = path.join(temporaryDirectory, `mv-aide-symlink-probe-${randomId}`);
   const sourcePath = path.join(sourceDir, "probe.md");
-  const normalizedMirrorFolder = mirrorFolder.trim().replace(/^[/\\]+/, "") || "mv-aide-external-files/mirror";
+  const normalizedMirrorFolder = mirrorFolder.trim().replace(/^[/\\]+/, "") ||
+    EXTERNAL_FILE_MIRROR_FOLDER;
   const linkDir = path.join(vaultRoot, normalizedMirrorFolder, `.mv-aide-probe-${randomId}`);
   const linkPath = path.join(linkDir, "probe.md");
   const createSymlink = runtime.symlinkSync ?? fs.symlinkSync;

@@ -74,7 +74,10 @@ async function patchLatexSuiteStartupCycle(filePath) {
   const schemaPattern = /var ReplacementOutputSchema = union\(\[\n  (literal\d*)\(false\),\n  (string\d*)\(\),\n  array\(instance\((BaseNode\d*)\)\)\n\]\);/;
   const match = source.match(schemaPattern);
   if (!match) {
-    return;
+    const cycleFreeSchema = /var RawSnippetSchema = object\(\{\n  trigger: union\(\[string\d*\(\), instance\(RegExp\)\]\),\n  replacement: union\(\[string\d*\(\), special\(\(x\) => typeof x === "function"\)\]\),/u;
+    return cycleFreeSchema.test(source) && !source.includes("ReplacementOutputSchema")
+      ? "already-safe"
+      : null;
   }
   const [, literalFn, stringFn, baseNodeClass] = match;
   let patched = source.replace(
@@ -87,6 +90,20 @@ async function patchLatexSuiteStartupCycle(filePath) {
   }
   patched = patched.replace(parsePattern, "safeParse(getReplacementOutputSchema(), rawReplacement)");
   await fs.writeFile(filePath, patched, "utf8");
+  return "patched";
+}
+
+async function minifyPatchedBundle(filePath) {
+  const source = await fs.readFile(filePath, "utf8");
+  const transformed = await esbuild.transform(source, {
+    format: "cjs",
+    legalComments: "inline",
+    loader: "js",
+    minify: true,
+    sourcefile: path.basename(filePath),
+    target: "es2022",
+  });
+  await fs.writeFile(filePath, transformed.code, "utf8");
 }
 
 async function assertBrowserLoginSafetyBoundary(filePath) {
@@ -107,14 +124,42 @@ async function assertBrowserLoginSafetyBoundary(filePath) {
   }
 }
 
+async function assertProductionBundle(filePath) {
+  const source = await fs.readFile(filePath, "utf8");
+  const requiredMarkers = [
+    "mv-AIDE bundles portions of obsidian-latex-suite 1.11.5",
+    "__mvSenceAiModuleEvaluationTiming",
+  ];
+  const missing = requiredMarkers.filter((marker) => !source.includes(marker));
+  if (missing.length > 0) {
+    throw new Error(`Production bundle is missing required markers: ${missing.join(", ")}`);
+  }
+  const forbiddenDebugMarkers = [
+    "[mv-aide vim] controller created",
+    "[mv-aide vim] controller destroyed",
+    "[mv-aide vim] host document changed",
+  ];
+  const found = forbiddenDebugMarkers.filter((marker) => source.includes(marker));
+  if (found.length > 0) {
+    throw new Error(`Production bundle contains Vim debug output: ${found.join(", ")}`);
+  }
+}
+
 const latexSuiteStartupPatchPlugin = {
   name: "latex-suite-startup-patch",
   setup(build) {
     build.onEnd(async (result) => {
       if (result.errors.length > 0) return;
-      await patchLatexSuiteStartupCycle("dist/main.js");
+      const startupCycleState = await patchLatexSuiteStartupCycle("dist/main.js");
       if (production) {
+        if (!startupCycleState) {
+          throw new Error(
+            "Latex Suite startup safety check failed: neither the patch target nor the known cycle-free schema was found.",
+          );
+        }
+        await minifyPatchedBundle("dist/main.js");
         await assertBrowserLoginSafetyBoundary("dist/main.js");
+        await assertProductionBundle("dist/main.js");
       }
     });
   },

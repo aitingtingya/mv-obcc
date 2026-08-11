@@ -1105,7 +1105,7 @@ export class LlmFeature {
     const template = this.currentAutoTriggerTemplate();
     if (!template) return;
     const editTarget = this.captureMarkdownTarget(leaf);
-    const state = await currentWorkspaceContext(this.app, leaf);
+    const state = await this.plugin.currentWorkspaceContextState(leaf);
     if (!state || !state.selection.text.trim()) return;
     await this.invokeWithText(
       template,
@@ -1137,7 +1137,7 @@ export class LlmFeature {
     const leaf =
       requestedLeaf === undefined ? activeWorkspaceLeaf(this.app) : requestedLeaf;
     const editTarget = this.captureMarkdownTarget(leaf);
-    const state = await currentWorkspaceContext(this.app, leaf);
+    const state = await this.plugin.currentWorkspaceContextState(leaf);
     if (!state || !state.selection.text.trim()) {
       new Notice(t("请先选中文本再调用。"));
       return;

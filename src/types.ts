@@ -2,6 +2,7 @@ import type { ManagedCopyState } from "./managed-copy-fallback";
 import type { LintSettings } from "./lint/lint-types";
 import type { RegexReplaceSettings } from "./regex-replace/regex-replace-types";
 import type { MvRunSettings } from "./terminal/mv-run-types";
+import type { VimSettings } from "./vim/settings";
 
 export type UpstreamMode = "native" | "compatibility";
 
@@ -185,7 +186,8 @@ export interface SourceAssistProfile {
   id: string;
   /** File extension without the leading dot, for example "md" or "tex". */
   extension: string;
-  enabled: boolean;
+  /** Enables the Latex Suite snippets/tabstop/preview runtime for this profile. */
+  latexSuiteEnabled: boolean;
   /** "follow-global" or a built-in/custom source highlight theme id. */
   highlightThemeId: string;
   snippets: string;
@@ -276,6 +278,11 @@ export interface ExternalFileMapping {
 export interface ExternalFileOpenerSettings {
   enabled: boolean;
   extensionMode: ExternalFileOpenerExtensionMode;
+  /**
+   * 在 extensionMode 决定的基础集合上按后缀单独关闭（小写、不带点）。
+   * 缺省 [] 表示不过滤；设置页「支持的后缀范围」折叠区逐后缀维护。
+   */
+  disabledExtensions: string[];
   mirrorFolder: string;
   mappings: Record<string, ExternalFileMapping>;
   openerToken: string;
@@ -326,6 +333,12 @@ export interface BridgeSettings {
   managedLocalBaseUrl: string | null;
   activityTracking: ActivityTrackingSettings;
   preserveSelectionHighlights: boolean;
+  /** 文件系统与浏览器：内置浏览器视图工具栏「浏览历史」按钮。 */
+  browserHistoryButton: boolean;
+  /** 文件系统与浏览器：内置浏览器视图工具栏「下载」按钮。 */
+  browserDownloadsButton: boolean;
+  /** 文件系统与浏览器：文件资源管理器顶部路径栏增强。 */
+  fileExplorerPathBar: boolean;
   /** @deprecated 旧版 UA 补丁设置；保留读取兼容，不再产生运行时行为。 */
   webviewStripElectronUa: boolean;
   toolToggles: ToolToggles;
@@ -335,6 +348,7 @@ export interface BridgeSettings {
   llm: LlmFeatureSettings;
   inlineCompletion: InlineCompletionSettings;
   sourceAssist: SourceAssistSettings;
+  vim: VimSettings;
   sourceLint: LintSettings;
   regexReplace: RegexReplaceSettings;
   mvRun: MvRunSettings;

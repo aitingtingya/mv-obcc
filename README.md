@@ -13,8 +13,10 @@
 2. **划词助手**：在 Markdown / PDF / Web Viewer 中划词，用自定义提示词模板流式调用 LLM，结果输出到可拖拽、可固定的悬浮窗。
 3. **行内补全**：Markdown 编辑器内的 ghost text 续写，支持接受、取消与拒绝后重生成。
 4. **终端**：在 Obsidian 内拉起全功能系统终端（macOS/Linux PTY、Windows ConPTY），支持主题、自定义字体与文件路径联动。
-5. **源码编写辅助**：把 `.tex` 等非 md 后缀注册为 Markdown view，按后缀配置 latex-suite 风格 Snippets、源码高亮与可选 TeX 增强渲染。
-6. **默认文件打开器**：把 `.md` 及源码后缀注册为系统默认打开方式，库外文件经镜像目录在指定 vault 中打开。
+5. **源码编写辅助**：把 `.tex` 等非 md 后缀注册为 Markdown view，按后缀配置 Code Suite、源码高亮与可选 TeX 增强渲染。
+6. **Vim 增强**：提供独立实现的 Vim/Neovim 风格编辑核心、全局 `.vimrc` 与按后缀虚拟 vimrc，并与 AI 行内补全和 Latex Suite 协调输入优先级。
+7. **默认文件打开器**：把 `.md` 及源码后缀注册为系统默认打开方式，库外文件经镜像目录在指定 vault 中打开。
+8. **文件系统与浏览器**：给内置浏览器工具栏加「下载」「浏览历史」入口，给文件资源管理器加任意路径浏览弹窗，文件直接在本仓库打开。
 
 另内置多提供商的 **API 提供商** 管理（划词助手与行内补全共用，见下文专节）。
 
@@ -42,7 +44,7 @@ npm run package    # 生成 release/ 下的发布目录与 zip 包
 ```
 ## 功能详解
 
-以下六节与设置页（**设置 → mv-AIDE**）的六个分区一一对应。
+以下八节与设置页（**设置 → mv-AIDE**）的八个分区一一对应。
 
 ### 1. IDE 桥接
 
@@ -133,22 +135,39 @@ pattern = "Write(F:/path/to/vault/**)"
 ### 5. 源码编写辅助
 
 - **启用源码编写辅助**：按后缀管理源码类型 profile（默认带固定的 `Markdown (.md)` profile）。**添加新源码类型**（如 `.tex`、`.bib`、`.m`）后，该后缀自动注册为 Markdown view，并出现在左侧功能区与命令面板的「新建非 MD 源码文件」中。
-- 每个 profile 提供：**启用该后缀的 snippets 替换**（关闭只停用该 profile 的 snippets、tabstop 与预览 runtime，不取消后缀注册、不影响高亮）与 **源码高亮主题**（内置主题 + 已载入的自定义主题）。
-- **Snippets**：latex-suite 风格内核；填写格式与 Latex Suite 的 snippets 设置一致，可直接粘贴原 snippets 数组，行首 `//` 按 JS 注释处理。**手动触发按键**（默认 Tab）、**下一 tabstop**、**上一 tabstop** 可下拉选择或 **录制**。内核内置行为：IME 输入抑制与 snippet 去空白默认开启，调试输出默认关闭。
-- `.tex` profile 额外提供 **打开 TeX 增强渲染**（实验功能，默认关闭）：用插件自定义 Live Preview 扩展渲染 `\(...\)`、`\[...\]` 和常见数学环境（公式预览显示在公式上方，带 `▶` 光标指示）；要求该 profile 的 snippets 替换开关处于开启状态，否则不会加载。
+- 每个 profile 的基础区域提供 **源码高亮主题**（内置主题 + 已载入的自定义主题）以及 Lint、mv-run 和正则替换配置。
+- **Code Suite**：集中管理该后缀的代码展开规则、tabstop、预览与快捷键。关闭 Code Suite 只停用该 profile 的执行链，不取消后缀注册，也不影响源码高亮。规则由兼容 Latex Suite 的内核执行，可直接粘贴兼容的规则数组，行首 `//` 按 JS 注释处理；**手动触发按键**（默认 Tab）、**下一 tabstop**、**上一 tabstop** 可下拉选择或 **录制**。
+- `.tex` profile 额外提供 **打开 TeX 增强渲染**（实验功能，默认关闭）：用插件自定义 Live Preview 扩展渲染 `\(...\)`、`\[...\]` 和常见数学环境（公式预览显示在公式上方，带 `▶` 光标指示）；要求该 profile 的 Code Suite 开关处于开启状态，否则不会加载。
 - **自定义代码高亮主题**：从本地 `.css` / `.json` 文件 **载入自定义代码高亮主题**，支持 Prism CSS、highlight.js CSS、VS Code / Shiki / TextMate JSON 与 mv-AIDE JSON（可自动检测格式）；非 Prism 格式会转换为近似效果，不能完全还原。
 - **兼容性提醒**：若某后缀已由 Obsidian 或其它插件注册为其它 view，本插件会尝试解除原注册并改为 Markdown view，可能影响其它插件对同后缀文件的打开方式；TeX 增强渲染也可能影响光标移动、折叠或其它编辑器插件兼容性，建议按需开启。
 
-### 6. 默认文件打开器
+### 6. Vim 增强
+
+- Vim 在“按后缀配置”中独立启用，所有源码后缀均默认关闭。使用插件独立实现的 Vim 引擎，不依赖 Obsidian 内置 Vim；启用任一后缀前必须关闭内置 Vim 键位以及 Vim Motions、Vimrc Support 等冲突引擎，插件不会自动修改其它设置。
+- 覆盖 Normal、Insert、Replace、Visual、Visual Line、Visual Block、Operator-pending 与 Command-line 模式，以及 motion、operator、text object、register、宏、重复、mark、jump、搜索、替换和常用 Ex 命令。
+- 全局配置固定为当前仓库的 `mv-aide/vim/.vimrc`；用户目录中的旧 `.vimrc` 经显式迁移成功后会被移除，旧插件目录中的 `.vimrc` 只读复制且不会被改写。运行时不会直接加载任何旧路径。每个源码后缀还可配置虚拟 vimrc，并在全局配置之后执行。配置错误按行隔离，不会修改文档。
+- 模式状态使用 Obsidian 原生状态栏中的紧凑状态项，可选择只显示文字或只显示颜色；两种表示不会同时出现。Normal/Visual、Insert、Replace/Operator 分别使用块状、竖线和下划线光标。
+- **光标颜色**（`settings.vim.cursorColorTheme`）：非插入模式的块光标可选内置主题色（紫 / 蓝 / 绿 / 橙 / 红 / 青）或自定义 RGB 三原色（每通道 0–255），默认跟随文本色；块光标宽度同时随光标下字符自适应（中文等全角字符自动变宽）。
+- Insert 输入优先级为 **AI 建议 → Code Suite → Vim imap/abbrev → 原生输入**。Code Suite 开启时，Insert 映射需要按后缀单独授权；关闭 Code Suite 后自动生效。
+- `:!` 及 autocmd 间接执行外部命令使用独立授权，默认关闭。所有后缀都关闭后不动态加载 Vim 运行模块、不读取 vimrc、不注册编辑器处理器，也不保留状态栏、计时器或监听器。
+
+### 7. 默认文件打开器
 
 - **启用默认文件打开器**（默认关闭）：开启后启动本地服务，供系统默认打开器 wrapper 把电脑上的外部文件打开到当前 vault。
-- **支持的后缀范围**：**仅支持 md** 或 **支持扩展后缀名**（扩展后缀来自源码编写辅助中已启用的 profile）。
+- **支持的后缀范围**：固定在分区最底部的折叠区，逐个后缀开关。内置后缀 `.md` / `.markdown` / `.pdf` 原生支持（pdf 与 md 一样为原生支持，不再算扩展后缀）；扩展后缀来自源码编写辅助中已注册的 profile（如 `.tex`、`.py`、`.m`，不受 Code Suite 开关影响），可单独开关——在仅内置状态下打开任意扩展后缀即切入扩展模式，其余扩展后缀保持单独关闭。
 - **系统默认打开方式**：提供 **检查** / **一键注入** / **清理**。检查会区分"不是默认打开器 / 其它 vault 是默认 owner / 当前 vault 是默认 owner"；注入不会覆盖已有或残缺注册，切换 vault 或更新后缀前请先清理再注入。
 - **Windows 流程**：一键注入把 ProgId `MV.AIDE.FileOpener[.<后缀>]` 完整注册到"打开方式"和"默认应用"列表（显示名 **MV AIDE File Opener**）→ 自动打开 Windows 默认应用设置 → 由用户为每个后缀完成系统确认（Windows 8 及以上不允许应用静默替换默认应用；认准 MV AIDE File Opener，不要选 Windows Based Script Host）→ 再点 **检查** 确认 → 需要时用 **清理** 移除。注册只写当前用户的 `HKCU`，不申请管理员权限，也不写受保护的 `UserChoice`。
 - **macOS / Linux 流程**：macOS 注入 `MV AIDE File Opener.app`（bundle id `com.mv.aide.file-opener`）；Linux 使用 `mv-aide-file-opener.desktop`；清理按钮同样适用。
-- **镜像目录**（默认 `mv-aide-external-files/mirror`）：双击打开库外文件时，始终优先在该目录创建并验证真实 symlink；仅当创建失败且本机已授权时，才使用隔离的受管临时副本与双向同步。可手动点 **重试并迁移符号链接** 把安全收敛的副本迁回真实符号链接。
+- **镜像目录**（固定为当前仓库的 `mv-aide/external-files/mirror`）：双击打开库外文件时，始终优先在该目录创建并验证真实 symlink；仅当创建失败且本机已授权时，才使用隔离的受管临时副本与双向同步。旧目录可从设置中显式迁移；**重试并迁移符号链接** 用于把安全收敛的受管副本迁回真实符号链接。
 - wrapper 状态写入 `~/.mv-aide/`；wrapper 不安装常驻后台守护进程——Obsidian 关闭时，它会先通过 Obsidian URL 唤醒目标 vault，再等待插件本地服务启动。
 - **Obsidian 内显示文件类型图标**：在标签页按后缀显示 MD、PY、TEX 等格式徽标（可关）；系统侧文件关联图标为白文档 + 后缀标注 + Obsidian 官方 logo 徽章。
+
+### 8. 文件系统与浏览器
+
+- **下载**（默认开启）：在内置浏览器（web viewer）工具栏注入「下载」按钮，点击打开系统 Downloads 目录弹窗——按修改时间倒序列出最近文件；点击文件按本插件路由打开（Obsidian 支持的格式直接在本仓库打开，不经过系统默认打开器）；每行另有「默认打开器打开」（恒走系统默认应用）与「在文件夹中显示」按钮；弹窗内有「全量显示」切换（默认只显示常见文档、图片等 Obsidian 可浏览类型）与「打开下载文件夹」按钮。
+- **浏览历史**（默认开启）：在内置浏览器工具栏注入「浏览历史」按钮，执行官方 open-history 命令打开 Obsidian 自带的网页历史视图（新版命令 `webviewer:open-history`，旧版 `browser:open-history`，自动适配）；不重复造历史功能，只加入口。
+- **目录浏览按钮**（默认开启）：在文件资源管理器工具行注入「浏览文件系统」文件夹按钮，点击打开任意路径浏览弹窗——顶部是可编辑的路径输入框（键入回车跳转）与路径历史下拉（快捷位置 + 最近访问，去重、新的排最前），下方列出该目录内容；文件夹点击进入下一级，文件点击同样按本插件路由打开；弹窗保留「全量显示」切换。
+- 从上述入口点开本插件支持的文件时，不会用系统默认打开器，而是直接在本仓库按注入的默认打开方式打开。
 
 ## API 提供商
 
@@ -183,4 +202,5 @@ pattern = "Write(F:/path/to/vault/**)"
 - 行内补全的 CodeMirror ghost-text 架构设计参考了 [obsidian-github-copilot](https://github.com/Pierrad/obsidian-github-copilot)。
 - 本地系统终端的 PTY 进程桥接架构参考了 [obsidian-claude-sidebar](https://github.com/derek-larson14/obsidian-claude-sidebar)。
 - 源码编写辅助的 Snippets 内核 vendor 自 [obsidian-latex-suite](https://github.com/artisticat1/obsidian-latex-suite) `1.11.5`，并保留上游 MIT 许可声明。
+- Vim 功能的兼容目标与配置体验参考了 [obsidian-vimrc-support](https://github.com/esm7/obsidian-vimrc-support) 和 [Vim Motions](https://github.com/saberzero1/motions) 的公开文档及用户可见思路。mv-AIDE 不打包或派生它们的 Vim 引擎；核心依据 Vim/Neovim 行为与 CodeMirror 6 API 独立实现。
 - 本插件在运行时不绑定或依赖上述插件。

@@ -26,7 +26,7 @@ export async function buildLatexSuiteProfileRuntime(
   }
 
   for (const profile of settings.profiles) {
-    if (!profile.enabled) continue;
+    if (!profile.latexSuiteEnabled) continue;
     const host = new RoutedLatexSuitePlugin(
       plugin,
       profileToLatexSuiteSettings(settings, profile),

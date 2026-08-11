@@ -32,6 +32,7 @@ import {
   type ManagedCopyWatchController,
 } from "./managed-copy-fallback";
 import {
+  ensureContainedVaultDirectory,
   normalizeExternalFileMirrorFolder,
   normalizeExternalFileVaultPath,
   resolveExternalFileVaultPath,
@@ -58,6 +59,13 @@ export interface ManagedCopySymlinkRetrySummary {
   remaining: number;
   failures: string[];
   warnings: string[];
+}
+
+export interface ExternalFileStorageMigrationSummary {
+  previousFolder: string;
+  targetFolder: string;
+  movedDirectory: boolean;
+  migratedMappings: number;
 }
 
 export type ManagedCopyRestorePriority = "idle" | "open-request";
@@ -101,6 +109,10 @@ interface ExternalFileOpenerOptions {
   onManagedCopyError?: (error: unknown) => void;
   createFileSymlink?: typeof createVerifiedFileSymlink;
   verifyFileSymlink?: typeof verifyFileSymlink;
+  moveVaultDirectory?: (
+    previousVaultPath: string,
+    targetVaultPath: string,
+  ) => Promise<void>;
 }
 
 export function normalizeExternalFileMappingPathIdentity(
@@ -163,7 +175,7 @@ export function managedCopyPollInterval(storageKey: string): number {
   return 2_000 + offset;
 }
 
-export const MARKDOWN_EXTERNAL_EXTENSIONS = ["md", "markdown"] as const;
+export const MARKDOWN_EXTERNAL_EXTENSIONS = ["md", "markdown", "pdf"] as const;
 const execFile = promisify(childProcess.execFile);
 
 export function normalizeExternalFileOpenerExtensionMode(
@@ -174,20 +186,58 @@ export function normalizeExternalFileOpenerExtensionMode(
     : "markdown-only";
 }
 
+/** 归一化「按后缀单独关闭」清单：非数组 → []，逐项 trim/去点/小写/去重。 */
+export function normalizeExternalFileDisabledExtensions(
+  value: unknown,
+): string[] {
+  if (!Array.isArray(value)) return [];
+  const normalized = new Set<string>();
+  for (const item of value) {
+    if (typeof item !== "string") continue;
+    const extension = item.trim().replace(/^\.+/, "").toLowerCase();
+    if (extension) normalized.add(extension);
+  }
+  return Array.from(normalized);
+}
+
+/**
+ * 设置页可逐后缀开关的全量后缀：内置 md/markdown/pdf ∪ 全部源码编写辅助
+ * profiles 的后缀（不看 extensionMode；去重规则与允许清单一致）。
+ */
+export function externalFileExtensionUniverse(
+  settings: Pick<BridgeSettings, "externalFileOpener" | "sourceAssist">,
+): string[] {
+  const extensions = new Set<string>(MARKDOWN_EXTERNAL_EXTENSIONS);
+  for (const profile of settings.sourceAssist.profiles) {
+    const extension = normalizeSourceAssistExtension(profile.extension);
+    if (extension && extension !== "md" && extension !== "markdown") {
+      extensions.add(extension);
+    }
+  }
+  return Array.from(extensions);
+}
+
 export function externalFileAllowedExtensions(
   settings: Pick<BridgeSettings, "externalFileOpener" | "sourceAssist">,
 ): string[] {
   const extensions = new Set<string>(MARKDOWN_EXTERNAL_EXTENSIONS);
   if (settings.externalFileOpener.extensionMode === "markdown-and-source-assist") {
     for (const profile of settings.sourceAssist.profiles) {
-      if (!profile.enabled) continue;
       const extension = normalizeSourceAssistExtension(profile.extension);
       if (extension && extension !== "md" && extension !== "markdown") {
         extensions.add(extension);
       }
     }
   }
-  return Array.from(extensions);
+  // 逐后缀黑名单：字段缺失（老数据/夹具）按 [] 处理，行为不变。
+  const disabled = new Set(
+    normalizeExternalFileDisabledExtensions(
+      settings.externalFileOpener.disabledExtensions,
+    ),
+  );
+  return Array.from(extensions).filter(
+    (extension) => !disabled.has(extension),
+  );
 }
 
 export function normalizeExternalFileExtension(filePath: string): string {
@@ -232,6 +282,86 @@ function normalizeVaultPath(vaultPath: string): string {
     .replace(/\/{2,}/g, "/");
 }
 
+function replaceVaultFolderPrefix(
+  vaultPath: string,
+  previousFolder: string,
+  targetFolder: string,
+): string {
+  const normalizedPath = normalizeExternalFileVaultPath(vaultPath);
+  if (normalizedPath === previousFolder) return targetFolder;
+  const prefix = `${previousFolder}/`;
+  if (!normalizedPath.startsWith(prefix)) return normalizedPath;
+  return normalizeExternalFileVaultPath(
+    `${targetFolder}/${normalizedPath.slice(prefix.length)}`,
+  );
+}
+
+function containedVaultDirectory(vaultRoot: string, vaultPath: string): string {
+  const normalized = normalizeExternalFileMirrorFolder(vaultPath);
+  const absolute = path.join(vaultRoot, ...normalized.split("/"));
+  const relative = path.relative(vaultRoot, absolute);
+  if (
+    relative === "" ||
+    relative === ".." ||
+    relative.startsWith(`..${path.sep}`) ||
+    path.isAbsolute(relative)
+  ) {
+    throw new Error(t("外部文件镜像目录解析到了 vault 外部。"));
+  }
+  return absolute;
+}
+
+function pathExists(filePath: string): boolean {
+  try {
+    fs.lstatSync(filePath);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException | undefined)?.code === "ENOENT") return false;
+    throw error;
+  }
+}
+
+function validateVaultDirectoryParent(
+  vaultRoot: string,
+  directory: string,
+): void {
+  let existingAncestor = directory;
+  while (!pathExists(existingAncestor)) {
+    const parent = path.dirname(existingAncestor);
+    if (parent === existingAncestor) {
+      throw new Error(t("外部文件目标目录无法解析到 vault 内的父目录。"));
+    }
+    existingAncestor = parent;
+  }
+  const stat = fs.lstatSync(existingAncestor);
+  if (stat.isSymbolicLink() || !stat.isDirectory()) {
+    throw new Error(t("外部文件目标父路径不是安全的普通目录。"));
+  }
+  ensureContainedVaultDirectory(vaultRoot, existingAncestor, false);
+}
+
+function ordinaryDirectoryExists(directory: string, vaultRoot: string): boolean {
+  try {
+    const stat = fs.lstatSync(directory);
+    if (stat.isSymbolicLink() || !stat.isDirectory()) {
+      throw new Error(t("旧外部文件目录不是安全的普通目录。"));
+    }
+    const realDirectory = fs.realpathSync.native(directory);
+    const relative = path.relative(vaultRoot, realDirectory);
+    if (
+      relative === ".." ||
+      relative.startsWith(`..${path.sep}`) ||
+      path.isAbsolute(relative)
+    ) {
+      throw new Error(t("旧外部文件目录通过链接离开了 vault。"));
+    }
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException | undefined)?.code === "ENOENT") return false;
+    throw error;
+  }
+}
+
 function safeBasename(filePath: string): string {
   const normalized = filePath.replace(/\\/g, "/");
   const name = normalized.split("/").filter(Boolean).pop() || "external.md";
@@ -270,18 +400,24 @@ function containedRelativePath(
   return relative;
 }
 
-export function windowsVaultRelativeFilePath(
+/**
+ * 文件已在仓库内时返回仓库相对路径，否则返回 null。
+ * 词法包含判断 + realpath 复核（防仓库内 symlink 逃逸）；realpath 读取失败按外部文件处理。
+ * macOS 上仓库内文件必须走直开：指向库内文件的镜像 symlink 与真实文件同目标，
+ * 不会被索引成第二个条目，镜像路径永远等不到索引。
+ */
+export function vaultRelativeFilePath(
   vaultRoot: string,
   filePath: string,
   platform: NodeJS.Platform = process.platform,
 ): string | null {
-  if (platform !== "win32") return null;
-  const lexicalRelative = containedRelativePath(vaultRoot, filePath, path.win32);
+  const pathApi = platform === "win32" ? path.win32 : path.posix;
+  const lexicalRelative = containedRelativePath(vaultRoot, filePath, pathApi);
   if (!lexicalRelative) return null;
   try {
     const realVaultRoot = fs.realpathSync.native(vaultRoot);
     const realFilePath = fs.realpathSync.native(filePath);
-    if (!containedRelativePath(realVaultRoot, realFilePath, path.win32)) return null;
+    if (!containedRelativePath(realVaultRoot, realFilePath, pathApi)) return null;
   } catch {
     return null;
   }
@@ -559,6 +695,123 @@ export class ExternalFileOpenerFeature {
     return externalFileAllowedExtensions(this.options.getSettings());
   }
 
+  async migrateStorageFolder(
+    targetFolder: string,
+  ): Promise<ExternalFileStorageMigrationSummary> {
+    const settings = this.options.getSettings().externalFileOpener;
+    const previousFolder = normalizeExternalFileMirrorFolder(settings.mirrorFolder);
+    const normalizedTarget = normalizeExternalFileMirrorFolder(targetFolder);
+    if (previousFolder === normalizedTarget) {
+      return {
+        previousFolder,
+        targetFolder: normalizedTarget,
+        movedDirectory: false,
+        migratedMappings: 0,
+      };
+    }
+
+    this.managedCopyRestoreTask?.cancel();
+    if (this.managedCopyRestoreTask) {
+      await this.managedCopyRestoreTask.completion;
+    }
+    for (const [storageKey, watcher] of this.managedCopyWatchers) {
+      const synchronized = await watcher.flush();
+      const mapping = settings.mappings[storageKey];
+      if (mapping?.managedCopy && synchronized) {
+        mapping.managedCopy = synchronized.state;
+      }
+    }
+    this.stopManagedCopyRuntime();
+
+    const previousMappings = settings.mappings;
+    const nextMappings: Record<string, ExternalFileMapping> = {};
+    let migratedMappings = 0;
+    for (const [storageKey, mapping] of Object.entries(previousMappings)) {
+      const migratedVaultPath = replaceVaultFolderPrefix(
+        mapping.vaultPath,
+        previousFolder,
+        normalizedTarget,
+      );
+      const migrated = migratedVaultPath !== mapping.vaultPath;
+      const nextMapping: ExternalFileMapping = migrated
+        ? {
+            ...mapping,
+            vaultPath: migratedVaultPath,
+            managedCopy: mapping.managedCopy
+              ? { ...mapping.managedCopy, vaultPath: migratedVaultPath }
+              : undefined,
+          }
+        : mapping;
+      const nextStorageKey = migrated && mapping.strategy !== "managed-copy"
+        ? symlinkMappingStorageKey(mapping.externalPath, migratedVaultPath)
+        : storageKey;
+      if (Object.prototype.hasOwnProperty.call(nextMappings, nextStorageKey)) {
+        throw new Error(t("迁移后的外部文件映射键发生冲突，未移动任何文件。"));
+      }
+      nextMappings[nextStorageKey] = nextMapping;
+      if (migrated) migratedMappings++;
+    }
+
+    const vaultRoot = fs.realpathSync.native(this.options.getVaultRoot());
+    const previousDirectory = containedVaultDirectory(vaultRoot, previousFolder);
+    const targetDirectory = containedVaultDirectory(vaultRoot, normalizedTarget);
+    const targetFromPrevious = path.relative(previousDirectory, targetDirectory);
+    if (
+      targetFromPrevious !== ".." &&
+      !targetFromPrevious.startsWith(`..${path.sep}`)
+    ) {
+      throw new Error(t("目标外部文件目录不能位于旧目录内部。"));
+    }
+    const previousExists = ordinaryDirectoryExists(previousDirectory, vaultRoot);
+    if (!previousExists && migratedMappings > 0) {
+      throw new Error(t("旧外部文件目录不存在，无法安全迁移现有映射。"));
+    }
+    if (pathExists(targetDirectory)) {
+      throw new Error(t("目标外部文件目录已经存在，未覆盖其中内容。"));
+    }
+
+    let movedDirectory = false;
+    try {
+      if (previousExists) {
+        validateVaultDirectoryParent(vaultRoot, path.dirname(targetDirectory));
+        await this.moveVaultDirectory(
+          previousFolder,
+          normalizedTarget,
+          previousDirectory,
+          targetDirectory,
+        );
+        movedDirectory = true;
+      }
+      settings.mirrorFolder = normalizedTarget;
+      settings.mappings = nextMappings;
+      await this.options.saveSettings();
+    } catch (error) {
+      settings.mirrorFolder = previousFolder;
+      settings.mappings = previousMappings;
+      if (movedDirectory) {
+        try {
+          await this.moveVaultDirectory(
+            normalizedTarget,
+            previousFolder,
+            targetDirectory,
+            previousDirectory,
+          );
+        } catch (rollbackError) {
+          this.reportManagedCopyError(rollbackError);
+        }
+      }
+      if (!this.disposed) this.scheduleManagedCopyWatcherRestore();
+      throw error;
+    }
+    if (!this.disposed) this.scheduleManagedCopyWatcherRestore();
+    return {
+      previousFolder,
+      targetFolder: normalizedTarget,
+      movedDirectory,
+      migratedMappings,
+    };
+  }
+
   async openExternalFile(
     rawExternalPath: string,
     options: { makeFrontmost?: boolean } = {},
@@ -585,7 +838,7 @@ export class ExternalFileOpenerFeature {
       const stat = fs.statSync(externalPath);
       if (!stat.isFile()) throw new Error(t("只能打开文件，不能打开文件夹。"));
 
-      const directVaultPath = windowsVaultRelativeFilePath(
+      const directVaultPath = vaultRelativeFilePath(
         this.options.getVaultRoot(),
         externalPath,
       );
@@ -651,6 +904,24 @@ export class ExternalFileOpenerFeature {
     } catch (error) {
       console.warn("[mv-aide] Failed to focus Obsidian.", error);
     }
+  }
+
+  private async moveVaultDirectory(
+    previousVaultPath: string,
+    targetVaultPath: string,
+    previousAbsolutePath: string,
+    targetAbsolutePath: string,
+  ): Promise<void> {
+    if (this.options.moveVaultDirectory) {
+      await this.options.moveVaultDirectory(previousVaultPath, targetVaultPath);
+      return;
+    }
+    ensureContainedVaultDirectory(
+      fs.realpathSync.native(this.options.getVaultRoot()),
+      path.dirname(targetAbsolutePath),
+      true,
+    );
+    fs.renameSync(previousAbsolutePath, targetAbsolutePath);
   }
 
   /**

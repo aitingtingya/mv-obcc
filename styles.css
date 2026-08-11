@@ -920,7 +920,9 @@
 	transition: transform 120ms ease;
 }
 
-.mv-senceai-settings-section[open] .mv-senceai-settings-section-summary::before {
+/* 必须用子选择器：子折叠区（.mv-senceai-ide-subsection）嵌在主分区内，
+   后代选择器会让主分区 [open] 状态误配到所有嵌套 summary 上。 */
+.mv-senceai-settings-section[open] > .mv-senceai-settings-section-summary::before {
 	transform: rotate(90deg);
 }
 
@@ -934,7 +936,8 @@
 	border-radius: 8px;
 }
 
-.mv-senceai-ide-subsection[open] .mv-senceai-settings-section-summary::before {
+/* 同上：子选择器限定本折叠区自己的 summary，避免主分区展开时误配。 */
+.mv-senceai-ide-subsection[open] > .mv-senceai-settings-section-summary::before {
 	transform: rotate(90deg);
 }
 
@@ -1360,4 +1363,175 @@ body.mv-fti-tabs .workspace-tab-header-inner-icon svg.svg-icon[class*="mv-fti-"]
 .mv-senceai-downloads-modal .mv-senceai-downloads-reveal:hover,
 .mv-senceai-downloads-modal .mv-senceai-downloads-reveal:focus-visible {
 	color: var(--text-normal);
+}
+.mv-aide-vimrc-textarea {
+  width: 100%;
+  min-height: 132px;
+  resize: vertical;
+  font-family: var(--font-monospace);
+  font-size: var(--font-ui-small);
+  line-height: 1.5;
+}
+
+.mv-aide-vim-source-profile .setting-item-info {
+  min-width: 0;
+}
+
+.mv-aide-vim-source-profile .setting-item-control {
+  flex: 0 0 auto;
+  min-width: 0;
+}
+
+.mv-aide-vim-source-profile .mv-aide-vimrc-virtual-setting {
+  display: block;
+}
+
+.mv-aide-vim-source-profile .mv-aide-vimrc-virtual-setting > .setting-item-info,
+.mv-aide-vim-source-profile .mv-aide-vimrc-virtual-setting > .setting-item-control {
+  width: 100%;
+}
+
+.status-bar-item.mv-aide-vim-statusbar {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  gap: 6px;
+  min-width: 0;
+  max-width: min(320px, 35vw);
+  overflow: hidden;
+  font-family: var(--font-monospace);
+  letter-spacing: 0;
+  white-space: nowrap;
+}
+
+.status-bar-item.mv-aide-vim-statusbar[hidden] {
+  display: none !important;
+}
+
+.mv-aide-vim-statusbar-mode-text,
+.mv-aide-vim-statusbar-detail {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mv-aide-vim-statusbar-text .mv-aide-vim-statusbar-mode-text {
+  color: var(--text-normal);
+  font-weight: var(--font-semibold);
+}
+
+.mv-aide-vim-statusbar-mode-color {
+  display: block;
+  flex: 0 0 auto;
+  width: 14px;
+  height: 8px;
+  border: 1px solid var(--background-modifier-border-hover);
+  border-radius: 2px;
+  background: var(--text-muted);
+}
+
+.mv-aide-vim-statusbar-mode-insert .mv-aide-vim-statusbar-mode-color {
+  background: var(--color-green);
+}
+
+.mv-aide-vim-statusbar-mode-replace .mv-aide-vim-statusbar-mode-color {
+  background: var(--color-red);
+}
+
+.mv-aide-vim-statusbar-mode-visual .mv-aide-vim-statusbar-mode-color {
+  background: var(--color-purple);
+}
+
+.mv-aide-vim-statusbar-mode-operator .mv-aide-vim-statusbar-mode-color {
+  background: var(--color-orange);
+}
+
+.mv-aide-vim-statusbar-mode-command .mv-aide-vim-statusbar-mode-color {
+  background: var(--color-blue);
+}
+
+.mv-aide-vim-source-profile .mv-aide-vimrc-virtual-setting > .setting-item-control {
+  margin-top: 10px;
+}
+
+/* ── 文件资源管理器浏览按钮与目录浏览弹窗 / File explorer browse button ── */
+
+/* 目录浏览弹窗顶栏：位置下拉 + 可编辑路径输入框 + 过滤开关 + 「在文件夹中显示」。 */
+.mv-aide-folder-browse-modal .mv-aide-browse-header {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 8px;
+  position: relative;
+}
+
+.mv-aide-folder-browse-modal .mv-aide-browse-header .clickable-icon {
+  flex: 0 0 auto;
+}
+
+.mv-aide-folder-browse-modal .mv-aide-browse-path-input {
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 4px;
+  flex: 1 1 200px;
+  font-family: var(--font-monospace);
+  font-size: var(--font-ui-smaller);
+  min-width: 120px;
+  padding: 2px 6px;
+  user-select: text;
+}
+
+.mv-aide-folder-browse-modal .mv-aide-browse-dropdown {
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  box-shadow: var(--shadow-s);
+  left: 0;
+  max-height: 300px;
+  min-width: 220px;
+  overflow-y: auto;
+  padding: 4px;
+  position: absolute;
+  top: calc(100% + 2px);
+  z-index: var(--layer-menu);
+}
+
+.mv-aide-folder-browse-modal .mv-aide-browse-dropdown.is-hidden {
+  display: none;
+}
+
+.mv-aide-folder-browse-modal .mv-aide-browse-dropdown-label {
+  color: var(--text-faint);
+  font-size: var(--font-ui-smaller);
+  padding: 4px 6px 2px;
+}
+
+.mv-aide-folder-browse-modal .mv-aide-browse-dropdown-item {
+  background: none;
+  border: none;
+  border-radius: 4px;
+  box-shadow: none;
+  cursor: pointer;
+  display: block;
+  font-size: var(--font-ui-small);
+  overflow: hidden;
+  padding: 4px 6px;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  width: 100%;
+}
+
+.mv-aide-folder-browse-modal .mv-aide-browse-dropdown-item:hover {
+  background: var(--background-modifier-hover);
+}
+
+/* 「全量显示」过滤开关激活态（目录浏览弹窗 / 下载弹窗共用）。 */
+.mv-aide-filter-toggle.is-active {
+  color: var(--text-accent);
+  background: var(--background-modifier-hover);
+}
+
+.mv-aide-folder-browse-modal .mv-aide-folder-name {
+  font-weight: var(--font-semibold);
 }

@@ -8,7 +8,11 @@ import {
   type WorkspaceLeaf,
 } from "obsidian";
 import { fileUrl } from "./path-utils";
-import { getVaultRoot } from "./selection";
+import {
+  editorSelectionState,
+  getVaultRoot,
+  type LogicalSelectionResolver,
+} from "./selection";
 import type { OpenEditorTab, SelectionState } from "./types";
 
 /** 浏览器视图的 viewType 随 Obsidian 版本不同：新版（1.13.4 实测）为
@@ -143,6 +147,7 @@ function webViewState(view: WebViewerView): {
 export async function currentWorkspaceContext(
   app: App,
   requestedLeaf?: WorkspaceLeaf | null,
+  resolveLogicalSelection?: LogicalSelectionResolver,
 ): Promise<SelectionState | null> {
   const leaf = requestedLeaf === undefined ? activeWorkspaceLeaf(app) : requestedLeaf;
   if (!leaf) return null;
@@ -152,23 +157,17 @@ export async function currentWorkspaceContext(
   if (view instanceof MarkdownView && view.file) {
     const editor = view.editor;
     const vaultRoot = getVaultRoot(app);
-    const cursor = editor.getCursor();
-    const from = editor.getCursor("from");
-    const to = editor.getCursor("to");
-    const text = editor.getSelection();
+    const selection = editorSelectionState(
+      editor,
+      resolveLogicalSelection?.(view) ?? null,
+    );
     return {
       filePath: path.join(vaultRoot, view.file.path),
       relativePath: view.file.path,
       title: view.getDisplayText(),
       viewType,
       resourceType: "markdown",
-      cursor: { line: cursor.line, character: cursor.ch },
-      selection: {
-        start: { line: from.line, character: from.ch },
-        end: { line: to.line, character: to.ch },
-        isEmpty: text.length === 0,
-        text,
-      },
+      ...selection,
     };
   }
 

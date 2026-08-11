@@ -48,7 +48,7 @@ export function createSourceAssistProfile(
   return {
     id: sourceAssistProfileId(normalized),
     extension: normalized,
-    enabled: true,
+    latexSuiteEnabled: true,
     highlightThemeId: SOURCE_HIGHLIGHT_OBSIDIAN,
     snippets: EMPTY_LATEX_SUITE_SNIPPETS,
     snippetsTrigger: "Tab",
@@ -60,13 +60,15 @@ export function createSourceAssistProfile(
   };
 }
 
-function normalizeProfile(raw: Partial<SourceAssistProfile> | undefined): SourceAssistProfile | null {
+function normalizeProfile(
+  raw: (Partial<SourceAssistProfile> & { enabled?: boolean }) | undefined,
+): SourceAssistProfile | null {
   const extension = normalizeSourceAssistExtension(raw?.extension ?? "");
   if (!extension) return null;
   return {
     id: raw?.id || sourceAssistProfileId(extension),
     extension,
-    enabled: raw?.enabled ?? true,
+    latexSuiteEnabled: raw?.latexSuiteEnabled ?? raw?.enabled ?? true,
     highlightThemeId: normalizeSourceHighlightThemeId(
       raw?.highlightThemeId,
       SOURCE_HIGHLIGHT_OBSIDIAN,
@@ -144,7 +146,7 @@ export function sourceAssistTexEnhancedRenderEnabled(
   return settings.profiles.some(
     (profile) =>
       profile.extension === "tex" &&
-      profile.enabled &&
+      profile.latexSuiteEnabled &&
       profile.texEnhancedRenderEnabled,
   );
 }

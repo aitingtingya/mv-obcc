@@ -1,5 +1,6 @@
-// 系统下载文件夹弹窗：列出系统 Downloads 最近文件，条目按默认应用打开，
-// 底部按钮单独打开目录。
+// 系统下载文件夹弹窗：列出系统 Downloads 最近文件。行点击经插件路由
+// （Obsidian 可打开则在本仓库打开，否则系统默认应用）；行右侧另有
+// 「默认打开器打开」（恒系统默认应用）与「在文件夹中显示」按钮。
 // Obsidian 插件运行在渲染进程，挂不到 Electron 主进程的 session.will-download，
 // 也没有 remote，因此不做真正的浏览器下载记录，只做系统目录视图。
 
@@ -28,8 +29,15 @@ export interface BrowserDownloadsModalDependencies {
   getDownloadsDir(): string;
   listEntries(dir: string): Promise<DownloadEntry[]>;
   openFile(absolutePath: string): Promise<DefaultFileOpenResult>;
+  /** 恒用系统默认应用打开（行右侧「默认打开器打开」按钮）；缺省为系统默认打开。 */
+  openFileWithSystemApp?(absolutePath: string): Promise<DefaultFileOpenResult>;
   revealFile(absolutePath: string): Promise<boolean>;
   openFolder(absolutePath: string): Promise<boolean>;
+  /** 文件名是否可被 Obsidian 打开（过滤用）；缺省视为全部可打开。 */
+  canOpenFile?(name: string): boolean;
+  /** 「全量显示」开关状态；缺省恒 true（保持旧的全量行为）。 */
+  getShowAll?(): boolean;
+  setShowAll?(value: boolean): void;
 }
 
 async function listDownloadEntries(dir: string): Promise<DownloadEntry[]> {
@@ -52,7 +60,7 @@ async function listDownloadEntries(dir: string): Promise<DownloadEntry[]> {
 }
 
 export class BrowserDownloadsModal extends Modal {
-  private readonly dependencies: BrowserDownloadsModalDependencies;
+  private readonly dependencies: Required<BrowserDownloadsModalDependencies>;
   private readonly openingFiles = new Set<string>();
 
   constructor(
@@ -64,8 +72,12 @@ export class BrowserDownloadsModal extends Modal {
       getDownloadsDir: () => downloadsDir(os.homedir(), electronDownloadsPath()),
       listEntries: listDownloadEntries,
       openFile: openFileWithDefaultApp,
+      openFileWithSystemApp: openFileWithDefaultApp,
       revealFile: (absolutePath) => runFileManager(absolutePath, "select"),
       openFolder: (absolutePath) => runFileManager(absolutePath, "open"),
+      canOpenFile: () => true,
+      getShowAll: () => true,
+      setShowAll: () => undefined,
       ...dependencies,
     };
   }
@@ -79,6 +91,20 @@ export class BrowserDownloadsModal extends Modal {
     listEl.setAttribute("aria-busy", "true");
 
     const buttonRow = contentEl.createDiv({ cls: "mv-senceai-modal-button-row" });
+    const filterButton = buttonRow.createEl("button", {
+      cls: "clickable-icon mv-aide-filter-toggle",
+    });
+    filterButton.type = "button";
+    setIcon(filterButton, "filter");
+    const filterLabel = t("切换全量显示（含 Obsidian 无法打开的文件）");
+    filterButton.setAttribute("aria-label", filterLabel);
+    filterButton.title = filterLabel;
+    if (this.dependencies.getShowAll()) filterButton.addClass("is-active");
+    filterButton.addEventListener("click", () => {
+      this.dependencies.setShowAll(!this.dependencies.getShowAll());
+      this.onOpen();
+    });
+
     const openFolderButton = buttonRow.createEl("button", {
       text: t("打开下载文件夹"),
     });
@@ -91,14 +117,19 @@ export class BrowserDownloadsModal extends Modal {
     void this.dependencies.listEntries(dir)
       .then((entries) => {
         listEl.setAttribute("aria-busy", "false");
-        if (entries.length === 0) {
+        const visible = this.dependencies.getShowAll()
+          ? entries
+          : entries.filter((entry) =>
+              this.dependencies.canOpenFile(entry.name),
+            );
+        if (visible.length === 0) {
           listEl.createEl("p", {
             text: t("下载文件夹为空或不存在。"),
             cls: "setting-item-description",
           });
           return;
         }
-        for (const entry of entries) {
+        for (const entry of visible) {
           const row = listEl.createDiv({ cls: "mv-senceai-downloads-row" });
           const openTarget = row.createDiv({
             cls: "mv-senceai-downloads-open-target",
@@ -122,6 +153,18 @@ export class BrowserDownloadsModal extends Modal {
               event.preventDefault();
               open();
             }
+          });
+          const systemOpenButton = row.createEl("button", {
+            cls: "clickable-icon mv-senceai-downloads-system-open",
+          });
+          systemOpenButton.type = "button";
+          const systemOpenLabel = t("默认打开器打开");
+          systemOpenButton.setAttribute("aria-label", systemOpenLabel);
+          systemOpenButton.setAttribute("title", systemOpenLabel);
+          setIcon(systemOpenButton, "external-link");
+          systemOpenButton.addEventListener("click", (event) => {
+            event.stopPropagation();
+            void this.openEntryWithSystemApp(dir, entry.name);
           });
           const revealButton = row.createEl("button", {
             cls: "clickable-icon mv-senceai-downloads-reveal",
@@ -177,6 +220,34 @@ export class BrowserDownloadsModal extends Modal {
       );
     } finally {
       this.openingFiles.delete(absolutePath);
+    }
+  }
+
+  private async openEntryWithSystemApp(
+    dir: string,
+    name: string,
+  ): Promise<void> {
+    try {
+      const result = await this.dependencies.openFileWithSystemApp(
+        path.join(dir, name),
+      );
+      if (!result.ok) {
+        new Notice(
+          t("无法打开下载文件“{name}”：{message}", {
+            name,
+            message: result.error || t("未知错误"),
+          }),
+          8000,
+        );
+      }
+    } catch (error) {
+      new Notice(
+        t("无法打开下载文件“{name}”：{message}", {
+          name,
+          message: error instanceof Error ? error.message : String(error),
+        }),
+        8000,
+      );
     }
   }
 

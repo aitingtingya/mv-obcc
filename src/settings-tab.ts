@@ -30,12 +30,16 @@ import {
   normalizeSourceAssistExtension,
 } from "./source-assist/source-assist-settings";
 import { parseTexMathFormats } from "./source-assist/tex-math";
-import { externalFileAllowedExtensions } from "./external-file-opener";
+import {
+  MARKDOWN_EXTERNAL_EXTENSIONS,
+  externalFileAllowedExtensions,
+  externalFileExtensionUniverse,
+} from "./external-file-opener";
 import { t } from "./i18n";
 import { renderLintSetting } from "./lint/lint-settings-ui";
 import { renderMvRunSetting } from "./terminal/mv-run-settings-ui";
 import { renderRegexScopeSetting } from "./regex-replace/regex-replace-settings-ui";
-import { normalizeExternalFileMirrorFolder } from "./external-file-mirror-path";
+import { EXTERNAL_FILE_MIRROR_FOLDER } from "./vault-storage-paths";
 import type {
   DefaultOpenerOperationResult,
   ExternalFileOpenerOwner,
@@ -48,6 +52,8 @@ import {
   WINDOWS_LOGIN_BASELINE,
 } from "./webview-ua-compat";
 import { parseSnippets } from "./vendor/latex-suite/src/snippets/parse";
+import { vimSourceSettings } from "./vim/settings";
+import { VIM_CURSOR_COLOR_THEMES } from "./vim/cursor-color";
 import {
   importSourceHighlightTheme,
   removeSourceHighlightThemeReferences,
@@ -76,7 +82,9 @@ type MainSettingsSectionId =
   | "inline-completion"
   | "terminal"
   | "source-assist"
-  | "external-file-opener";
+  | "vim"
+  | "external-file-opener"
+  | "filesystem-browser";
 
 const SOURCE_LABELS = {
   manual: "手动覆盖",
@@ -821,8 +829,9 @@ function createCollapsibleSettingsSection(
 
 export class MvSenceAiIdeSettingTab extends PluginSettingTab {
   private readonly openSettingsSections = new Set<MainSettingsSectionId>();
-  private readonly openIdeSubsectionIds = new Set<string>(["agents", "passive", "active"]);
+  private readonly openIdeSubsectionIds = new Set<string>();
   private readonly openSourceAssistProfileIds = new Set<string>();
+  private readonly openVimSourceProfileExtensions = new Set<string>();
   private readonly sourceAssistSnippetEditors: EditorView[] = [];
   private forceOpenSection: MainSettingsSectionId | null = null;
   private forceOpenSourceAssistProfileId: string | null = null;
@@ -866,14 +875,25 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
       "source-assist",
       t("源码编写辅助"),
     );
+    const vimEl = this.createSettingsSection(rootEl, "vim", t("Vim 增强"));
     const externalFileOpenerEl = this.createSettingsSection(
       rootEl,
       "external-file-opener",
       t("默认文件打开器"),
     );
+    const filesystemBrowserEl = this.createSettingsSection(
+      rootEl,
+      "filesystem-browser",
+      t("文件系统与浏览器"),
+    );
     let containerEl = ideEl;
 
-    this.renderIdeUniversalMcpSettings(containerEl);
+    const universalMcpEl = this.createIdeSubsection(
+      containerEl,
+      "universal-mcp",
+      t("暴露 mv-AIDE 协议"),
+    );
+    this.renderIdeUniversalMcpSettings(universalMcpEl);
 
     const agentsEl = this.createIdeSubsection(
       containerEl,
@@ -904,8 +924,14 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
     containerEl = sourceAssistEl;
     this.renderSourceAssistSettings(containerEl);
 
+    containerEl = vimEl;
+    this.renderVimSettings(containerEl);
+
     containerEl = externalFileOpenerEl;
     this.renderExternalFileOpenerSettings(containerEl);
+
+    containerEl = filesystemBrowserEl;
+    this.renderFilesystemBrowserSettings(containerEl);
 
     containerEl = llmEl;
     containerEl.createEl("div", {
@@ -2196,6 +2222,49 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
     }
   }
 
+  private renderFilesystemBrowserSettings(containerEl: HTMLElement): void {
+    addHeading(containerEl, t("内置浏览器"));
+
+    new Setting(containerEl)
+      .setName(t("浏览历史"))
+      .setDesc(t("在内置浏览器视图工具栏显示「浏览历史」按钮。"))
+      .addToggle((toggle) =>
+        toggle
+          .setValue(this.plugin.settings.browserHistoryButton)
+          .onChange(async (value) => {
+            await this.plugin.setBrowserHistoryButtonEnabled(value);
+          }),
+      );
+
+    new Setting(containerEl)
+      .setName(t("下载"))
+      .setDesc(t("在内置浏览器视图工具栏显示「下载」按钮。"))
+      .addToggle((toggle) =>
+        toggle
+          .setValue(this.plugin.settings.browserDownloadsButton)
+          .onChange(async (value) => {
+            await this.plugin.setBrowserDownloadsButtonEnabled(value);
+          }),
+      );
+
+    addHeading(containerEl, t("文件资源管理器"));
+
+    new Setting(containerEl)
+      .setName(t("目录浏览按钮"))
+      .setDesc(
+        t(
+          "在文件列表工具行显示文件夹按钮，点击后在弹窗中浏览电脑上的任意目录（可编辑路径、快捷位置、全量显示切换）。",
+        ),
+      )
+      .addToggle((toggle) =>
+        toggle
+          .setValue(this.plugin.settings.fileExplorerPathBar)
+          .onChange(async (value) => {
+            await this.plugin.setFileExplorerPathBarEnabled(value);
+          }),
+      );
+  }
+
   private renderExternalFileOpenerSettings(containerEl: HTMLElement): void {
     const settings = this.plugin.settings.externalFileOpener;
     const supportedExtensions = externalFileAllowedExtensions(this.plugin.settings)
@@ -2213,25 +2282,6 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
           await this.plugin.saveAndApplySettings();
           this.rerenderSettings("external-file-opener");
         }),
-      );
-
-    new Setting(containerEl)
-      .setName(t("支持的后缀范围"))
-      .setDesc(t("当前支持：{extensions}", { extensions: supportedExtensions }))
-      .addDropdown((dropdown) =>
-        dropdown
-          .addOption("markdown-only", t("仅支持 md"))
-          .addOption("markdown-and-source-assist", t("支持扩展后缀名"))
-          .setValue(settings.extensionMode)
-          .setDisabled(!settings.enabled)
-          .onChange(async (value) => {
-            settings.extensionMode =
-              value === "markdown-and-source-assist"
-                ? "markdown-and-source-assist"
-                : "markdown-only";
-            await this.plugin.saveAndApplySettings();
-            this.rerenderSettings("external-file-opener");
-          }),
       );
 
     new Setting(containerEl)
@@ -2330,25 +2380,37 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
 
     const mirrorSetting = new Setting(containerEl)
       .setName(t("镜像目录"))
-      .setDesc(t("始终优先使用真实 symlink；仅在创建失败且本机已授权时，才在此目录使用受管临时副本。"))
+      .setDesc(
+        t("Vim 配置和外部文件目录统一保存在当前 vault 的 mv-aide 目录；始终优先使用真实 symlink。"),
+      )
       .addText((text) =>
         text
           .setValue(settings.mirrorFolder)
-          .setPlaceholder("mv-aide-external-files/mirror")
-          .setDisabled(!settings.enabled)
-          .onChange(async (value) => {
-            const candidate = value.trim() ||
-              DEFAULT_SETTINGS.externalFileOpener.mirrorFolder;
+          .setPlaceholder(EXTERNAL_FILE_MIRROR_FOLDER)
+          .setDisabled(true),
+      )
+      .addButton((button) =>
+        button
+          .setButtonText(t("迁移到仓库目录"))
+          .setDisabled(!this.plugin.externalFileStorageNeedsMigration())
+          .onClick(async () => {
+            button.setDisabled(true);
             try {
-              settings.mirrorFolder = normalizeExternalFileMirrorFolder(candidate);
+              const summary = await this.plugin.migrateExternalFileStorage();
+              new Notice(
+                t("外部文件目录已迁移，共更新 {count} 个映射。", {
+                  count: summary.migratedMappings,
+                }),
+                5000,
+              );
+              this.rerenderSettings("external-file-opener");
             } catch (error) {
               new Notice(
                 error instanceof Error ? error.message : String(error),
-                5000,
+                8000,
               );
-              return;
+              button.setDisabled(false);
             }
-            await this.plugin.saveData(this.plugin.settings);
           }),
       )
       .addButton((button) =>
@@ -2366,6 +2428,57 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
           }),
       );
     mirrorSetting.settingEl.addClass("mv-senceai-external-mirror-setting");
+
+    // 「支持的后缀范围」折叠区：逐后缀开关，固定在默认文件打开器最下面。
+    const builtinExtensions = MARKDOWN_EXTERNAL_EXTENSIONS as readonly string[];
+    const extensionUniverse = externalFileExtensionUniverse(this.plugin.settings);
+    const sourceAssistExtensions = extensionUniverse.filter(
+      (extension) => !builtinExtensions.includes(extension),
+    );
+    const disabledExtensions = new Set(settings.disabledExtensions);
+    const extensionsEl = this.createIdeSubsection(
+      containerEl,
+      "external-file-opener-extensions",
+      t("支持的后缀范围"),
+    );
+    extensionsEl.createEl("p", {
+      cls: "setting-item-description",
+      text:
+        t("当前支持：{extensions}", { extensions: supportedExtensions }) +
+        " " +
+        t("分别设置每个后缀是否由默认打开器处理。"),
+    });
+    for (const extension of extensionUniverse) {
+      const isBuiltin = builtinExtensions.includes(extension);
+      const extensionEnabled = isBuiltin
+        ? !disabledExtensions.has(extension)
+        : settings.extensionMode === "markdown-and-source-assist" &&
+          !disabledExtensions.has(extension);
+      new Setting(extensionsEl).setName(`.${extension}`).addToggle((toggle) =>
+        toggle
+          .setValue(extensionEnabled)
+          .setDisabled(!settings.enabled)
+          .onChange(async (value) => {
+            const nextDisabled = new Set(settings.disabledExtensions);
+            if (value) {
+              nextDisabled.delete(extension);
+              if (!isBuiltin && settings.extensionMode === "markdown-only") {
+                // 模式只决定基础集合：开任意扩展后缀时切入扩展模式，
+                // 其余扩展后缀保持单独关闭（等价旧的「仅内置后缀」语义）。
+                settings.extensionMode = "markdown-and-source-assist";
+                for (const other of sourceAssistExtensions) {
+                  if (other !== extension) nextDisabled.add(other);
+                }
+              }
+            } else {
+              nextDisabled.add(extension);
+            }
+            settings.disabledExtensions = Array.from(nextDisabled);
+            await this.plugin.saveAndApplySettings();
+            this.rerenderSettings("external-file-opener");
+          }),
+      );
+    }
   }
 
   private renderSourceAssistSettings(containerEl: HTMLElement): void {
@@ -2373,7 +2486,7 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName(t("启用源码编写辅助"))
-      .setDesc(t("开启后启用按后缀隔离的 Latex Suite 风格 snippets。"))
+      .setDesc(t("开启后启用按后缀隔离的 Code Suite。"))
       .addToggle((toggle) =>
         toggle
           .setValue(settings.enabled)
@@ -2409,6 +2522,234 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
     );
 
     this.renderSourceHighlightImportSettings(containerEl);
+  }
+
+  private renderVimSettings(containerEl: HTMLElement): void {
+    const settings = this.plugin.settings.vim;
+    const status = this.plugin.vimStatus();
+
+    new Setting(containerEl)
+      .setName(t("Vim 运行状态"))
+      .setDesc(
+        `${status.message}${
+          status.loadedFiles.length > 0
+            ? ` ${t("已加载配置：{files}", { files: status.loadedFiles.join(", ") })}`
+            : ""
+        }`,
+      );
+
+    new Setting(containerEl)
+      .setName(t("模式状态显示"))
+      .setDesc(t("在 Obsidian 状态栏中使用文字或单一色块表示当前 Vim 模式；两种方式不会同时显示。"))
+      .addDropdown((dropdown) =>
+        dropdown
+          .addOption("text", t("文字"))
+          .addOption("color", t("颜色"))
+          .setValue(settings.statusDisplay)
+          .onChange(async (value) => {
+            settings.statusDisplay = value === "color" ? "color" : "text";
+            await this.plugin.saveVimSettings();
+          }),
+      );
+
+    new Setting(containerEl)
+      .setName(t("光标颜色"))
+      .setDesc(t("非插入模式块光标的配色：内置主题或自定义 RGB 三原色；默认跟随文本色。"))
+      .addDropdown((dropdown) => {
+        dropdown.addOption("default", t("默认（跟随文本色）"));
+        for (const theme of VIM_CURSOR_COLOR_THEMES) {
+          dropdown.addOption(theme.id, t(theme.label));
+        }
+        dropdown
+          .addOption("custom", t("自定义 RGB"))
+          .setValue(settings.cursorColorTheme)
+          .onChange(async (value) => {
+            settings.cursorColorTheme = value;
+            await this.plugin.saveVimSettings();
+            this.rerenderSettings("vim");
+          });
+      });
+
+    if (settings.cursorColorTheme === "custom") {
+      const rgbSetting = new Setting(containerEl)
+        .setName(t("自定义三原色"))
+        .setDesc(t("R / G / B 三通道各取 0–255 的整数，改动即时生效。"));
+      for (const channel of ["r", "g", "b"] as const) {
+        rgbSetting.addText((text) =>
+          text
+            .setPlaceholder(channel.toUpperCase())
+            .setValue(String(settings.cursorColorCustom[channel]))
+            .onChange(async (value) => {
+              const parsed = Math.round(Number(value));
+              if (!Number.isFinite(parsed)) return;
+              settings.cursorColorCustom[channel] = Math.min(
+                255,
+                Math.max(0, parsed),
+              );
+              await this.plugin.saveVimSettings();
+            }),
+        );
+      }
+    }
+
+    const vimrcSetting = new Setting(containerEl)
+      .setName(t("全局 .vimrc"))
+      .setDesc(this.plugin.vimGlobalConfigPath())
+      .addButton((button) =>
+        button
+          .setButtonText(t("创建"))
+          .setDisabled(status.state !== "enabled")
+          .onClick(async () => {
+            try {
+              await this.plugin.ensureVimConfigFile();
+              new Notice(t("全局 .vimrc 已就绪。"), 3000);
+            } catch (error) {
+              new Notice(error instanceof Error ? error.message : String(error), 6000);
+            }
+          }),
+      )
+      .addButton((button) =>
+        button
+          .setButtonText(t("打开"))
+          .setDisabled(status.state !== "enabled")
+          .onClick(async () => {
+            try {
+              await this.plugin.openVimConfigFile();
+            } catch (error) {
+              new Notice(error instanceof Error ? error.message : String(error), 6000);
+            }
+          }),
+      )
+      .addButton((button) =>
+        button
+          .setButtonText(t("重新加载"))
+          .setDisabled(status.state !== "enabled")
+          .onClick(async () => {
+            await this.plugin.reloadVimConfiguration();
+            this.rerenderSettings("vim");
+          }),
+      )
+      .addButton((button) => {
+        button
+          .setButtonText(t("迁移旧配置"))
+          .setDisabled(true)
+          .onClick(async () => {
+            try {
+              const migrated = await this.plugin.migrateLegacyVimConfigFile();
+              new Notice(
+                migrated
+                  ? t("旧 .vimrc 已迁移。")
+                  : t("没有可迁移的旧 .vimrc。"),
+                3000,
+              );
+              this.rerenderSettings("vim");
+            } catch (error) {
+              new Notice(error instanceof Error ? error.message : String(error), 6000);
+            }
+          });
+        if (status.state === "enabled") {
+          void this.plugin.hasLegacyVimConfigFile().then((available) => {
+            button.setDisabled(!available);
+          });
+        }
+      },
+      );
+    vimrcSetting.settingEl.addClass("mv-aide-vimrc-setting");
+
+    new Setting(containerEl)
+      .setName(t("允许 Vim 执行外部命令"))
+      .setDesc(t("允许 :! 和 autocmd 间接调用系统命令。默认关闭；只应对自己维护的 vimrc 开启。"))
+      .addToggle((toggle) =>
+        toggle
+          .setValue(settings.allowExternalCommands)
+          .onChange(async (value) => {
+            settings.allowExternalCommands = value;
+            await this.plugin.saveVimSettings();
+          }),
+      );
+
+    new Setting(containerEl).setName(t("按后缀配置"))
+      .setDesc(t("虚拟 vimrc 在全局 .vimrc 之后执行；只删除完全相同的重复指令，其余指令按顺序生效。"))
+      .setHeading();
+
+    for (const profile of this.plugin.settings.sourceAssist.profiles) {
+      const source = vimSourceSettings(settings, profile.extension);
+      const details = containerEl.createEl("details", {
+        cls: "mv-senceai-source-assist-profile mv-aide-vim-source-profile",
+      });
+      details.open = this.openVimSourceProfileExtensions.has(profile.extension);
+      details.addEventListener("toggle", () => {
+        if (details.open) {
+          this.openVimSourceProfileExtensions.add(profile.extension);
+        } else {
+          this.openVimSourceProfileExtensions.delete(profile.extension);
+        }
+      });
+      details.createEl("summary", {
+        cls: "mv-senceai-source-assist-profile-summary setting-item-name",
+        text: profile.extension === "md"
+          ? t("Markdown (.md)")
+          : t("源码类型 .{ext}", { ext: profile.extension }),
+      });
+      const body = details.createDiv({ cls: "mv-senceai-source-assist-profile-body" });
+      new Setting(body)
+        .setName(t("该源码使用 Vim"))
+        .setDesc(t("只在这个后缀的编辑器中加载 Vim；所有后缀都关闭时，Vim 模块不会加载或注册任何运行资源。"))
+        .addToggle((toggle) =>
+          toggle
+            .setValue(source.enabled)
+            .onChange(async (value) => {
+              settings.sources[profile.extension] = {
+                ...vimSourceSettings(settings, profile.extension),
+                enabled: value,
+              };
+              this.openVimSourceProfileExtensions.add(profile.extension);
+              await this.plugin.saveVimSettings();
+              this.rerenderSettings("vim");
+            }),
+        );
+      new Setting(body)
+        .setName(t("与 Code Suite 共存时允许 Insert 映射"))
+        .setDesc(
+          profile.latexSuiteEnabled
+            ? t("开启后，Code Suite 未消费的 Insert 输入才继续交给 imap/abbrev；关闭可避免替换规则冲突。")
+            : t("该后缀的 Code Suite 已关闭，Insert 映射会自动生效，无需额外授权。"),
+        )
+        .addToggle((toggle) =>
+          toggle
+            .setValue(source.allowInsertMappingsWithLatexSuite)
+            .setDisabled(!source.enabled || !profile.latexSuiteEnabled)
+            .onChange(async (value) => {
+              settings.sources[profile.extension] = {
+                ...source,
+                allowInsertMappingsWithLatexSuite: value,
+              };
+              await this.plugin.saveVimSettings();
+            }),
+        );
+
+      const virtualSetting = new Setting(body)
+        .setName(t("虚拟 vimrc"))
+        .setDesc(t("只对该后缀生效，在全局 .vimrc 之后执行。"));
+      virtualSetting.settingEl.addClass("mv-aide-vimrc-virtual-setting");
+      virtualSetting.controlEl.empty();
+      const textarea = virtualSetting.settingEl.createEl("textarea", {
+        cls: "mv-aide-vimrc-textarea",
+        attr: {
+          rows: "8",
+          spellcheck: "false",
+          placeholder: '" Example: nnoremap H ^',
+        },
+      });
+      textarea.value = source.virtualVimrc;
+      textarea.addEventListener("change", async () => {
+        settings.sources[profile.extension] = {
+          ...vimSourceSettings(settings, profile.extension),
+          virtualVimrc: textarea.value,
+        };
+        await this.plugin.saveVimSettings();
+      });
+    }
   }
 
   private renderSourceAssistProfile(
@@ -2468,6 +2809,7 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
         event.stopPropagation();
         this.plugin.settings.sourceAssist.profiles.splice(idx, 1);
         this.openSourceAssistProfileIds.delete(profile.id);
+        this.openVimSourceProfileExtensions.delete(profile.extension);
         await this.plugin.saveSourceAssistSettings();
         this.rerenderSettings("source-assist");
       });
@@ -2475,32 +2817,8 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
 
     const wrap = details.createDiv({ cls: "mv-senceai-source-assist-profile-body" });
 
-    this.renderSourceAssistProfileEnabledSetting(wrap, profile, idx);
-
     if (profile.extension !== "md") {
       this.renderSourceAssistProfileHighlightThemeSetting(wrap, profile, idx);
-    }
-
-    if (profile.extension === "tex") {
-      new Setting(wrap)
-        .setName(t("打开 TeX 增强渲染"))
-        .setDesc(
-          t("实验功能：使用本插件自定义 Live Preview 扩展渲染 \\(...\\)、\\[...\\] 和常见数学环境，可能影响光标移动、折叠行为或其它编辑器插件兼容性。该功能要求本 profile 的 snippets 替换开关处于开启状态，否则不会加载。关闭后 .tex 仍作为 Markdown view 打开，snippets 仍可用。"),
-        )
-        .addToggle((toggle) =>
-          toggle
-            .setValue(profile.texEnhancedRenderEnabled)
-            .onChange(async (value) => {
-              const target = this.plugin.settings.sourceAssist.profiles[idx];
-              if (!target) return;
-              target.texEnhancedRenderEnabled = value;
-              await this.plugin.saveSourceAssistSettings();
-            }),
-        );
-    }
-
-    if (profile.extension === "tex") {
-      this.renderTexMathCustomFormatsSetting(wrap, profile, idx);
     }
 
     if (profile.extension === "tex") {
@@ -2528,7 +2846,28 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
     new Setting(wrap).setName(t("正则替换")).setHeading();
     renderRegexScopeSetting(wrap, this.plugin, profile.extension);
 
-    new Setting(wrap).setName(t("Snippets")).setHeading();
+    new Setting(wrap).setName(t("Code Suite")).setHeading();
+    this.renderSourceAssistProfileLatexSuiteSetting(wrap, profile, idx);
+
+    if (profile.extension === "tex") {
+      new Setting(wrap)
+        .setName(t("打开 TeX 增强渲染"))
+        .setDesc(
+          t("实验功能：使用本插件自定义 Live Preview 扩展渲染 \\(...\\)、\\[...\\] 和常见数学环境，可能影响光标移动、折叠行为或其它编辑器插件兼容性。该功能要求本 profile 的 Code Suite 开关处于开启状态，否则不会加载。关闭后 .tex 仍作为 Markdown view 打开，Code Suite 仍可用。"),
+        )
+        .addToggle((toggle) =>
+          toggle
+            .setValue(profile.texEnhancedRenderEnabled)
+            .onChange(async (value) => {
+              const target = this.plugin.settings.sourceAssist.profiles[idx];
+              if (!target) return;
+              target.texEnhancedRenderEnabled = value;
+              await this.plugin.saveSourceAssistSettings();
+            }),
+        );
+      this.renderTexMathCustomFormatsSetting(wrap, profile, idx);
+    }
+
     this.renderSourceAssistSnippetsEditor(wrap, profile, idx);
     this.renderSourceAssistHotkeyIntro(wrap);
 
@@ -2538,7 +2877,7 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
       idx,
       "snippetsTrigger",
       t("手动触发按键"),
-      t("用于触发非 automatic snippets；默认与 Latex Suite 一样是 Tab。"),
+      t("用于触发非 automatic 代码展开；Code Suite 默认使用 Tab。"),
     );
     this.renderSourceAssistHotkeySetting(
       wrap,
@@ -2558,29 +2897,29 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
     );
   }
 
-  private renderSourceAssistProfileEnabledSetting(
+  private renderSourceAssistProfileLatexSuiteSetting(
     containerEl: HTMLElement,
     profile: SourceAssistProfile,
     idx: number,
   ): void {
     const name =
       profile.extension === "md"
-        ? t("启用 Markdown snippets 替换")
-        : t("启用该后缀的 snippets 替换");
+        ? t("启用 Markdown 的 Code Suite")
+        : t("启用该后缀的 Code Suite");
     const desc =
       profile.extension === "md"
-        ? t("关闭后只停用 Markdown profile 的 Latex Suite snippets、tabstop 和相关预览 runtime。")
-        : t("关闭后只停用该 profile 的 Latex Suite snippets、tabstop 和相关预览 runtime；不取消后缀注册、不移除新建命令、不影响源码高亮或 Markdown 视觉屏蔽。");
+        ? t("关闭后只停用 Markdown profile 的 Code Suite 代码展开、tabstop 和相关预览。")
+        : t("关闭后只停用该 profile 的 Code Suite 代码展开、tabstop 和相关预览；不取消后缀注册、不移除新建命令、不影响源码高亮或 Markdown 视觉屏蔽。");
     new Setting(containerEl)
       .setName(name)
       .setDesc(desc)
       .addToggle((toggle) =>
         toggle
-          .setValue(profile.enabled)
+          .setValue(profile.latexSuiteEnabled)
           .onChange(async (value) => {
             const target = this.plugin.settings.sourceAssist.profiles[idx];
             if (!target) return;
-            target.enabled = value;
+            target.latexSuiteEnabled = value;
             await this.plugin.saveSourceAssistSettings();
           }),
 	      );
@@ -2593,7 +2932,7 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
   ): void {
     new Setting(containerEl)
       .setName(t("源码高亮主题"))
-      .setDesc(t("只影响该后缀文件的源码 token 配色，不影响 snippets 替换、Markdown view 注册或 TeX 增强渲染。"))
+      .setDesc(t("只影响该后缀文件的源码 token 配色，不影响 Code Suite 代码展开、Markdown view 注册或 TeX 增强渲染。"))
       .addDropdown((dropdown) => {
         for (const option of sourceHighlightProfileThemeOptions(
           this.plugin.settings.sourceAssist.customHighlightThemes,
@@ -2666,7 +3005,7 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
   private renderSourceAssistHotkeyIntro(containerEl: HTMLElement): void {
     containerEl.createDiv({
       cls: "setting-item-description mv-senceai-source-assist-hotkey-intro",
-      text: t("按键说明：手动触发按键用于触发非 automatic snippets；下一/上一 tabstop 用于在 $1/$2/$0 等占位点之间跳转。"),
+      text: t("按键说明：手动触发按键用于触发非 automatic 代码展开；下一/上一 tabstop 用于在 $1/$2/$0 等占位点之间跳转。"),
     });
   }
 
@@ -2677,7 +3016,7 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
   ): void {
     const setting = new Setting(containerEl)
       .setDesc(
-        t("填写格式与 Latex Suite 的 snippets 设置一致；可以直接粘贴原 snippets 数组。行首 // 会按 JS 注释处理。"),
+        t("填写格式与 Code Suite 的代码展开规则一致；可以直接粘贴兼容的规则数组。行首 // 会按 JS 注释处理。"),
       )
       .setClass("mv-senceai-source-assist-snippets-setting");
     setting.controlEl.empty();
@@ -2717,7 +3056,7 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
     const setting = new Setting(containerEl)
       .setName(t("自定义数学环境（行内 / 行间）"))
       .setDesc(
-        t("格式与 snippets 面板一致，每项为 { 开头, 结尾, 设置 }；设置填 n=行内、j=行间、nl=行内环境、jl=行间环境。"),
+        t("格式与代码展开面板一致，每项为 { 开头, 结尾, 设置 }；设置填 n=行内、j=行间、nl=行内环境、jl=行间环境。"),
       )
       .setClass("mv-senceai-source-assist-snippets-setting");
     setting.controlEl.empty();
