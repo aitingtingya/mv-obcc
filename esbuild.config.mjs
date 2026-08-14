@@ -194,7 +194,7 @@ const mainContext = await esbuild.context({
 });
 
 const universalMcpStdioContext = await esbuild.context({
-  entryPoints: ["scripts/universal-mcp-stdio.ts"],
+  entryPoints: ["src/universal-mcp-stdio.ts"],
   bundle: true,
   external: [...builtinModules],
   format: "cjs",
