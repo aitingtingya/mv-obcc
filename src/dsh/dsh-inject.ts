@@ -146,11 +146,20 @@ async function cleanupBundles(profileDir: string): Promise<void> {
 
 async function materializePlugin(vaultRoot: string): Promise<string> {
   const target = stablePluginDir(vaultRoot);
+  const installedInProfile = path.join(webProfileDir(), "node_modules", "@mv-aide", "dsh-plugin");
   await fs.rm(target, { recursive: true, force: true });
   for (const [relativePath, content] of Object.entries(DSH_PLUGIN_FILES)) {
     const output = path.join(target, relativePath);
     await fs.mkdir(path.dirname(output), { recursive: true });
     await fs.writeFile(output, content, "utf8");
+
+    try {
+      const profileOutput = path.join(installedInProfile, relativePath);
+      await fs.mkdir(path.dirname(profileOutput), { recursive: true });
+      await fs.writeFile(profileOutput, content, "utf8");
+    } catch {
+      // Ignore if node_modules/@mv-aide/dsh-plugin does not exist yet before first install
+    }
   }
   return target;
 }

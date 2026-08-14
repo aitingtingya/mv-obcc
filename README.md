@@ -38,7 +38,7 @@ Claude Code、Codex CLI 和任意 MCP Agent 可以读取当前标签、选区、
 
 ### 2. mv-agent
 
-mv-agent 是插件内置的 DeepSeek Harness（DSH）工作区。自定义视图直接在 Obsidian 中嵌入 DSH Web 界面，底部状态栏显示已连接 Agent 数与最新选区快照；命令面板提供「打开 / 关闭 / 重启 mv-agent」。设置页把运行环境拆成 Node.js、DSH、pnpm 和插件注入四层，每层独立检测并可一键安装、升级或修复——可装入仓库的 `mv-aide/dsh/`，或选择全局安装（写受保护目录时会请求系统授权，拒绝后不降级）。注入后 dsh 获得 `/mv-aide` 命令与 `mv_aide__*` IDE 工具；Agent 写文件的权限确认可改为 Obsidian 内可编辑 Diff（接受即写入）。对库外项目的工具与被动推送默认全部关闭，可按通道在设置中开放。
+mv-agent 把 DeepSeek Harness（DSH）内嵌进 Obsidian：自定义视图承载 DSH Web 界面，底部状态栏显示已连接 Agent 数与最新选区快照；命令面板提供「打开 / 关闭 / 重启 mv-agent」。设置页把运行环境拆成 Node.js、DSH、pnpm 和插件注入四层，每层独立检测并可一键安装、升级或修复——可装入仓库的 `mv-aide/dsh/`，或选择全局安装（写受保护目录时会请求系统授权，拒绝后不降级）。注入后 dsh 获得 `/mv-aide` 命令与 `mv_aide__*` IDE 工具；Agent 写文件的权限确认可改为 Obsidian 内可编辑 Diff（接受即写入）。对库外项目的工具与被动推送默认全部关闭，可按通道在设置中开放。
 
 [查看 mv-agent 说明](docs/features.md#mv-agent)
 

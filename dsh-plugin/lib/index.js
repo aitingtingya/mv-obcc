@@ -22,6 +22,7 @@ import {
   selectionSignature,
   shouldDeliverSelection,
 } from './passive-state.js';
+import { mountHoverSidebar } from './hover-sidebar.js';
 import { createUserMessage } from '@deepseek-ai/dsh-llm/message';
 
 export const name = 'mv-aide-dsh';
@@ -77,6 +78,22 @@ export function apply(ctx, config = {}) {
       console.warn(message);
     }
   };
+
+  if (typeof ctx.inject === 'function') {
+    ctx.inject(['webServer'], (webCtx) => {
+      try {
+        mountHoverSidebar(webCtx);
+      } catch (err) {
+        log(`[mv-aide-dsh] hover sidebar mount skipped: ${err?.message || err}`);
+      }
+    });
+  } else {
+    try {
+      mountHoverSidebar(ctx);
+    } catch (err) {
+      log(`[mv-aide-dsh] hover sidebar mount skipped: ${err?.message || err}`);
+    }
+  }
 
   function disposeTools() {
     for (const dispose of toolDisposers.values()) {

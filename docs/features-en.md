@@ -59,7 +59,7 @@ Community Plugins is the recommended installation route. A manual installation m
 | Order | Section | Default | Purpose |
 | --- | --- | --- | --- |
 | 1 | IDE Bridge | Claude on; Codex, universal MCP, and dsh off | Agent context, tools, and diff review |
-| 2 | mv-agent | Off | Built-in DSH workspace: environment install, plugin injection, view, and out-of-vault policy |
+| 2 | mv-agent | Off | Built-in DSH: environment install, plugin injection, view, and out-of-vault policy |
 | 3 | Selection Assistant | Off | Run LLM templates on Markdown, PDF, and web selections |
 | 4 | Inline Completion | Off | Markdown ghost-text completion |
 | 5 | Terminal | Available; opens on the right | System shell, path links, and MCP output |
@@ -176,7 +176,7 @@ Plugin injection, environment installation, and the out-of-vault policy belong t
 <a id="mv-agent"></a>
 ## 2. mv-agent (DSH-powered)
 
-mv-agent is the DeepSeek Harness (DSH) workspace built into the plugin: use the DSH web UI directly inside Obsidian, with environment installation, plugin injection, the view, and out-of-vault boundaries managed in one standalone section. It shares the local bridge service with IDE Bridge — mv-agent installs DSH, connects it, and manages scope, while agent context and tools still flow through the Chapter 1 bridge channel.
+mv-agent embeds DeepSeek Harness (DSH) directly into Obsidian: use the DSH web UI inside Obsidian, with environment installation, plugin injection, the view, and out-of-vault boundaries managed in one standalone section. It shares the local bridge service with IDE Bridge — mv-agent installs DSH, connects it, and manages scope, while agent context and tools still flow through the Chapter 1 bridge channel.
 
 ### Purpose and Enablement
 

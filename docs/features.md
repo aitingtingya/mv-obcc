@@ -59,7 +59,7 @@ mv-AIDE 是 Obsidian 桌面端 AI IDE 插件。九个功能分区彼此独立，
 | 顺序 | 分区 | 默认状态 | 主要作用 |
 | --- | --- | --- | --- |
 | 1 | IDE 桥接 | Claude 开；Codex、通用 MCP、dsh 关 | Agent 上下文、工具、Diff 审核 |
-| 2 | mv-agent | 关 | 内置 DSH 工作区：环境安装、插件注入、视图与库外策略 |
+| 2 | mv-agent | 关 | 内置 DSH：环境安装、插件注入、视图与库外策略 |
 | 3 | 划词助手 | 关 | 对 Markdown、PDF、网页选区调用 LLM |
 | 4 | 行内补全 | 关 | Markdown ghost text 补全 |
 | 5 | 终端 | 可用，默认右侧打开 | 系统 Shell、路径联动、MCP 输出 |
@@ -176,7 +176,7 @@ dsh 是第四个已适配 Agent。开启「启用 dsh IDE 功能」后，插件�
 <a id="mv-agent"></a>
 ## 2. mv-agent
 
-mv-agent 是插件内置的 DeepSeek Harness（DSH）工作区：在 Obsidian 里直接使用 DSH Web 界面，并把环境安装、插件注入、视图与库外边界控制收进一个独立分区。它与 IDE 桥接共享同一条本地桥接服务——mv-agent 负责把 DSH 装起来、接进来、管理范围，Agent 的上下文与工具仍经由第 1 章的桥接通道。
+mv-agent 把 DeepSeek Harness（DSH）内嵌进 Obsidian：直接使用 DSH Web 界面，并把环境安装、插件注入、视图与库外边界控制收进一个独立分区。它与 IDE 桥接共享同一条本地桥接服务——mv-agent 负责把 DSH 装起来、接进来、管理范围，Agent 的上下文与工具仍经由第 1 章的桥接通道。
 
 ### 目的与启用方式
 

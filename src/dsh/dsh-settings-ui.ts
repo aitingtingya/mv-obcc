@@ -12,12 +12,10 @@ import {
   combinedNodeStatus,
   combinedToolStatus,
   preferredNodeLocation,
-  selectedNodeStatus,
   toolIsInstalled,
   type DshInstallLayer,
   type DshLayerStatus,
 } from "./dsh-environment";
-import { isDshNodeRuntimeTarget } from "./dsh-node-runtime";
 
 function heading(containerEl: HTMLElement, text: string): void {
   new Setting(containerEl).setName(text).setHeading();
@@ -293,18 +291,15 @@ export function renderDshSection(
   };
 
   const nodeStatus = combinedNodeStatus(environment.node);
-  const selectedNode = selectedNodeStatus(environment.node);
   const nodeInstalled = preferredNodeLocation(environment.node) !== null;
-  const nodeAtTarget = selectedNode.state === "ready"
-    && isDshNodeRuntimeTarget(selectedNode.version);
   const nodeSetting = new Setting(installEl)
     .setName("Node.js")
     .setDesc(nodeStatus.detail || t("点击“检测”刷新实际状态。"))
     .addButton((button) => {
       environmentButtons.push(button);
       button
-        .setButtonText(nodeAtTarget ? t("已是目标版本") : nodeInstalled ? t("升级") : t("安装"))
-        .setDisabled(dshFeature.isEnvironmentBusy() || nodeAtTarget)
+        .setButtonText(nodeInstalled ? t("升级") : t("安装"))
+        .setDisabled(dshFeature.isEnvironmentBusy())
         .onClick(() => runLayer("node"));
     });
   statusSpan(nodeSetting.settingEl, layerStatusText(nodeStatus), layerStatusClass(nodeStatus));
