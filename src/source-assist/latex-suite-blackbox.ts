@@ -1,6 +1,6 @@
 import type { Extension } from "@codemirror/state";
 import type { PluginManifest } from "obsidian";
-import type MvSenceAiIdePlugin from "../../main";
+import type MvAideIdePlugin from "../../main";
 import LatexSuitePlugin from "../vendor/latex-suite/src/main";
 import {
   DEFAULT_SETTINGS as LATEX_SUITE_DEFAULT_SETTINGS,
@@ -16,7 +16,7 @@ export interface LatexSuiteProfileRuntime {
 }
 
 export async function buildLatexSuiteProfileRuntime(
-  plugin: MvSenceAiIdePlugin,
+  plugin: MvAideIdePlugin,
   settings: SourceAssistSettings,
 ): Promise<LatexSuiteProfileRuntime> {
   const extensionsByFileExtension: Record<string, Extension[]> = {};
@@ -40,7 +40,7 @@ export async function buildLatexSuiteProfileRuntime(
 
 class RoutedLatexSuitePlugin extends LatexSuitePlugin {
   constructor(
-    parent: MvSenceAiIdePlugin,
+    parent: MvAideIdePlugin,
     settings: LatexSuitePluginSettings,
   ) {
     super(parent.app, parent.manifest as PluginManifest);

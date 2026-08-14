@@ -1,5 +1,5 @@
 import type { ItemView, View } from "obsidian";
-import type MvSenceAiIdePlugin from "../main";
+import type MvAideIdePlugin from "../main";
 import { t } from "./i18n";
 import { BrowserDownloadsModal } from "./browser-downloads-modal";
 
@@ -21,7 +21,7 @@ export class BrowserDownloadsButtonFeature {
   private buttons: HTMLElement[] = [];
   private enabled = true;
 
-  constructor(private readonly plugin: MvSenceAiIdePlugin) {}
+  constructor(private readonly plugin: MvAideIdePlugin) {}
 
   register(): void {
     this.plugin.app.workspace.onLayoutReady(() => this.install());

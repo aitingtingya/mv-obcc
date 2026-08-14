@@ -23,6 +23,7 @@ import { t } from "../i18n";
 import { ensureContainedVaultDirectory } from "../external-file-mirror-path";
 import { loadVimrc } from "./vimrc-loader";
 import { compileVimRuntime } from "../vim/vimrc/runtime";
+import { isObsidianWorkspaceDragEvent } from "./workspace-drag";
 import type {
   VimFeatureHandle,
   VimFeatureHost,
@@ -94,6 +95,7 @@ class IndependentVimFeature implements VimFeatureHandle {
         externalCommandsAllowed: () => this.host.getSettings().allowExternalCommands,
         cursorColor: () => resolveVimCursorColorCss(this.host.getSettings()),
         shouldYieldKey: (view, event) => this.host.shouldYieldKey(view, event),
+        isHostWorkspaceDragEvent: isObsidianWorkspaceDragEvent,
         onEnterVisual: (view) => this.host.onEnterVisual?.(view),
         onStatusChange: (view, status) => this.onViewStatus(view, status),
         onViewFocused: (view) => this.onViewFocused(view),

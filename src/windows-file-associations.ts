@@ -662,7 +662,7 @@ public sealed class MvRegistryCleanupResult {
     public string[] RemainingReferences { get; set; }
 }
 
-public static class MvSenceAiAssociationNative {
+public static class MvAideAssociationNative {
     private const int ERROR_SUCCESS = 0;
     private const int ERROR_FILE_NOT_FOUND = 2;
     private const int ERROR_PATH_NOT_FOUND = 3;
@@ -1281,7 +1281,7 @@ function Registry-TypeName([uint32]$Type) {
 }
 
 function Probe-Value($Value) {
-  $Probe = [MvSenceAiAssociationNative]::Probe([string]$Value.key, $Value.name)
+  $Probe = [MvAideAssociationNative]::Probe([string]$Value.key, $Value.name)
   return [ordered]@{
     key = [string]$Value.key
     name = $Value.name
@@ -1302,18 +1302,18 @@ function Inspect-Payload($Payload) {
   return [ordered]@{
     ok = $true
     values = $Values
-    ownedReferences = @([MvSenceAiAssociationNative]::FindOwnedExtensionReferences())
+    ownedReferences = @([MvAideAssociationNative]::FindOwnedExtensionReferences())
   }
 }
 
 if ($Action -eq "Notify") {
-  [MvSenceAiAssociationNative]::NotifyAssociationChanged()
+  [MvAideAssociationNative]::NotifyAssociationChanged()
   exit 0
 }
 
 if ($Action -eq "QueryDefault") {
   try {
-    $ProgId = [MvSenceAiAssociationNative]::QueryCurrentDefault($Extension)
+    $ProgId = [MvAideAssociationNative]::QueryCurrentDefault($Extension)
     Write-Json @{ extension = $Extension; progId = $ProgId }
   } catch {
     Write-Json @{ extension = $Extension; error = $_.Exception.Message }
@@ -1331,7 +1331,7 @@ try {
     ) {
       throw "Open command compare-exchange requires string expectedCommand and nextCommand values."
     }
-    $Result = [MvSenceAiAssociationNative]::CompareExchangeOpenCommand(
+    $Result = [MvAideAssociationNative]::CompareExchangeOpenCommand(
       [string]$Payload.expectedCommand,
       [string]$Payload.nextCommand)
     Write-Json ([ordered]@{
@@ -1345,12 +1345,12 @@ try {
   if ($Action -eq "ApplyRegistration") {
     foreach ($Value in @($Payload.values)) {
       if ([string]$Value.type -eq "REG_SZ") {
-        [MvSenceAiAssociationNative]::SetString(
+        [MvAideAssociationNative]::SetString(
           [string]$Value.key,
           $Value.name,
           [string]$Value.data)
       } elseif ([string]$Value.type -eq "REG_NONE") {
-        [MvSenceAiAssociationNative]::SetEmptyNone(
+        [MvAideAssociationNative]::SetEmptyNone(
           [string]$Value.key,
           [string]$Value.name)
       } else {
@@ -1367,7 +1367,7 @@ try {
   }
 
   if ($Action -eq "CleanupRegistration") {
-    $Result = [MvSenceAiAssociationNative]::CleanupRegistration()
+    $Result = [MvAideAssociationNative]::CleanupRegistration()
     Write-Json ([ordered]@{
       ok = $true
       removed = [int]$Result.Removed

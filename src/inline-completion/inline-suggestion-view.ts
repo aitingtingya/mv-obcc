@@ -19,7 +19,7 @@ class GhostTextWidget extends WidgetType {
   toDOM(view: EditorView): HTMLElement {
     const span = view.dom.ownerDocument.createElement("span");
     span.textContent = this.text;
-    span.className = "mv-senceai-ghost-text";
+    span.className = "mv-aide-ghost-text";
     return span;
   }
 

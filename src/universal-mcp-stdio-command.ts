@@ -1,5 +1,38 @@
-import { spawnSync } from "node:child_process";
 import fs from "node:fs";
+import path from "node:path";
+
+function executableNames(name: string, platform: NodeJS.Platform): string[] {
+  if (platform !== "win32") return [name];
+  if (/\.[a-z0-9]+$/iu.test(name)) return [name];
+  const extensions = (process.env.PATHEXT || ".EXE;.CMD;.BAT;.COM")
+    .split(";")
+    .filter(Boolean);
+  return extensions.map((extension) => `${name}${extension.toLowerCase()}`);
+}
+
+/** Resolve an executable from PATH without spawning a blocking probe. */
+export function findSystemExecutable(
+  name: string,
+  platform: NodeJS.Platform = process.platform,
+  environment: NodeJS.ProcessEnv = process.env,
+): string | null {
+  const pathApi = platform === "win32" ? path.win32 : path.posix;
+  const pathEntries = (environment.PATH || "").split(pathApi.delimiter).filter(Boolean);
+  if (platform !== "win32") {
+    pathEntries.push("/usr/local/bin", "/opt/homebrew/bin", "/usr/bin");
+  }
+  for (const directory of [...new Set(pathEntries)]) {
+    for (const executable of executableNames(name, platform)) {
+      const candidate = pathApi.join(directory, executable);
+      try {
+        if (fs.existsSync(candidate) && fs.statSync(candidate).isFile()) return candidate;
+      } catch {
+        /* inaccessible PATH entry */
+      }
+    }
+  }
+  return null;
+}
 
 /**
  * Resolve the command used to run the universal MCP stdio launcher.
@@ -13,21 +46,5 @@ import fs from "node:fs";
 export function detectSystemNodeCommand(
   platform: NodeJS.Platform = process.platform,
 ): string | null {
-  try {
-    const probe = spawnSync("node", ["--version"], { encoding: "utf8" });
-    if (probe.error || probe.status !== 0) return null;
-    const lookup = spawnSync(platform === "win32" ? "where" : "which", ["node"], {
-      encoding: "utf8",
-    });
-    if (lookup.error || lookup.status !== 0 || typeof lookup.stdout !== "string") {
-      return null;
-    }
-    for (const line of lookup.stdout.split(/\r?\n/)) {
-      const candidate = line.trim();
-      if (candidate && fs.existsSync(candidate)) return candidate;
-    }
-    return null;
-  } catch {
-    return null;
-  }
+  return findSystemExecutable("node", platform);
 }

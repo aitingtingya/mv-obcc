@@ -166,8 +166,8 @@ class TexMathWidget extends WidgetType {
 
   private className(): string {
     return this.display
-      ? "math math-block cm-embed-block mv-senceai-tex-math-preview mv-senceai-tex-math-preview-display"
-      : "math mv-senceai-tex-math-preview mv-senceai-tex-math-preview-inline";
+      ? "math math-block cm-embed-block mv-aide-tex-math-preview mv-aide-tex-math-preview-display"
+      : "math mv-aide-tex-math-preview mv-aide-tex-math-preview-inline";
   }
 }
 

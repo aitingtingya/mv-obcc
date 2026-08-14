@@ -8,7 +8,7 @@ import {
 import { editorInfoField, MarkdownView, Notice } from "obsidian";
 import * as child_process from "child_process";
 import * as path from "path";
-import type MvSenceAiIdePlugin from "../../main";
+import type MvAideIdePlugin from "../../main";
 import { t } from "../i18n";
 import { lintCommandFor, lintPersistentFor } from "./lint-types";
 import { buildLintCommand, diagnosticRangeFor, parseLintOutput } from "./lint-parse";
@@ -36,7 +36,7 @@ export class LintFeature {
     { updatedAt: number; diagnostics: ParsedLintDiagnostic[] }
   >();
 
-  constructor(private readonly plugin: MvSenceAiIdePlugin) {
+  constructor(private readonly plugin: MvAideIdePlugin) {
     this.extensions = [
       this.compartment.of([]),
       lintProfileRouter(this.plugin, this.compartment),
@@ -274,7 +274,7 @@ export class LintFeature {
 }
 
 function lintProfileRouter(
-  plugin: MvSenceAiIdePlugin,
+  plugin: MvAideIdePlugin,
   compartment: Compartment,
 ): Extension {
   return ViewPlugin.fromClass(
@@ -315,7 +315,7 @@ function lintProfileRouter(
 }
 
 function lintGutterExtensionsFor(
-  plugin: MvSenceAiIdePlugin,
+  plugin: MvAideIdePlugin,
   extension: string,
 ): Extension[] {
   return lintCommandFor(plugin.settings.sourceLint, extension).trim()

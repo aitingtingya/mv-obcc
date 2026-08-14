@@ -12,15 +12,15 @@ const licenseBanner = [
   " */",
 ].join("\n");
 const startupTimingBanner = [
-  "var __mvSenceAiStartupNow = () => {",
+  "var __mvAideStartupNow = () => {",
   "  var measured = globalThis.performance?.now?.();",
   "  return typeof measured === 'number' && Number.isFinite(measured) ? measured : Date.now();",
   "};",
-  "globalThis.__mvSenceAiModuleEvaluationTiming = { startedAt: __mvSenceAiStartupNow() };",
+  "globalThis.__mvAideModuleEvaluationTiming = { startedAt: __mvAideStartupNow() };",
 ].join("\n");
 const startupTimingFooter = [
-  "if (globalThis.__mvSenceAiModuleEvaluationTiming) {",
-  "  globalThis.__mvSenceAiModuleEvaluationTiming.endedAt = __mvSenceAiStartupNow();",
+  "if (globalThis.__mvAideModuleEvaluationTiming) {",
+  "  globalThis.__mvAideModuleEvaluationTiming.endedAt = __mvAideStartupNow();",
   "}",
 ].join("\n");
 const external = [
@@ -57,7 +57,10 @@ const inlineImportPlugin = {
   name: "inline-import",
   setup(build) {
     build.onResolve({ filter: /^inline:/ }, (args) => ({
-      path: path.resolve(args.resolveDir, args.path.slice("inline:".length)),
+      path: path.resolve(
+        args.resolveDir,
+        args.path.slice("inline:".length).replace(/\?text$/u, ""),
+      ),
       namespace: "inline-text",
     }));
     build.onLoad({ filter: /.*/, namespace: "inline-text" }, async (args) => ({
@@ -103,7 +106,9 @@ async function minifyPatchedBundle(filePath) {
     sourcefile: path.basename(filePath),
     target: "es2022",
   });
-  await fs.writeFile(filePath, transformed.code, "utf8");
+  // Generated template literals may preserve upstream indentation at physical
+  // line endings. Strip it so deployed artifacts also pass diff whitespace QA.
+  await fs.writeFile(filePath, transformed.code.replace(/[ \t]+$/gmu, ""), "utf8");
 }
 
 async function assertBrowserLoginSafetyBoundary(filePath) {
@@ -128,7 +133,7 @@ async function assertProductionBundle(filePath) {
   const source = await fs.readFile(filePath, "utf8");
   const requiredMarkers = [
     "mv-AIDE bundles portions of obsidian-latex-suite 1.11.5",
-    "__mvSenceAiModuleEvaluationTiming",
+    "__mvAideModuleEvaluationTiming",
   ];
   const missing = requiredMarkers.filter((marker) => !source.includes(marker));
   if (missing.length > 0) {

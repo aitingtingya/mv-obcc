@@ -16,7 +16,8 @@ import {
 import { resolveTerminalKeyAction } from "./terminal-clipboard";
 import { encodeTerminalKey } from "./terminal-keys";
 import { TERMINAL_PTY_PY_BASE64, TERMINAL_WIN_PY_BASE64 } from "./terminal-scripts";
-import MvSenceAiIdePlugin from "../../main";
+import { loginShellPath, resolvePythonCommand } from "./terminal-process";
+import type MvAideIdePlugin from "../../main";
 
 // stdin 帧协议：[type: 1B][length: 4B LE][payload]。前端按消息打帧、后端
 // 按帧拆分，不再从无边界字节流里猜转义序列边界（旧方案下 Windows 裸 ESC
@@ -26,7 +27,7 @@ const TERMINAL_FRAME_INPUT = 0;
 const TERMINAL_FRAME_RESIZE = 1;
 
 export class TerminalView extends ItemView {
-  private plugin: MvSenceAiIdePlugin;
+  private plugin: MvAideIdePlugin;
   private term: Terminal | null = null;
   private fitAddon: FitAddon | null = null;
   private termHost: HTMLDivElement | null = null;
@@ -42,10 +43,14 @@ export class TerminalView extends ItemView {
   // 且不自愈（表现为输出时视图瞬移到顶部），所以由我们自己跟踪：只在用户
   // 通过滚轮/触控板/Shift+PageUp/Down 主动滚动后重新采样。
   private followPinned = true;
+  private shellStartGeneration = 0;
 
-  constructor(leaf: WorkspaceLeaf, plugin: MvSenceAiIdePlugin) {
+  constructor(leaf: WorkspaceLeaf, plugin: MvAideIdePlugin) {
     super(leaf);
     this.plugin = plugin;
+    // The terminal can live in either sidebar or the main workspace. Marking
+    // it navigable lets Obsidian expose its native pane movement semantics.
+    this.navigation = true;
   }
 
   focusTerminal(): void {
@@ -82,10 +87,31 @@ export class TerminalView extends ItemView {
     return "terminal";
   }
 
+  /** 标签页右键菜单：追加「刷新终端」（重启 shell 会话）。 */
+  onPaneMenu(menu: Menu, source: string): void {
+    // 不按 source 过滤：主区标签为 "tab-header"，侧边栏标签为
+    // "sidebar-context-menu"，⋮ 菜单为 "more-options"，都要带上。
+    menu.addItem((item) =>
+      item
+        .setTitle(t("刷新终端"))
+        .setIcon("refresh-ccw")
+        .onClick(() => void this.refreshShell()),
+    );
+  }
+
+  /** 刷新终端：杀掉当前 PTY、复位 xterm（清屏）、重新启动 shell 会话。 */
+  private async refreshShell(): Promise<void> {
+    if (!this.term) return;
+    this.stopShell();
+    this.term.reset();
+    this.followPinned = true;
+    await this.startShell();
+  }
+
   async onOpen(): Promise<void> {
     this.buildUI();
     this.initTerminal();
-    this.startShell();
+    await this.startShell();
     
     this.resizeObserver = new ResizeObserver(() => this.debouncedFit());
     this.resizeObserver.observe(this.containerEl);
@@ -376,7 +402,8 @@ export class TerminalView extends ItemView {
     }
   }
 
-  private startShell() {
+  private async startShell(): Promise<void> {
+    const generation = ++this.shellStartGeneration;
     const isWindows = process.platform === "win32";
     const settings = this.plugin.settings;
 
@@ -384,24 +411,14 @@ export class TerminalView extends ItemView {
     const scriptName = isWindows ? "mv_terminal_win.py" : "mv_terminal_pty.py";
     const scriptPath = path.join(os.tmpdir(), scriptName);
     const scriptContent = Buffer.from(scriptB64, "base64").toString("utf-8");
-    fs.writeFileSync(scriptPath, scriptContent, { mode: 0o755 });
+    await fs.promises.writeFile(scriptPath, scriptContent, { mode: 0o755 });
 
-    let pythonCmd = settings.terminalPythonPath || (isWindows ? "py" : "python3");
-    if (isWindows && !settings.terminalPythonPath) {
-      try {
-        child_process.execSync("py --version", { stdio: "ignore", timeout: 2000 });
-        pythonCmd = "py";
-      } catch (e) {
-        try {
-          const whereOutput = child_process.execSync("where.exe python", { encoding: "utf8", timeout: 2000 });
-          const pythonPaths = whereOutput.split(/\r?\n/).map(p => p.trim()).filter(p => p && !p.includes("WindowsApps"));
-          const batShim = pythonPaths.find(p => p.toLowerCase().endsWith(".bat"));
-          pythonCmd = batShim || pythonPaths[0] || "python";
-        } catch (e2) {
-          pythonCmd = "python";
-        }
-      }
+    const pythonCmd = resolvePythonCommand(settings.terminalPythonPath);
+    if (!pythonCmd) {
+      this.term?.writeln(t("未检测到 Python，请在插件设置中配置 Python 可执行文件路径。"));
+      return;
     }
+    if (generation !== this.shellStartGeneration) return;
 
     const shellPath = isWindows 
       ? (settings.terminalWinShellPath || "cmd.exe") 
@@ -431,17 +448,9 @@ export class TerminalView extends ItemView {
     
     const shellEnv: Record<string, string | undefined> = { ...process.env, TERM: "xterm-256color", COLORTERM: "truecolor" };
     if (!isWindows) {
-      try {
-        const shellOutput = child_process.execFileSync(
-          shellPath,
-          ["-lic", 'echo "__PATH__"; echo "$PATH"'],
-          { encoding: "utf8", timeout: 3000 },
-        );
-        const shellPathEnv = shellOutput.split("__PATH__\n")[1]?.trim().split("\n")[0];
-        if (shellPathEnv) {
-          shellEnv.PATH = shellPathEnv;
-        }
-      } catch (e) {}
+      const resolvedPath = await loginShellPath(shellPath);
+      if (generation !== this.shellStartGeneration) return;
+      if (resolvedPath) shellEnv.PATH = resolvedPath;
     }
 
     try {
@@ -512,6 +521,7 @@ export class TerminalView extends ItemView {
   }
 
   stopShell() {
+    this.shellStartGeneration += 1;
     if (this.proc && !this.proc.killed) {
       const pid = this.proc.pid;
       const isWin = process.platform === "win32";

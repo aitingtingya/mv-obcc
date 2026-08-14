@@ -19,6 +19,26 @@ import type { OpenEditorTab, SelectionState } from "./types";
  * "webviewer"，旧版（1.6.7 asar 实证）为 "browser"，两者都接受。 */
 const BROWSER_VIEW_TYPES = new Set(["browser", "webviewer"]);
 
+/** 读取 webview 页面选区的超时：页面加载中 executeJavaScript 可能挂起。 */
+const WEB_SELECTION_TIMEOUT_MS = 1200;
+
+/** 竞速超时：超时即 reject，原 promise 的结果被丢弃（不取消底层调用）。 */
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("web selection timeout")), timeoutMs);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
+}
+
 export function isBrowserViewType(viewType: string): boolean {
   return BROWSER_VIEW_TYPES.has(viewType);
 }
@@ -50,6 +70,18 @@ interface DimensionedWorkspaceItem {
 
 interface SaveableWorkspace {
   requestSaveLayout?: () => unknown;
+}
+
+interface MainBottomWorkspace extends SaveableWorkspace {
+  rootSplit: unknown;
+  iterateAllLeaves(callback: (leaf: WorkspaceLeaf) => void): void;
+  getMostRecentLeaf(root: unknown): WorkspaceLeaf | null;
+  getLeaf(kind: "tab"): WorkspaceLeaf;
+  createLeafBySplit(
+    leaf: WorkspaceLeaf,
+    direction: "horizontal",
+    before: boolean,
+  ): WorkspaceLeaf;
 }
 
 function point(character = 0): { line: number; character: number } {
@@ -88,6 +120,24 @@ function viewSelection(view: View): string {
 export function activeWorkspaceLeaf(app: App): WorkspaceLeaf | null {
   // activeLeaf 已废弃（官方规范禁止直接使用），getMostRecentLeaf 为官方替代。
   return app.workspace.getMostRecentLeaf();
+}
+
+export function createMainBottomLeaf(
+  workspace: MainBottomWorkspace,
+  excludedLeaf?: WorkspaceLeaf,
+): WorkspaceLeaf {
+  const rootLeaves: WorkspaceLeaf[] = [];
+  workspace.iterateAllLeaves((candidate) => {
+    if (candidate !== excludedLeaf && candidate.getRoot() === workspace.rootSplit) {
+      rootLeaves.push(candidate);
+    }
+  });
+
+  const recent = workspace.getMostRecentLeaf(workspace.rootSplit);
+  const anchor = recent && recent !== excludedLeaf
+    ? recent
+    : rootLeaves[0] ?? workspace.getLeaf("tab");
+  return workspace.createLeafBySplit(anchor, "horizontal", false);
 }
 
 export function applyBottomTerminalSplitRatio(
@@ -148,6 +198,8 @@ export async function currentWorkspaceContext(
   app: App,
   requestedLeaf?: WorkspaceLeaf | null,
   resolveLogicalSelection?: LogicalSelectionResolver,
+  webSelectionText?: string | null,
+  pendingWebUrl?: string | null,
 ): Promise<SelectionState | null> {
   const leaf = requestedLeaf === undefined ? activeWorkspaceLeaf(app) : requestedLeaf;
   if (!leaf) return null;
@@ -173,15 +225,33 @@ export async function currentWorkspaceContext(
 
   if (isBrowserViewType(viewType)) {
     const webView = view as WebViewerView;
-    const { url, title } = webViewState(webView);
+    // 导航中的目标 URL（did-start-navigation 缓存）优先：view.url 要等
+    // dom-ready 才更新，加载期间用缓存保证「打开：」立即指向新页面。
+    const { url: viewUrl, title } = webViewState(webView);
+    const url = typeof pendingWebUrl === "string" && pendingWebUrl
+      ? pendingWebUrl
+      : viewUrl;
     let text = "";
-    try {
-      const selected = await webView.webview?.executeJavaScript(
-        "window.getSelection ? window.getSelection().toString() : ''",
-      );
-      if (typeof selected === "string") text = selected;
-    } catch {
-      // Some pages temporarily reject script execution during navigation.
+    if (typeof webSelectionText === "string") {
+      // 页内推送通道（console-message）已提供实时选区：加载期间也有效，
+      // 直接使用，不再依赖 executeJavaScript。
+      text = webSelectionText;
+    } else {
+      try {
+        // 页面加载/导航期间 executeJavaScript 可能长时间挂起（而不是快速
+        // reject），会拖住整个选区广播流水线，导致位置与选区等到页面加载
+        // 完毕才更新。给它一个超时竞速：超时按"空选区"处理，底层调用不
+        // 取消（迟到结果直接丢弃），500ms 轮询会继续带来更新。
+        const selected = await withTimeout(
+          webView.webview?.executeJavaScript(
+            "window.getSelection ? window.getSelection().toString() : ''",
+          ) ?? Promise.resolve(""),
+          WEB_SELECTION_TIMEOUT_MS,
+        );
+        if (typeof selected === "string") text = selected;
+      } catch {
+        // Some pages temporarily reject script execution during navigation.
+      }
     }
     return selectionState(
       {

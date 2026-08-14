@@ -54,14 +54,14 @@ export function createSourceAssistSnippetsEditor({
   validate,
   onValidChange,
 }: SourceAssistSnippetsEditorOptions): EditorView {
-  const validity = footerEl.createDiv("mv-senceai-snippets-editor-validity");
+  const validity = footerEl.createDiv("mv-aide-snippets-editor-validity");
   const validityIndicator = new ExtraButtonComponent(validity);
   validityIndicator
     .setIcon("checkmark")
-    .extraSettingsEl.addClass("mv-senceai-snippets-editor-validity-indicator");
+    .extraSettingsEl.addClass("mv-aide-snippets-editor-validity-indicator");
 
   const validityText = validity.createDiv({
-    cls: "mv-senceai-snippets-editor-validity-text setting-item-description",
+    cls: "mv-aide-snippets-editor-validity-text setting-item-description",
   });
   let validationRun = 0;
 

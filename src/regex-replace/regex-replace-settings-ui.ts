@@ -1,5 +1,5 @@
 import { Setting } from "obsidian";
-import type MvSenceAiIdePlugin from "../../main";
+import type MvAideIdePlugin from "../../main";
 import { t } from "../i18n";
 import {
   regexScopeFor,
@@ -14,7 +14,7 @@ import {
  */
 export function renderRegexScopeSetting(
   containerEl: HTMLElement,
-  plugin: MvSenceAiIdePlugin,
+  plugin: MvAideIdePlugin,
   extension: string,
 ): void {
   const isMd = extension === "md";

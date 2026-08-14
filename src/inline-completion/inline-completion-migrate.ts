@@ -1,4 +1,5 @@
 import { DEFAULT_SETTINGS } from "../constants";
+import { NO_COMPLETION_SENTINEL } from "./inline-completion-protocol";
 import type {
   InlineCompletionKeymap,
   InlineCompletionSettings,
@@ -52,6 +53,10 @@ export function migrateInlineCompletion(loaded: unknown): InlineCompletionSettin
     return Math.max(min, Math.floor(n));
   };
 
+  const promptFields = migrateSystemPromptFields(src, base);
+  const rejectPrompt =
+    typeof src.rejectPrompt === "string" ? src.rejectPrompt : base.rejectPrompt;
+
   return {
     enabled,
     armed: enabled ? armed : false,
@@ -73,10 +78,22 @@ export function migrateInlineCompletion(loaded: unknown): InlineCompletionSettin
     ),
     maxChars: clamp(src.maxChars, base.maxChars, 10),
     maxLines: clamp(src.maxLines, base.maxLines, 1),
-    ...migrateSystemPromptFields(src, base),
-    rejectPrompt:
-      typeof src.rejectPrompt === "string" ? src.rejectPrompt : base.rejectPrompt,
+    systemPromptBody: normalizeLegacySentinel(promptFields.systemPromptBody),
+    noCompletionPrompt: normalizeLegacySentinel(promptFields.noCompletionPrompt),
+    rejectPrompt: normalizeLegacySentinel(rejectPrompt),
   };
+}
+
+/**
+ * One-off rename normalization: prompts persisted before the senceai →
+ * mv-AIDE rebrand still carry the legacy sentinel. Rewrite them so the
+ * protocol layer keeps detecting "no completion" responses. Idempotent.
+ */
+function normalizeLegacySentinel(value: string): string {
+  return value.replaceAll(
+    "<MV_SENCEAI_NO_COMPLETION>",
+    NO_COMPLETION_SENTINEL,
+  );
 }
 
 /**

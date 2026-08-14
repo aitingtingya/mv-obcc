@@ -676,6 +676,7 @@ export class VimEngine {
     if (this.consumeAwaitingKey(key)) return true;
     if (/^[1-9]$/.test(key) || (key === "0" && this.countDigits.length > 0)) {
       this.countDigits += key;
+      this.emitStatus();
       return true;
     }
     const count = this.takeCountState();
@@ -704,6 +705,7 @@ export class VimEngine {
     if (key === "g") {
       this.pendingPrefix = "g";
       this.restoreCount(count);
+      this.emitStatus();
       return true;
     }
     if (key === "i" || key === "a") {
@@ -735,6 +737,7 @@ export class VimEngine {
         till: key === "t" || key === "T",
       };
       this.restoreCount(count);
+      this.emitStatus();
       return true;
     }
     const motion = this.motionForKey(key, count.value, count.explicit);

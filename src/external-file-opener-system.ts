@@ -41,7 +41,7 @@ import { EXTERNAL_FILE_MIRROR_FOLDER } from "./vault-storage-paths";
 
 const execFile = promisify(childProcess.execFile);
 
-export const EXTERNAL_FILE_OPENER_MARKER = "mv-senceai-file-opener-v1";
+export const EXTERNAL_FILE_OPENER_MARKER = "mv-aide-file-opener-v1";
 export const EXTERNAL_FILE_OPENER_BUNDLE_ID = "com.mv.aide.file-opener";
 export const EXTERNAL_FILE_OPENER_PROG_ID = WINDOWS_FILE_OPENER_PROG_ID;
 export const WINDOWS_FILE_OPENER_WRAPPER_VERSION = 4;
@@ -543,13 +543,13 @@ export async function preflightWindowsLauncher(
     const probeScript = String.raw`$ErrorActionPreference = "Stop"
 Add-Type -TypeDefinition @'
 using Microsoft.Win32;
-public static class MvSenceAiLauncherProbe {
+public static class MvAideLauncherProbe {
   public static void ReadCurrentUserSoftware() {
     using (RegistryKey key = Registry.CurrentUser.OpenSubKey("Software", false)) { }
   }
 }
 '@
-[MvSenceAiLauncherProbe]::ReadCurrentUserSoftware()
+[MvAideLauncherProbe]::ReadCurrentUserSoftware()
 exit 0
 `;
     const probeLauncher = [
@@ -1293,7 +1293,7 @@ if ($OwnerResult.kind -ne "valid") {
   Write-Failure "owner-invalid" ("MV AIDE owner data is invalid: " + $OwnerResult.message) 2
 }
 $Owner = $OwnerResult.value
-if ($Owner.marker -ne "mv-senceai-file-opener-v1" -or
+if ($Owner.marker -ne "mv-aide-file-opener-v1" -or
     [string]::IsNullOrWhiteSpace([string]$Owner.vaultRoot) -or
     [string]::IsNullOrWhiteSpace([string]$Owner.vaultName)) {
   Write-Failure "owner-invalid" "MV AIDE owner data is incomplete." 2

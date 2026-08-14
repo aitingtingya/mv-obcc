@@ -12,8 +12,11 @@ interface CodexMcpRegistrationRuntime {
   configPath?: string;
 }
 
-const MANAGED_BEGIN = "# BEGIN mv-SenceAI managed Codex MCP server";
-const MANAGED_END = "# END mv-SenceAI managed Codex MCP server";
+const MANAGED_BEGIN = "# BEGIN mv-AIDE managed Codex MCP server";
+const MANAGED_END = "# END mv-AIDE managed Codex MCP server";
+/** Transitional: blocks written before the senceai → mv-AIDE rename. */
+const LEGACY_MANAGED_BEGIN = "# BEGIN mv-SenceAI managed Codex MCP server";
+const LEGACY_MANAGED_END = "# END mv-SenceAI managed Codex MCP server";
 const SERVER_NAME = "mv_aide_obsidian";
 
 export function defaultCodexConfigPath(): string {
@@ -38,12 +41,21 @@ function managedBlock(url: string, authToken: string): string {
 }
 
 function stripManagedBlock(content: string): string {
-  const start = content.indexOf(MANAGED_BEGIN);
+  const stripped = stripMarkedBlock(content, MANAGED_BEGIN, MANAGED_END);
+  return stripMarkedBlock(stripped, LEGACY_MANAGED_BEGIN, LEGACY_MANAGED_END);
+}
+
+function stripMarkedBlock(
+  content: string,
+  begin: string,
+  end: string,
+): string {
+  const start = content.indexOf(begin);
   if (start < 0) return content;
-  const end = content.indexOf(MANAGED_END, start);
-  if (end < 0) return content;
+  const endIndex = content.indexOf(end, start);
+  if (endIndex < 0) return content;
   const before = content.slice(0, start).trimEnd();
-  const after = content.slice(end + MANAGED_END.length).trimStart();
+  const after = content.slice(endIndex + end.length).trimStart();
   return [before, after].filter(Boolean).join("\n\n") + (before || after ? "\n" : "");
 }
 
@@ -103,8 +115,16 @@ export async function removeCodexMcpRegistration(
   }
 }
 
-const ALIAS_MANAGED_BEGIN = "# BEGIN mv-obcc managed Codex environment";
-const ALIAS_MANAGED_END = "# END mv-obcc managed Codex environment";
+const ALIAS_MANAGED_BEGIN = "# BEGIN mv-aide managed Codex environment";
+const ALIAS_MANAGED_END = "# END mv-aide managed Codex environment";
+/** Transitional: blocks written before the mv-obcc → mv-aide rename. */
+const LEGACY_ALIAS_MANAGED_BEGIN = "# BEGIN mv-obcc managed Codex environment";
+const LEGACY_ALIAS_MANAGED_END = "# END mv-obcc managed Codex environment";
+
+function stripAliasBlock(content: string): string {
+  const stripped = stripMarkedBlock(content, ALIAS_MANAGED_BEGIN, ALIAS_MANAGED_END);
+  return stripMarkedBlock(stripped, LEGACY_ALIAS_MANAGED_BEGIN, LEGACY_ALIAS_MANAGED_END);
+}
 
 export async function ensureCodexShellAlias(tmpDir: string, codexExecutable: string = "codex"): Promise<void> {
   const home = os.homedir();
@@ -123,14 +143,8 @@ export async function ensureCodexShellAlias(tmpDir: string, codexExecutable: str
     if (!fs.existsSync(target)) continue;
     try {
       let content = fs.readFileSync(target, "utf8");
-      // strip old block first
-      const start = content.indexOf(ALIAS_MANAGED_BEGIN);
-      if (start >= 0) {
-        const end = content.indexOf(ALIAS_MANAGED_END, start);
-        if (end >= 0) {
-          content = content.slice(0, start).trimEnd() + "\n\n" + content.slice(end + ALIAS_MANAGED_END.length).trimStart();
-        }
-      }
+      // strip old block first (current and pre-rename markers)
+      content = stripAliasBlock(content);
       content = content.trimEnd() + "\n\n" + block + "\n";
       fs.writeFileSync(target, content, "utf8");
     } catch (e) {
@@ -150,14 +164,10 @@ export async function removeCodexShellAlias(): Promise<void> {
   for (const target of targets) {
     if (!fs.existsSync(target)) continue;
     try {
-      let content = fs.readFileSync(target, "utf8");
-      const start = content.indexOf(ALIAS_MANAGED_BEGIN);
-      if (start >= 0) {
-        const end = content.indexOf(ALIAS_MANAGED_END, start);
-        if (end >= 0) {
-          content = content.slice(0, start).trimEnd() + "\n\n" + content.slice(end + ALIAS_MANAGED_END.length).trimStart();
-          fs.writeFileSync(target, content.trimEnd() + "\n", "utf8");
-        }
+      const content = fs.readFileSync(target, "utf8");
+      const next = stripAliasBlock(content);
+      if (next !== content) {
+        fs.writeFileSync(target, next.trimEnd() + "\n", "utf8");
       }
     } catch (e) {
       console.error(`[mv-obcc] Failed to remove shell alias from ${target}`, e);

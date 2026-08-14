@@ -1,5 +1,5 @@
 import { Setting } from "obsidian";
-import type MvSenceAiIdePlugin from "../../main";
+import type MvAideIdePlugin from "../../main";
 import { t } from "../i18n";
 
 /**
@@ -8,7 +8,7 @@ import { t } from "../i18n";
  */
 export function renderMvRunSetting(
   containerEl: HTMLElement,
-  plugin: MvSenceAiIdePlugin,
+  plugin: MvAideIdePlugin,
   extension: string,
 ): void {
   const profiles = plugin.settings.mvRun.profiles;

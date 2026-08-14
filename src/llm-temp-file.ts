@@ -1,10 +1,11 @@
 import { type App, TFile } from "obsidian";
+import { MV_AIDE_VAULT_STORAGE_FOLDER } from "./vault-storage-paths";
 
 /**
  * Single reusable temp markdown file that backs the LLM result popover.
  *
  * `MarkdownView` requires a real `TFile`, so the embedded-editor popover opens
- * this file. We reuse one file per vault (`mv-aide-llm-history/latest.md`) and
+ * this file. We reuse one file per vault (`mv-aide/llm-history/latest.md`) and
  * overwrite its contents each invocation — zero garbage accumulation, no
  * cleanup needed.
  *
@@ -15,10 +16,10 @@ import { type App, TFile } from "obsidian";
  * search / quick switcher).
  */
 
-export const TEMP_DIR = "mv-aide-llm-history";
+export const TEMP_DIR = `${MV_AIDE_VAULT_STORAGE_FOLDER}/llm-history`;
 export const TEMP_FILE_PATH = `${TEMP_DIR}/latest.md`;
 /** Glob pattern for `userIgnoreFilters`. */
-export const TEMP_IGNORE_PATTERN = "mv-aide-llm-history/**";
+export const TEMP_IGNORE_PATTERN = `${MV_AIDE_VAULT_STORAGE_FOLDER}/llm-history/**`;
 
 /**
  * Ensure the temp file exists (creating folder + file if needed) and return it.
@@ -30,6 +31,13 @@ export async function ensureTempFile(app: App): Promise<TFile> {
   if (existing instanceof TFile) return existing;
 
   if (!app.vault.getAbstractFileByPath(TEMP_DIR)) {
+    try {
+      // The temp folder nests under the shared storage folder, which may not
+      // exist yet depending on feature initialization order.
+      await app.vault.createFolder(MV_AIDE_VAULT_STORAGE_FOLDER);
+    } catch {
+      // Folder might have been created concurrently; ignore.
+    }
     try {
       await app.vault.createFolder(TEMP_DIR);
     } catch {

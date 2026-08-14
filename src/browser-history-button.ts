@@ -1,5 +1,5 @@
 import type { ItemView, View } from "obsidian";
-import type MvSenceAiIdePlugin from "../main";
+import type MvAideIdePlugin from "../main";
 import { t } from "./i18n";
 
 // 浏览器视图的 viewType 与历史命令 id 随 Obsidian 版本不同：
@@ -25,7 +25,7 @@ export class BrowserHistoryButtonFeature {
   private buttons: HTMLElement[] = [];
   private enabled = true;
 
-  constructor(private readonly plugin: MvSenceAiIdePlugin) {}
+  constructor(private readonly plugin: MvAideIdePlugin) {}
 
   register(): void {
     this.plugin.app.workspace.onLayoutReady(() => this.install());

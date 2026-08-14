@@ -19,7 +19,7 @@ import {
   type ItemView,
   type View,
 } from "obsidian";
-import type MvSenceAiIdePlugin from "../main";
+import type MvAideIdePlugin from "../main";
 import { downloadsDir, formatBytes, sortByMtimeDesc } from "./downloads-list";
 import { t } from "./i18n";
 import {
@@ -232,7 +232,7 @@ export class FolderBrowseModal extends Modal {
     this.dismissDropdown?.();
     this.dismissDropdown = null;
     this.modalEl.classList.add(
-      "mv-senceai-downloads-modal",
+      "mv-aide-downloads-modal",
       "mv-aide-folder-browse-modal",
     );
     contentEl.empty();
@@ -299,7 +299,7 @@ export class FolderBrowseModal extends Modal {
       void this.dependencies.revealFile(this.currentDir);
     });
 
-    const listEl = contentEl.createDiv({ cls: "mv-senceai-downloads-list" });
+    const listEl = contentEl.createDiv({ cls: "mv-aide-downloads-list" });
     listEl.setAttribute("aria-busy", "true");
     void this.dependencies
       .listEntries(this.currentDir)
@@ -424,23 +424,23 @@ export class FolderBrowseModal extends Modal {
   }
 
   private renderRow(listEl: HTMLElement, entry: BrowseEntry): void {
-    const row = listEl.createDiv({ cls: "mv-senceai-downloads-row" });
+    const row = listEl.createDiv({ cls: "mv-aide-downloads-row" });
     const openTarget = row.createDiv({
-      cls: "mv-senceai-downloads-open-target",
+      cls: "mv-aide-downloads-open-target",
     });
     openTarget.setAttribute("role", "button");
     openTarget.tabIndex = 0;
     openTarget.createSpan({
       text: entry.name,
       cls: entry.isFolder
-        ? "mv-senceai-downloads-name mv-aide-folder-name"
-        : "mv-senceai-downloads-name",
+        ? "mv-aide-downloads-name mv-aide-folder-name"
+        : "mv-aide-downloads-name",
     });
     openTarget.createSpan({
       text: entry.isFolder
         ? t("文件夹")
         : `${formatBytes(entry.size)} · ${new Date(entry.mtimeMs).toLocaleString()}`,
-      cls: "setting-item-description mv-senceai-downloads-meta",
+      cls: "setting-item-description mv-aide-downloads-meta",
     });
     const open = () => {
       if (entry.isFolder) {
@@ -458,7 +458,7 @@ export class FolderBrowseModal extends Modal {
     });
     if (!entry.isFolder) {
       const systemOpenButton = row.createEl("button", {
-        cls: "clickable-icon mv-senceai-downloads-system-open",
+        cls: "clickable-icon mv-aide-downloads-system-open",
       });
       systemOpenButton.type = "button";
       const systemOpenLabel = t("默认打开器打开");
@@ -471,7 +471,7 @@ export class FolderBrowseModal extends Modal {
       });
     }
     const revealButton = row.createEl("button", {
-      cls: "clickable-icon mv-senceai-downloads-reveal",
+      cls: "clickable-icon mv-aide-downloads-reveal",
     });
     revealButton.type = "button";
     const revealLabel = t("在文件夹中显示");
@@ -558,7 +558,7 @@ export class FileExplorerPathBarFeature {
   private recentPaths: string[] = [];
   private buttons: HTMLElement[] = [];
 
-  constructor(private readonly plugin: MvSenceAiIdePlugin) {
+  constructor(private readonly plugin: MvAideIdePlugin) {
     this.enabled = plugin.settings.fileExplorerPathBar;
     let vaultRoot: string | null;
     try {

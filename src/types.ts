@@ -3,6 +3,7 @@ import type { LintSettings } from "./lint/lint-types";
 import type { RegexReplaceSettings } from "./regex-replace/regex-replace-types";
 import type { MvRunSettings } from "./terminal/mv-run-types";
 import type { VimSettings } from "./vim/settings";
+import type { DshSettings } from "./dsh/dsh-settings";
 
 export type UpstreamMode = "native" | "compatibility";
 
@@ -209,7 +210,7 @@ export interface SourceAssistProfile {
 }
 
 export type SourceHighlightThemeFormat =
-  | "mv-senceai-json"
+  | "mv-aide-json"
   | "prism-css"
   | "highlight-js-css"
   | "textmate-json";
@@ -339,6 +340,8 @@ export interface BridgeSettings {
   browserDownloadsButton: boolean;
   /** 文件系统与浏览器：文件资源管理器顶部路径栏增强。 */
   fileExplorerPathBar: boolean;
+  /** 文件系统与浏览器：本地文件预览（内置浏览器打开 file:// / 本机绝对路径 / HTML 右键菜单）。 */
+  browserLocalFilePreview: boolean;
   /** @deprecated 旧版 UA 补丁设置；保留读取兼容，不再产生运行时行为。 */
   webviewStripElectronUa: boolean;
   toolToggles: ToolToggles;
@@ -353,6 +356,7 @@ export interface BridgeSettings {
   regexReplace: RegexReplaceSettings;
   mvRun: MvRunSettings;
   externalFileOpener: ExternalFileOpenerSettings;
+  dsh: DshSettings;
   mcpEnabled: boolean;
   mcpAuthToken: string;
   claudeExecutable: string;

@@ -1,0 +1,27 @@
+{
+  "name": "@mv-aide/dsh-plugin",
+  "version": "0.1.0",
+  "description": "mv-AIDE bridge plugin for DeepSeek Harness (DSH): a /mv-aide slash command plus native mv_aide__* tools that connect to the mv-AIDE Obsidian IDE bridge over its own WebSocket JSON-RPC protocol.",
+  "license": "MIT",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/*.js"
+  ],
+  "scripts": {
+    "test": "node --test"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "*",
+    "@deepseek-ai/dsh-commands": "*",
+    "@deepseek-ai/dsh-llm": "*",
+    "@deepseek-ai/dsh-tools": "*"
+  }
+}

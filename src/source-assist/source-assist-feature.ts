@@ -5,7 +5,7 @@ import {
   type ViewUpdate,
 } from "@codemirror/view";
 import { editorInfoField } from "obsidian";
-import type MvSenceAiIdePlugin from "../../main";
+import type MvAideIdePlugin from "../../main";
 import type { SourceAssistSettings } from "../types";
 import {
   EMPTY_TEX_MATH_CUSTOM_CONFIG,
@@ -28,7 +28,7 @@ export class SourceAssistFeature {
   readonly extensions: Extension[] = [];
   private rebuildGeneration = 0;
 
-  constructor(private readonly plugin: MvSenceAiIdePlugin) {}
+  constructor(private readonly plugin: MvAideIdePlugin) {}
 
   async load(): Promise<void> {
     await this.rebuild();

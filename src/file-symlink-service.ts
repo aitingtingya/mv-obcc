@@ -182,7 +182,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 
-namespace MvSenceAi
+namespace MvAide
 {
     public sealed class NativeSymlinkAttempt
     {
@@ -396,7 +396,7 @@ namespace MvSenceAi
 }
 '@
 
-    $native = [MvSenceAi.NativeSymlinkBridge]::Create($targetPath, $linkPath)
+    $native = [MvAide.NativeSymlinkBridge]::Create($targetPath, $linkPath)
     $attempts = @($native.Attempts | ForEach-Object {
         @{
             success = [bool]$_.Success

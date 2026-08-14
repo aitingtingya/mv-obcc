@@ -43,7 +43,7 @@ export class ExternalFileSymlinkFallbackModal extends Modal {
   onOpen(): void {
     const { contentEl } = this;
     const platform = this.options.platform ?? process.platform;
-    this.modalEl.classList.add("mv-senceai-symlink-modal");
+    this.modalEl.classList.add("mv-aide-symlink-modal");
     this.modalEl.setAttribute("aria-busy", "false");
     contentEl.empty();
     contentEl.createEl("h3", {
@@ -53,7 +53,7 @@ export class ExternalFileSymlinkFallbackModal extends Modal {
     });
     const statusEl = contentEl.createEl("p", {
       text: this.options.message,
-      cls: "setting-item-description mv-senceai-status-error",
+      cls: "setting-item-description mv-aide-status-error",
     });
     statusEl.setAttribute("role", "status");
     statusEl.setAttribute("aria-live", "polite");
@@ -63,7 +63,7 @@ export class ExternalFileSymlinkFallbackModal extends Modal {
       cls: "setting-item-description",
     });
 
-    const buttonRow = contentEl.createDiv({ cls: "mv-senceai-modal-button-row" });
+    const buttonRow = contentEl.createDiv({ cls: "mv-aide-modal-button-row" });
     if (platform === "win32" && this.options.failure.reason === "permission-denied") {
       const repairButton = buttonRow.createEl("button", {
         text: t("管理员修复并重试"),

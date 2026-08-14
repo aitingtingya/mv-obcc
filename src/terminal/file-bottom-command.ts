@@ -1,5 +1,5 @@
 import { MarkdownView, Notice } from "obsidian";
-import type MvSenceAiIdePlugin from "../../main";
+import type MvAideIdePlugin from "../../main";
 import { TERMINAL_VIEW_TYPE } from "../constants";
 import { t } from "../i18n";
 import { mvRunPrefixesFor } from "./mv-run-types";
@@ -8,7 +8,7 @@ import { TerminalView } from "./terminal-view";
 
 /** 手动触发「运行文件底部指令」：解析当前文件的 mv-run 注释指令并逐行送入终端。 */
 export async function runFileBottomCommand(
-  plugin: MvSenceAiIdePlugin,
+  plugin: MvAideIdePlugin,
   activeView?: MarkdownView,
 ): Promise<void> {
   // editorCallback 已传入触发命令的视图，优先使用；缺省回退到当前活跃视图

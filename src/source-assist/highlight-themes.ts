@@ -535,8 +535,8 @@ function parseThemeContent(
   if (!trimmed) throw new Error(t("主题文件为空。"));
   const detected = format === "auto" ? detectThemeFormat(trimmed, fileName) : format;
   switch (detected) {
-    case "mv-senceai-json":
-      return parseMvSenceAiJsonTheme(trimmed);
+    case "mv-aide-json":
+      return parseMvAideJsonTheme(trimmed);
     case "textmate-json":
       return parseTextmateJsonTheme(trimmed, fileName);
     case "highlight-js-css":
@@ -568,7 +568,7 @@ function detectThemeFormat(
   }
   if (/^\s*\{/.test(content)) {
     const parsed = JSON.parse(content) as unknown;
-    if (isRecord(parsed) && isRecord(parsed.palette)) return "mv-senceai-json";
+    if (isRecord(parsed) && isRecord(parsed.palette)) return "mv-aide-json";
     return "textmate-json";
   }
   if (content.includes(".hljs")) return "highlight-js-css";
@@ -576,9 +576,9 @@ function detectThemeFormat(
   throw new Error(t("无法自动识别主题格式。请手动选择 Prism CSS、highlight.js CSS 或 VS Code/Shiki JSON。"));
 }
 
-function parseMvSenceAiJsonTheme(content: string): {
+function parseMvAideJsonTheme(content: string): {
   name: string;
-  format: "mv-senceai-json";
+  format: "mv-aide-json";
   palette: SourceHighlightPalette;
   warnings: string[];
 } {
@@ -588,7 +588,7 @@ function parseMvSenceAiJsonTheme(content: string): {
   }
   return {
     name: typeof parsed.name === "string" ? parsed.name.trim() : "",
-    format: "mv-senceai-json",
+    format: "mv-aide-json",
     palette: parsePaletteObject(parsed.palette),
     warnings: [],
   };
@@ -836,7 +836,7 @@ function paletteHasAnyStyle(paletteValue: SourceHighlightPalette): boolean {
 }
 
 function normalizeThemeFormat(value: unknown): SourceHighlightThemeFormat | null {
-  return value === "mv-senceai-json" ||
+  return value === "mv-aide-json" ||
     value === "prism-css" ||
     value === "highlight-js-css" ||
     value === "textmate-json"

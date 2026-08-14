@@ -84,13 +84,13 @@ export class BrowserDownloadsModal extends Modal {
 
   onOpen(): void {
     const { contentEl } = this;
-    this.modalEl.classList.add("mv-senceai-downloads-modal");
+    this.modalEl.classList.add("mv-aide-downloads-modal");
     contentEl.empty();
     contentEl.createEl("h3", { text: t("下载") });
-    const listEl = contentEl.createDiv({ cls: "mv-senceai-downloads-list" });
+    const listEl = contentEl.createDiv({ cls: "mv-aide-downloads-list" });
     listEl.setAttribute("aria-busy", "true");
 
-    const buttonRow = contentEl.createDiv({ cls: "mv-senceai-modal-button-row" });
+    const buttonRow = contentEl.createDiv({ cls: "mv-aide-modal-button-row" });
     const filterButton = buttonRow.createEl("button", {
       cls: "clickable-icon mv-aide-filter-toggle",
     });
@@ -130,19 +130,19 @@ export class BrowserDownloadsModal extends Modal {
           return;
         }
         for (const entry of visible) {
-          const row = listEl.createDiv({ cls: "mv-senceai-downloads-row" });
+          const row = listEl.createDiv({ cls: "mv-aide-downloads-row" });
           const openTarget = row.createDiv({
-            cls: "mv-senceai-downloads-open-target",
+            cls: "mv-aide-downloads-open-target",
           });
           openTarget.setAttribute("role", "button");
           openTarget.tabIndex = 0;
           openTarget.createSpan({
             text: entry.name,
-            cls: "mv-senceai-downloads-name",
+            cls: "mv-aide-downloads-name",
           });
           openTarget.createSpan({
             text: `${formatBytes(entry.size)} · ${new Date(entry.mtimeMs).toLocaleString()}`,
-            cls: "setting-item-description mv-senceai-downloads-meta",
+            cls: "setting-item-description mv-aide-downloads-meta",
           });
           const open = () => {
             void this.openEntry(dir, entry.name);
@@ -155,7 +155,7 @@ export class BrowserDownloadsModal extends Modal {
             }
           });
           const systemOpenButton = row.createEl("button", {
-            cls: "clickable-icon mv-senceai-downloads-system-open",
+            cls: "clickable-icon mv-aide-downloads-system-open",
           });
           systemOpenButton.type = "button";
           const systemOpenLabel = t("默认打开器打开");
@@ -167,7 +167,7 @@ export class BrowserDownloadsModal extends Modal {
             void this.openEntryWithSystemApp(dir, entry.name);
           });
           const revealButton = row.createEl("button", {
-            cls: "clickable-icon mv-senceai-downloads-reveal",
+            cls: "clickable-icon mv-aide-downloads-reveal",
           });
           revealButton.type = "button";
           const revealLabel = t("在文件夹中显示");

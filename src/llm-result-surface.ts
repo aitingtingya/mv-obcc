@@ -54,8 +54,8 @@ interface ResizeEdges {
   left: boolean;
 }
 
-const MIN_WIDTH = 420;
-const MIN_HEIGHT = 280;
+const MIN_WIDTH = 120;
+const MIN_HEIGHT = 96;
 const OUTSIDE_CLICK_DISMISS_DELAY_MS = 150;
 let surfaceLayer = 60;
 
@@ -211,7 +211,7 @@ export class LlmResultSurface implements LlmResultSink {
     if (this.textarea) {
       this.textarea.value = "";
     }
-    this.rootEl?.querySelector(".mv-senceai-llm-error")?.remove();
+    this.rootEl?.querySelector(".mv-aide-llm-error")?.remove();
     if (this.rootEl) this.activate(this.rootEl);
     this.renderStatus();
   }
@@ -333,7 +333,7 @@ export class LlmResultSurface implements LlmResultSink {
     const root = createElement(
       this.doc,
       "div",
-      "popover hover-popover mv-senceai-llm-popover",
+      "popover hover-popover mv-aide-llm-popover",
     );
     root.setAttribute("role", "dialog");
     root.setAttribute("aria-label", t("LLM 结果"));
@@ -364,25 +364,25 @@ export class LlmResultSurface implements LlmResultSink {
     const titlebar = createElement(
       this.doc,
       "div",
-      "mv-senceai-llm-titlebar",
+      "mv-aide-llm-titlebar",
     );
     const title = createElement(
       this.doc,
       "div",
-      "mv-senceai-llm-title",
+      "mv-aide-llm-title",
       t("LLM 结果"),
     );
     const status = createElement(
       this.doc,
       "span",
-      "mv-senceai-llm-status",
+      "mv-aide-llm-status",
     );
     title.appendChild(status);
     // 固定后插入/替换不会关闭窗口，下一次调用会复用当前窗口。
     const pin = createElement(
       this.doc,
       "button",
-      "mv-senceai-llm-title-action mv-senceai-llm-pin",
+      "mv-aide-llm-title-action mv-aide-llm-pin",
     );
     pin.type = "button";
     pin.setAttribute("aria-pressed", "false");
@@ -391,7 +391,7 @@ export class LlmResultSurface implements LlmResultSink {
     const close = createElement(
       this.doc,
       "button",
-      "mv-senceai-llm-title-action",
+      "mv-aide-llm-title-action",
       "×",
     );
     close.type = "button";
@@ -399,7 +399,7 @@ export class LlmResultSurface implements LlmResultSink {
     close.addEventListener("click", () => this.close());
     titlebar.append(pin, title, close);
 
-    const host = createElement(this.doc, "div", "mv-senceai-llm-host");
+    const host = createElement(this.doc, "div", "mv-aide-llm-host");
     const toolbar = this.buildToolbar();
     root.append(titlebar, host, toolbar);
     this.createResizeHandles(root);
@@ -421,7 +421,7 @@ export class LlmResultSurface implements LlmResultSink {
     const toolbar = createElement(
       this.doc,
       "div",
-      "mv-senceai-llm-toolbar",
+      "mv-aide-llm-toolbar",
     );
     toolbar.appendChild(
       this.actionButton(t("复制"), async () => {
@@ -489,7 +489,7 @@ export class LlmResultSurface implements LlmResultSink {
     split.getContainer = () => containerForDocument(this.app, this.doc);
 
     // Hover Editor's critical ordering: attach the split before creating a leaf.
-    split.containerEl.classList.add("mv-senceai-llm-workspace");
+    split.containerEl.classList.add("mv-aide-llm-workspace");
     host.replaceChildren(split.containerEl);
     const leaf = temporarilySuppressActiveLeaf(this.app, () =>
       this.app.workspace.createLeafInParent(split, 0),
@@ -532,7 +532,7 @@ export class LlmResultSurface implements LlmResultSink {
     const area = createElement(
       this.doc,
       "textarea",
-      "mv-senceai-llm-result",
+      "mv-aide-llm-result",
     );
     area.value = this.buffer;
     area.spellcheck = false;
@@ -579,7 +579,7 @@ export class LlmResultSurface implements LlmResultSink {
   private renderStatus(): void {
     const status = this.statusEl;
     if (!status) return;
-    status.className = "mv-senceai-llm-status";
+    status.className = "mv-aide-llm-status";
     const fallback = this.textarea ? t(" · 文本兜底") : "";
     if (this.state === "opening") {
       status.textContent = t("准备编辑器…");
@@ -587,10 +587,10 @@ export class LlmResultSurface implements LlmResultSink {
       status.textContent = t("生成中…{v0}", { v0: fallback });
     } else if (this.state === "done") {
       status.textContent = t("可编辑{v0}", { v0: fallback });
-      status.classList.add("mv-senceai-llm-status-done");
+      status.classList.add("mv-aide-llm-status-done");
     } else if (this.state === "error") {
       status.textContent = t("调用失败{v0}", { v0: fallback });
-      status.classList.add("mv-senceai-llm-status-error");
+      status.classList.add("mv-aide-llm-status-error");
     }
     if (this.fallbackReason) {
       status.title = this.fallbackReason;
@@ -602,15 +602,15 @@ export class LlmResultSurface implements LlmResultSink {
   private renderError(): void {
     const root = this.rootEl;
     if (!root) return;
-    root.querySelector(".mv-senceai-llm-error")?.remove();
+    root.querySelector(".mv-aide-llm-error")?.remove();
     if (this.state !== "error" || !this.errorMessage) return;
     const error = createElement(
       this.doc,
       "div",
-      "mv-senceai-llm-error",
+      "mv-aide-llm-error",
       this.errorMessage,
     );
-    const toolbar = root.querySelector(".mv-senceai-llm-toolbar");
+    const toolbar = root.querySelector(".mv-aide-llm-toolbar");
     root.insertBefore(error, toolbar);
   }
 
@@ -746,7 +746,7 @@ export class LlmResultSurface implements LlmResultSink {
       const handle = createElement(
         this.doc,
         "div",
-        `mv-senceai-llm-resize-handle ${direction}`,
+        `mv-aide-llm-resize-handle ${direction}`,
       );
       handle.dataset.direction = direction;
       root.appendChild(handle);

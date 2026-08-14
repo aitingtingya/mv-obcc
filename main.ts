@@ -74,6 +74,9 @@ import { RegexReplaceFeature } from "./src/regex-replace/regex-replace-feature";
 import { BrowserHistoryButtonFeature } from "./src/browser-history-button";
 import { BrowserDownloadsButtonFeature } from "./src/browser-downloads-button";
 import { FileExplorerPathBarFeature } from "./src/file-explorer-path-bar";
+import { LocalWebPreviewFeature } from "./src/local-web-preview";
+import { DshFeature } from "./src/dsh/dsh-feature";
+import { normalizeDshSettings } from "./src/dsh/dsh-settings";
 import {
   FALLBACK_OPENABLE_EXTENSIONS,
   extensionOfFileName,
@@ -109,7 +112,7 @@ import {
   availableCustomMarkdownFilePath,
   customMarkdownFileCommandDefinitions,
   customMarkdownHighlightRangesForSource,
-  MvSenceAiIdeSettingTab,
+  MvAideIdeSettingTab,
   syncCustomMarkdownExtensionRegistry,
   type MarkdownExtensionRegistry,
   type PrismLike,
@@ -143,9 +146,14 @@ import {
 import {
   applyBottomTerminalSplitRatio,
   activeWorkspaceLeaf,
+  createMainBottomLeaf,
   currentWorkspaceContext,
   getOpenWorkspaceTabs,
 } from "./src/workspace-context";
+import {
+  installWebSelectionReporterScript,
+  parseWebSelectionMessage,
+} from "./src/web-selection-reporter";
 import { SelectionHighlightController } from "./src/selection-highlights";
 import { TerminalSessionTracker } from "./src/terminal-session-tracker";
 import { LlmFeature } from "./src/llm-feature";
@@ -404,7 +412,7 @@ function customMarkdownHighlightRefreshRequested(update: ViewUpdate): boolean {
   );
 }
 
-export default class MvSenceAiIdePlugin extends Plugin {
+export default class MvAideIdePlugin extends Plugin {
   settings: BridgeSettings = { ...DEFAULT_SETTINGS };
   port = 0;
   mcpStatus = t("尚未检查");
@@ -418,10 +426,27 @@ export default class MvSenceAiIdePlugin extends Plugin {
   private bridgeHasClaudeLock = false;
   private readonly latestSelections = new Map<string, SelectionState>();
   private latestWebLeaf: WorkspaceLeaf | null = null;
+  /** 每个 webviewer 叶子的页内推送缓存：{text 选区文本, url 导航中目标 URL}。 */
+  private readonly webSelectionPush = new WeakMap<
+    WorkspaceLeaf,
+    { text: string | null; url: string | null }
+  >();
+  /** webview 元素 → 所属叶子（事件回调反查）。 */
+  private readonly webElementLeaf = new Map<HTMLElement, WorkspaceLeaf>();
+  /** webview 元素 → 已挂接的选区通道监听器（onunload 逐一移除）。 */
+  private readonly webSelectionListeners = new Map<
+    HTMLElement,
+    Array<{ type: string; listener: EventListener }>
+  >();
+  /** 已挂接推送监听/脚本注入的 webview 元素（幂等去重）。 */
+  private readonly reportedWebElements = new WeakSet<HTMLElement>();
   private readonly lastContexts = new Map<string, SelectionState>();
   private readonly previousBroadcasts = new Map<string, string>();
   private broadcastTimer: number | null = null;
   private broadcastGeneration = 0;
+  /** 广播串行化：进行中标记与待重跑标记（见 runBroadcast）。 */
+  private broadcastInFlight = false;
+  private broadcastQueued = false;
   private toolRegistry: ToolRegistry | null = null;
   private terminalTracker: TerminalSessionTracker | null = null;
   private selectionHighlighter: SelectionHighlightController | null = null;
@@ -436,7 +461,9 @@ export default class MvSenceAiIdePlugin extends Plugin {
   private browserHistoryButton: BrowserHistoryButtonFeature | null = null;
   private browserDownloadsButton: BrowserDownloadsButtonFeature | null = null;
   private fileExplorerPathBar: FileExplorerPathBarFeature | null = null;
+  private localWebPreview: LocalWebPreviewFeature | null = null;
   private externalFileOpener: ExternalFileOpenerFeature | null = null;
+  dshFeature: DshFeature | null = null;
   private readonly externalFileOpenerSystem = new ExternalFileOpenerSystem();
   private externalFileFallbackDecision:
     Promise<ExternalFileSymlinkFallbackDecision> | null = null;
@@ -541,6 +568,7 @@ export default class MvSenceAiIdePlugin extends Plugin {
           ...(loaded.externalFileOpener?.mappings ?? {}),
         },
       },
+      dsh: normalizeDshSettings(loaded.dsh),
     });
     setLanguage(this.settings.language ?? "zh");
     this.universalMcpStatus = this.settings.universalMcp.enabled
@@ -566,7 +594,7 @@ export default class MvSenceAiIdePlugin extends Plugin {
     this.registerView(TERMINAL_VIEW_TYPE, (leaf) => new TerminalView(leaf, this));
     this.register(() => this.unregisterCustomMarkdownExtensions());
     this.syncCustomMarkdownExtensions();
-    this.addSettingTab(new MvSenceAiIdeSettingTab(this.app, this));
+    this.addSettingTab(new MvAideIdeSettingTab(this.app, this));
     this.terminalTracker = new TerminalSessionTracker(this.app);
     this.selectionHighlighter = new SelectionHighlightController(
       this.app,
@@ -611,6 +639,7 @@ export default class MvSenceAiIdePlugin extends Plugin {
       () => this.latestWebLeaf,
       () => this.settings.toolContextLimits.readCurrentWebPage,
       () => this.lintFeature?.diagnosticsSnapshot() ?? [],
+      () => this.settings.dsh.reviewOutsideVault,
     );
 
     this.codexIdeProvider = new CodexIdeProvider({
@@ -624,6 +653,7 @@ export default class MvSenceAiIdePlugin extends Plugin {
         this.terminalTracker?.scan();
         this.fileTypeIconView?.refreshTabIcons();
         this.selectionHighlighter?.sync(true);
+        this.trackWebSelectionReporters();
         this.scheduleBroadcast();
         // Returning to a terminal tab must hand keyboard focus back to
         // xterm's textarea; otherwise the terminal looks dead until clicked.
@@ -635,6 +665,7 @@ export default class MvSenceAiIdePlugin extends Plugin {
         this.terminalTracker?.scan();
         this.fileTypeIconView?.refreshTabIcons();
         this.selectionHighlighter?.sync();
+        this.trackWebSelectionReporters();
         this.scheduleBroadcast();
       }),
     );
@@ -654,9 +685,11 @@ export default class MvSenceAiIdePlugin extends Plugin {
         this.selectionHighlighter?.sync();
         this.llmFeature?.tick();
         this.inlineCompletion?.tick();
+        const leaf = activeWorkspaceLeaf(this.app);
+        this.trackWebSelectionReporters();
         if (
           this.settings.activityTracking.supportAllActivePages ||
-          this.app.workspace.getMostRecentLeaf()?.view.getViewType() === "webviewer"
+          leaf?.view.getViewType() === "webviewer"
         ) {
           this.scheduleBroadcast();
         }
@@ -688,6 +721,11 @@ export default class MvSenceAiIdePlugin extends Plugin {
     this.fileExplorerPathBar = new FileExplorerPathBarFeature(this);
     this.fileExplorerPathBar.register();
     this.fileExplorerPathBar.setEnabled(this.settings.fileExplorerPathBar);
+    this.dshFeature = new DshFeature(this);
+    if (this.settings.browserLocalFilePreview) {
+      this.localWebPreview = new LocalWebPreviewFeature(this);
+      void this.localWebPreview.setEnabled(true);
+    }
     this.texOutline = new TexOutlineFeature(this.app, () =>
       this.texOutlineFeatureEnabled(),
     );
@@ -767,6 +805,11 @@ export default class MvSenceAiIdePlugin extends Plugin {
     this.externalFileOpener = null;
     this.fileTypeIconView?.dispose();
     this.fileTypeIconView = null;
+    this.localWebPreview?.dispose();
+    this.localWebPreview = null;
+    this.dshFeature?.dispose();
+    this.dshFeature = null;
+    this.removeWebSelectionReporters();
     this.customMarkdownHighlightEditorViews.clear();
 
     const leaves = this.app.workspace.getLeavesOfType(TERMINAL_VIEW_TYPE);
@@ -802,7 +845,7 @@ export default class MvSenceAiIdePlugin extends Plugin {
         workspace.setActiveLeaf(targetLeaf, { focus: true });
         leaf = workspace.getLeaf("tab");
       } else {
-        leaf = workspace.getLeaf("split", "horizontal");
+        leaf = createMainBottomLeaf(workspace);
         createdBottomSplit = true;
       }
     } else {
@@ -847,6 +890,19 @@ export default class MvSenceAiIdePlugin extends Plugin {
     await this.syncCodexIdeProvider();
     await this.applyUniversalMcpSetting();
     this.scheduleCodexMcpRegistrationIfReady();
+    // Push the mv-agent settings to connected dsh plugins live (they read
+    // them on initialize as well; this covers mid-session toggles).
+    this.server?.broadcast({
+      jsonrpc: "2.0",
+      method: "mv_aide_settings_changed",
+      params: {
+        reviewOutsideVault: this.settings.dsh.reviewOutsideVault,
+        passiveDelivery: this.settings.dsh.passiveDelivery,
+        pushLocation: this.settings.dsh.pushLocation,
+        pushSelection: this.settings.dsh.pushSelection,
+        outsideToolPolicy: this.settings.dsh.outsideToolPolicy,
+      },
+    });
   }
 
   async saveSourceAssistSettings(): Promise<void> {
@@ -1022,11 +1078,103 @@ export default class MvSenceAiIdePlugin extends Plugin {
   currentWorkspaceContextState(
     leaf?: WorkspaceLeaf | null,
   ): Promise<SelectionState | null> {
+    const push = leaf ? this.webSelectionPush.get(leaf) : undefined;
     return currentWorkspaceContext(
       this.app,
       leaf,
       (view) => this.logicalVimSelection(view),
+      push && typeof push.text === "string" ? push.text : null,
+      push && typeof push.url === "string" ? push.url : null,
     );
+  }
+
+  /**
+   * 给所有 webviewer 叶子（含后台标签）挂接页内选区推送通道
+   * （console-message），幂等。页面加载/导航期间 executeJavaScript 不可用，
+   * 页内 selectionchange 的打点仍能即时推回；导航中的目标 URL 在
+   * did-start-navigation 时就缓存，切换标签瞬间即可显示新页面地址。
+   */
+  private trackWebSelectionReporters(): void {
+    this.app.workspace.iterateAllLeaves((leaf) => {
+      if (leaf.view?.getViewType() !== "webviewer") return;
+      const view = leaf.view as {
+        webview?: (HTMLElement & {
+          executeJavaScript?: (code: string) => Promise<unknown>;
+        }) | null;
+      };
+      const webview = view.webview;
+      if (!webview) return;
+      if (this.reportedWebElements.has(webview)) return;
+      this.reportedWebElements.add(webview);
+      this.webElementLeaf.set(webview, leaf);
+
+      const inject = (): void => {
+        try {
+          void webview
+            .executeJavaScript?.(installWebSelectionReporterScript())
+            .catch(() => {
+              /* navigation in progress — dom-ready will re-inject */
+            });
+        } catch {
+          /* navigation in progress — dom-ready will re-inject */
+        }
+      };
+
+      const onConsoleMessage = ((event: Event) => {
+        const message = (event as { message?: unknown }).message;
+        if (typeof message !== "string") return;
+        const text = parseWebSelectionMessage(message);
+        if (text === null) return;
+        const target = this.webElementLeaf.get(webview);
+        if (!target) return;
+        const current = this.webSelectionPush.get(target) ?? {
+          text: null,
+          url: null,
+        };
+        this.webSelectionPush.set(target, { ...current, text });
+        if (activeWorkspaceLeaf(this.app) === target) this.scheduleBroadcast();
+      }) as EventListener;
+      const onDomReady = (): void => {
+        const target = this.webElementLeaf.get(webview);
+        if (target) {
+          // 新文档就绪：view.url 已可用，导航 URL 缓存清掉；选区文本恢复
+          // 为"未推送"，由注入脚本的首报与轮询兜底共同提供。
+          this.webSelectionPush.set(target, { text: null, url: null });
+        }
+        inject();
+      };
+      const onNavigationStart = ((event: Event) => {
+        const ev = event as { isMainFrame?: unknown; url?: unknown };
+        if (ev.isMainFrame !== true) return;
+        const target = this.webElementLeaf.get(webview);
+        if (!target) return;
+        const url = typeof ev.url === "string" ? ev.url : null;
+        // 导航期间旧文档的选区不能算数：text 置 ""，避免读到旧页选区。
+        this.webSelectionPush.set(target, { text: "", url });
+        if (activeWorkspaceLeaf(this.app) === target) this.scheduleBroadcast();
+      }) as EventListener;
+
+      webview.addEventListener("console-message", onConsoleMessage);
+      webview.addEventListener("dom-ready", onDomReady);
+      webview.addEventListener("did-start-navigation", onNavigationStart);
+      this.webSelectionListeners.set(webview, [
+        { type: "console-message", listener: onConsoleMessage },
+        { type: "dom-ready", listener: onDomReady },
+        { type: "did-start-navigation", listener: onNavigationStart },
+      ]);
+      inject();
+    });
+  }
+
+  /** 插件卸载时移除所有已挂接的 webview 选区通道监听器。 */
+  private removeWebSelectionReporters(): void {
+    for (const [webview, handlers] of this.webSelectionListeners) {
+      for (const { type, listener } of handlers) {
+        webview.removeEventListener(type, listener);
+      }
+    }
+    this.webSelectionListeners.clear();
+    this.webElementLeaf.clear();
   }
 
   private texOutlineFeatureEnabled(): boolean {
@@ -1147,6 +1295,7 @@ export default class MvSenceAiIdePlugin extends Plugin {
     this.llmFeature?.registerCommands();
     this.lintFeature?.registerCommand();
     this.regexReplace?.registerCommands();
+    this.dshFeature?.refreshCommand();
   }
 
   private refreshRibbonIcons(): void {
@@ -1494,7 +1643,7 @@ export default class MvSenceAiIdePlugin extends Plugin {
         return null;
       }
       return {
-        class: "mv-senceai-source-highlight-themed",
+        class: "mv-aide-source-highlight-themed",
         ...(style ? { style } : {}),
       };
     });
@@ -1587,6 +1736,16 @@ export default class MvSenceAiIdePlugin extends Plugin {
   async setFileExplorerPathBarEnabled(enabled: boolean): Promise<void> {
     this.settings.fileExplorerPathBar = enabled;
     this.fileExplorerPathBar?.setEnabled(enabled);
+    await this.saveData(this.settings);
+  }
+
+  async setBrowserLocalFilePreviewEnabled(enabled: boolean): Promise<void> {
+    this.settings.browserLocalFilePreview = enabled;
+    if (enabled && !this.localWebPreview) {
+      this.localWebPreview = new LocalWebPreviewFeature(this);
+    }
+    await this.localWebPreview?.setEnabled(enabled);
+    if (!enabled) this.localWebPreview = null;
     await this.saveData(this.settings);
   }
 
@@ -1928,7 +2087,8 @@ export default class MvSenceAiIdePlugin extends Plugin {
     return (
       this.settings.externalFileOpener.enabled ||
       this.settings.ideIntegrations.claudeCode ||
-      (this.settings.ideIntegrations.codex && this.settings.mcpEnabled)
+      (this.settings.ideIntegrations.codex && this.settings.mcpEnabled) ||
+      this.dshFeature?.requiresBridge() === true
     );
   }
 
@@ -1961,7 +2121,10 @@ export default class MvSenceAiIdePlugin extends Plugin {
   }
 
   private async syncClaudeIntegration(notify = false): Promise<void> {
-    if (!this.settings.ideIntegrations.claudeCode || !this.server || !this.port) {
+    const bridgeRequested =
+      this.settings.ideIntegrations.claudeCode ||
+      this.dshFeature?.requiresBridge() === true;
+    if (!bridgeRequested || !this.server || !this.port) {
       this.clearScheduledMcpRegistration();
       if (this.bridgeHasClaudeLock && this.port) removeLockFile(this.port);
       this.bridgeHasClaudeLock = false;
@@ -1981,9 +2144,11 @@ export default class MvSenceAiIdePlugin extends Plugin {
       );
       this.bridgeHasClaudeLock = true;
     }
-    await this.applyClaudeSettingsBestEffort(notify);
-    if (!this.unloaded) await this.saveData(this.settings);
-    this.scheduleMcpRegistration();
+    if (this.settings.ideIntegrations.claudeCode) {
+      await this.applyClaudeSettingsBestEffort(notify);
+      if (!this.unloaded) await this.saveData(this.settings);
+      this.scheduleMcpRegistration();
+    }
   }
 
   private async startBridge(): Promise<void> {
@@ -2093,6 +2258,11 @@ export default class MvSenceAiIdePlugin extends Plugin {
               name: channel === "mcp" ? "mv-aide-tools" : "mv-aide",
               version: this.manifest.version,
             },
+            reviewOutsideVault: this.settings.dsh.reviewOutsideVault,
+            passiveDelivery: this.settings.dsh.passiveDelivery,
+            pushLocation: this.settings.dsh.pushLocation,
+            pushSelection: this.settings.dsh.pushSelection,
+            outsideToolPolicy: this.settings.dsh.outsideToolPolicy,
           },
         };
       case "tools/list":
@@ -2145,14 +2315,37 @@ export default class MvSenceAiIdePlugin extends Plugin {
     if (this.broadcastTimer !== null) activeWindow.clearTimeout(this.broadcastTimer);
     this.broadcastTimer = activeWindow.setTimeout(() => {
       this.broadcastTimer = null;
-      void this.broadcastSelection()
-        .catch((error) => {
-          console.warn("[mv-aide] Context refresh failed", error);
-        })
-        .finally(() => {
-          if (!this.unloaded) this.publishUniversalContextChanges();
-        });
+      this.runBroadcast();
     }, 100);
+  }
+
+  /**
+   * 串行执行广播：同一时刻最多一个广播在飞。若广播进行中又有新请求，
+   * 只置"待重跑"标记，本次完成后再补跑一次。
+   *
+   * 若不串行：加载期间每次广播都要 await executeJavaScript（≤1.2s），而
+   * 500ms interval 不断使 generation 递增，防旧写守卫会让每一轮广播都在
+   * 落库前被顶掉——加载期间没有任何更新能写进去（表现为状态栏一直停在
+   * 旧页面，直到加载完成 executeJavaScript 变快才首次落库）。
+   */
+  private runBroadcast(): void {
+    if (this.broadcastInFlight) {
+      this.broadcastQueued = true;
+      return;
+    }
+    this.broadcastInFlight = true;
+    void this.broadcastSelection()
+      .catch((error) => {
+        console.warn("[mv-aide] Context refresh failed", error);
+      })
+      .finally(() => {
+        this.broadcastInFlight = false;
+        if (!this.unloaded) this.publishUniversalContextChanges();
+        if (this.broadcastQueued) {
+          this.broadcastQueued = false;
+          this.runBroadcast();
+        }
+      });
   }
 
   private clearScheduledMcpRegistration(): void {
@@ -2703,6 +2896,9 @@ export default class MvSenceAiIdePlugin extends Plugin {
       this.startupPerformance.measureSync("post-layout.codex-cache-cleanup", () => {
         this.cleanupCodexRuntimeCacheBestEffort();
       });
+      await this.startupPerformance.measure("post-layout.dsh-install-cleanup", () =>
+        this.dshFeature?.cleanupInstallArtifactsBestEffort() ?? Promise.resolve(),
+      );
       await this.startupPerformance.measure("post-layout.codex-provider", () =>
         this.syncCodexIdeProvider(),
       );
@@ -2734,10 +2930,10 @@ export default class MvSenceAiIdePlugin extends Plugin {
     if (this.startupModuleTimingRecorded) return;
     this.startupModuleTimingRecorded = true;
     const sharedGlobal = globalThis as typeof globalThis & {
-      __mvSenceAiModuleEvaluationTiming?: BundledModuleEvaluationTiming;
+      __mvAideModuleEvaluationTiming?: BundledModuleEvaluationTiming;
     };
-    const timing = sharedGlobal.__mvSenceAiModuleEvaluationTiming;
-    delete sharedGlobal.__mvSenceAiModuleEvaluationTiming;
+    const timing = sharedGlobal.__mvAideModuleEvaluationTiming;
+    delete sharedGlobal.__mvAideModuleEvaluationTiming;
     if (
       !timing ||
       !Number.isFinite(timing.startedAt) ||
@@ -2790,14 +2986,14 @@ export default class MvSenceAiIdePlugin extends Plugin {
   }
 
   private cleanupCodexRuntimeCacheBestEffort(): void {
-    try {
-      fs.rmSync(path.join(this.codexRuntimeDir(), "node-compile-cache"), {
+    void fs.promises
+      .rm(path.join(this.codexRuntimeDir(), "node-compile-cache"), {
         recursive: true,
         force: true,
+      })
+      .catch((error) => {
+        console.warn("[mv-aide] Codex runtime cache cleanup failed", error);
       });
-    } catch (error) {
-      console.warn("[mv-aide] Codex runtime cache cleanup failed", error);
-    }
   }
 
   private async syncCodexIdeProvider(): Promise<void> {
@@ -2903,6 +3099,16 @@ export default class MvSenceAiIdePlugin extends Plugin {
 
   private latestSelectionFor(context?: BridgeClientContext): SelectionState | null {
     return latestSelectionForContext(this.latestSelections, context);
+  }
+
+  /** 当前已连接的 IDE 桥接客户端数（dsh / Claude Code 等），供 mv-agent 状态栏使用。 */
+  ideBridgeClientCount(): number {
+    return this.server?.ideClients().length ?? 0;
+  }
+
+  /** 全局最新选区快照（含空选区；无任何追踪时返回 null），供 mv-agent 状态栏使用。 */
+  latestSelectionSnapshot(): SelectionState | null {
+    return this.latestSelectionFor();
   }
 
   private async codexIdeContextSnapshot(): Promise<CodexIdeContextSnapshot> {

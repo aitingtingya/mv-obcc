@@ -1,7 +1,6 @@
 import { Menu, Modal, Notice, PluginSettingTab, Setting, setIcon, type App } from "obsidian";
 import type { EditorView } from "@codemirror/view";
-import type MvSenceAiIdePlugin from "../main";
-import * as child_process from "child_process";
+import type MvAideIdePlugin from "../main";
 import {
   DEFAULT_SETTINGS,
   DEFAULT_INLINE_SYSTEM_PROMPT_BODY,
@@ -75,6 +74,11 @@ import {
   TERMINAL_THEME_PALETTE_KEYS,
   type TerminalThemePaletteKey,
 } from "./terminal/terminal-themes";
+import {
+  installPythonPackage,
+  probePythonModule,
+  resolvePythonCommand,
+} from "./terminal/terminal-process";
 
 type MainSettingsSectionId =
   | "ide"
@@ -84,7 +88,8 @@ type MainSettingsSectionId =
   | "source-assist"
   | "vim"
   | "external-file-opener"
-  | "filesystem-browser";
+  | "filesystem-browser"
+  | "mv-agent";
 
 const SOURCE_LABELS = {
   manual: "手动覆盖",
@@ -117,14 +122,14 @@ class SourceAssistExtensionModal extends Modal {
       type: "text",
       attr: { placeholder: "tex" },
     });
-    this.inputEl.addClass("mv-senceai-source-assist-extension-input");
+    this.inputEl.addClass("mv-aide-source-assist-extension-input");
     this.inputEl.addEventListener("keydown", (event) => {
       if (event.key === "Enter") {
         event.preventDefault();
         this.submit();
       }
     });
-    const buttonRow = contentEl.createDiv({ cls: "mv-senceai-modal-button-row" });
+    const buttonRow = contentEl.createDiv({ cls: "mv-aide-modal-button-row" });
     const submitButton = buttonRow.createEl("button", { text: t("添加") });
     submitButton.addClass("mod-cta");
     submitButton.addEventListener("click", () => this.submit());
@@ -171,7 +176,7 @@ class SymlinkFallbackModal extends Modal {
 
   onOpen(): void {
     const { contentEl } = this;
-    this.modalEl.classList.add("mv-senceai-symlink-modal");
+    this.modalEl.classList.add("mv-aide-symlink-modal");
     this.modalEl.setAttribute("aria-busy", "false");
     contentEl.empty();
     contentEl.createEl("h3", {
@@ -187,12 +192,12 @@ class SymlinkFallbackModal extends Modal {
       text: this.message,
       cls: "setting-item-description",
     });
-    this.statusEl.addClass("mv-senceai-status-error");
+    this.statusEl.addClass("mv-aide-status-error");
     this.statusEl.setAttribute("role", "status");
     this.statusEl.setAttribute("aria-live", "polite");
     this.statusEl.setAttribute("aria-atomic", "true");
 
-    const buttonRow = contentEl.createDiv({ cls: "mv-senceai-modal-button-row" });
+    const buttonRow = contentEl.createDiv({ cls: "mv-aide-modal-button-row" });
     if (this.repairAndRetry) {
       const repairButton = buttonRow.createEl("button", {
         text: t("管理员修复并重试"),
@@ -294,7 +299,7 @@ class WindowsDefaultAppConfirmationModal extends Modal {
       cls: "setting-item-description",
     });
 
-    const buttonRow = contentEl.createDiv({ cls: "mv-senceai-modal-button-row" });
+    const buttonRow = contentEl.createDiv({ cls: "mv-aide-modal-button-row" });
     const settingsButton = buttonRow.createEl("button", {
       text: t("打开默认应用设置"),
     });
@@ -344,7 +349,7 @@ class WindowsOtherVaultCleanupModal extends Modal {
       text: t("仓库：{path}", { path: this.owner.vaultRoot }),
       cls: "setting-item-description",
     });
-    const buttonRow = contentEl.createDiv({ cls: "mv-senceai-modal-button-row" });
+    const buttonRow = contentEl.createDiv({ cls: "mv-aide-modal-button-row" });
     const confirmButton = buttonRow.createEl("button", { text: t("确认清理") });
     confirmButton.addClass("mod-warning");
     confirmButton.addEventListener("click", () => {
@@ -388,7 +393,7 @@ class WindowsCleanupCompleteModal extends Modal {
       text: t("Windows 受保护的默认应用选择不会被插件修改。如需为这些后缀改选其它应用，可以打开系统默认应用设置。"),
       cls: "setting-item-description",
     });
-    const buttonRow = contentEl.createDiv({ cls: "mv-senceai-modal-button-row" });
+    const buttonRow = contentEl.createDiv({ cls: "mv-aide-modal-button-row" });
     const settingsButton = buttonRow.createEl("button", {
       text: t("打开默认应用设置"),
     });
@@ -426,7 +431,7 @@ class SourceHighlightThemeImportModal extends Modal {
     const fileSetting = new Setting(contentEl)
       .setName(t("主题文件"))
       .setDesc(t("选择本地已下载的 .css 或 .json 主题文件。插件只保存解析后的颜色数据。"))
-      .setClass("mv-senceai-theme-file-setting");
+      .setClass("mv-aide-theme-file-setting");
     this.fileEl = fileSetting.controlEl.createEl("input", {
       type: "file",
       attr: { accept: ".css,.json" },
@@ -448,14 +453,14 @@ class SourceHighlightThemeImportModal extends Modal {
           .addOption("prism-css", "Prism CSS")
           .addOption("highlight-js-css", "highlight.js CSS")
           .addOption("textmate-json", "VS Code / Shiki / TextMate JSON")
-          .addOption("mv-senceai-json", "mv-AIDE JSON")
+          .addOption("mv-aide-json", "mv-AIDE JSON")
           .setValue(this.format)
           .onChange((value) => {
             this.format = value as SourceHighlightImportFormat;
           }),
       );
 
-    const buttonRow = contentEl.createDiv({ cls: "mv-senceai-modal-button-row" });
+    const buttonRow = contentEl.createDiv({ cls: "mv-aide-modal-button-row" });
     const importButton = buttonRow.createEl("button", { text: t("载入") });
     importButton.addClass("mod-cta");
     importButton.addEventListener("click", () => {
@@ -791,7 +796,7 @@ function prismTokenContentLength(content: PrismTokenContent): number {
 }
 
 function prismTokenClasses(token: PrismTokenLike): string {
-  const classParts = ["mv-senceai-source-token", "token", token.type];
+  const classParts = ["mv-aide-source-token", "token", token.type];
   if (typeof token.alias === "string") {
     classParts.push(token.alias);
   } else if (Array.isArray(token.alias)) {
@@ -815,19 +820,19 @@ function createCollapsibleSettingsSection(
   onToggle: (id: MainSettingsSectionId, open: boolean) => void,
 ): HTMLElement {
   const details = containerEl.createEl("details", {
-    cls: "mv-senceai-settings-section",
+    cls: "mv-aide-settings-section",
   });
   details.dataset.sectionId = id;
   details.open = open;
   details.addEventListener("toggle", () => onToggle(id, details.open));
   details.createEl("summary", {
     text: title,
-    cls: "mv-senceai-settings-section-summary setting-item-name",
+    cls: "mv-aide-settings-section-summary setting-item-name",
   });
-  return details.createDiv({ cls: "mv-senceai-settings-section-body" });
+  return details.createDiv({ cls: "mv-aide-settings-section-body" });
 }
 
-export class MvSenceAiIdeSettingTab extends PluginSettingTab {
+export class MvAideIdeSettingTab extends PluginSettingTab {
   private readonly openSettingsSections = new Set<MainSettingsSectionId>();
   private readonly openIdeSubsectionIds = new Set<string>();
   private readonly openSourceAssistProfileIds = new Set<string>();
@@ -837,7 +842,7 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
   private forceOpenSourceAssistProfileId: string | null = null;
   private defaultOpenerOperationPending = false;
 
-  constructor(app: App, private readonly plugin: MvSenceAiIdePlugin) {
+  constructor(app: App, private readonly plugin: MvAideIdePlugin) {
     super(app, plugin);
   }
 
@@ -863,6 +868,10 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
       );
 
     const ideEl = this.createSettingsSection(rootEl, "ide", t("IDE桥接"));
+    const mvAgentEl = this.createSettingsSection(rootEl, "mv-agent", t("mv-agent"));
+    this.plugin.dshFeature?.renderSection(mvAgentEl, () =>
+      this.rerenderSettings("mv-agent"),
+    );
     const llmEl = this.createSettingsSection(rootEl, "llm", t("划词助手"));
     const inlineCompletionEl = this.createSettingsSection(
       rootEl,
@@ -900,6 +909,9 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
       "agents",
       t("已适配 agent"),
     );
+    this.plugin.dshFeature?.renderAgentEntry(agentsEl, () =>
+      this.rerenderSettings("ide"),
+    );
     this.renderIdeUpstreamSettings(agentsEl);
     this.renderIdeClaudeSettings(agentsEl);
     this.renderIdeCodexSettings(agentsEl);
@@ -936,28 +948,28 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
     containerEl = llmEl;
     containerEl.createEl("div", {
       text: t("🤖 API 提供商（划词助手与行内补全共用）"),
-      cls: "mv-senceai-section-title setting-item-name",
+      cls: "mv-aide-section-title setting-item-name",
     });
     addHeading(containerEl, t("API 提供商"));
     {
       const tip = containerEl.createEl("p", {
         text: t("API Base URL 和模型必填；API Key 仅对需要鉴权的服务必填，本地无鉴权服务可留空。"),
       });
-      tip.addClass("mv-senceai-llm-hint");
+      tip.addClass("mv-aide-llm-hint");
     }
     this.renderProviders(containerEl);
 
     containerEl = inlineCompletionEl;
     containerEl.createEl("div", {
       text: t("⌨️ 行内补全（Markdown 续写）"),
-      cls: "mv-senceai-section-title setting-item-name",
+      cls: "mv-aide-section-title setting-item-name",
     });
     this.renderInlineCompletion(containerEl);
 
     containerEl = llmEl;
     containerEl.createEl("div", {
       text: t("✍️ 划词助手（选词调用 LLM）"),
-      cls: "mv-senceai-section-title setting-item-name",
+      cls: "mv-aide-section-title setting-item-name",
     });
     addHeading(containerEl, t("总开关"));
 
@@ -981,7 +993,7 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
       const tip = containerEl.createEl("p", {
         text: t("提示：PDF 视图的右键被 Obsidian / pdf++ 占用，无法注入 LLM 菜单，请用快捷键触发（在「快捷键设置」里给「LLM：xxx」命令绑键）。网页视图（Web Viewer）里，Obsidian 的快捷键因焦点隔离无法直接生效，插件会自动把你已绑定的「LLM：xxx」快捷键同步注入网页，所以网页里用同一个快捷键即可。"),
       });
-      tip.addClass("mv-senceai-llm-hint");
+      tip.addClass("mv-aide-llm-hint");
     }
 
     if (this.plugin.settings.llm.enabled) {
@@ -1044,7 +1056,7 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
       const hint = containerEl.createEl("div", {
         text: t("提示词中可用 {selection} 占位符表示划词内容；不含占位符时，划词会自动追加到末尾。每个模板可单独开关，并选择用哪个提供商的哪个模型。"),
       });
-      hint.addClass("mv-senceai-llm-hint");
+      hint.addClass("mv-aide-llm-hint");
       this.renderTemplates(containerEl);
 
       new Setting(containerEl).addButton((btn) =>
@@ -1072,14 +1084,14 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
     containerEl = terminalEl;
     containerEl.createEl("div", {
       text: t("💻 终端设置"),
-      cls: "mv-senceai-section-title setting-item-name",
+      cls: "mv-aide-section-title setting-item-name",
     });
 
     addHeading(containerEl, t("打开与主题"));
 
     new Setting(containerEl)
       .setName(t("终端打开位置"))
-      .setDesc(t("选择新终端视图默认打开的面板区域。"))
+      .setDesc(t("仅决定新终端视图的初始位置；打开后可使用 Obsidian 原生拖拽自由移动。"))
       .addDropdown((dropdown) =>
         dropdown
           .addOption("tab", t("中间主栏 (Middle Main Split / Tabs)"))
@@ -1204,28 +1216,6 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
           })
       );
 
-    const getPythonCmd = () => {
-      const isWindows = process.platform === "win32";
-      const settings = this.plugin.settings;
-      let pythonCmd = settings.terminalPythonPath || (isWindows ? "py" : "python3");
-      if (isWindows && !settings.terminalPythonPath) {
-        try {
-          child_process.execSync("py --version", { stdio: "ignore", timeout: 1000 });
-          pythonCmd = "py";
-        } catch (e) {
-          try {
-            const whereOutput = child_process.execSync("where.exe python", { encoding: "utf8", timeout: 1000 });
-            const pythonPaths = whereOutput.split(/\r?\n/).map(p => p.trim()).filter(p => p && !p.includes("WindowsApps"));
-            const executable = pythonPaths.find((p) => !/\.(bat|cmd)$/i.test(p));
-            pythonCmd = executable || pythonPaths[0] || "python";
-          } catch (e2) {
-            pythonCmd = "python";
-          }
-        }
-      }
-      return pythonCmd;
-    };
-
     // pywinpty 仅 Windows 需要，非 Windows 不渲染该区块
     if (process.platform === "win32")
       new Setting(containerEl)
@@ -1235,34 +1225,47 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
         button
           .setButtonText(t("检测依赖"))
           .onClick(async () => {
-            new Notice(t("正在检测 Windows 依赖 (winpty)..."));
-            const pythonCmd = getPythonCmd();
-            child_process.execFile(pythonCmd, ["-c", "import winpty"], { windowsHide: true }, (error) => {
-              if (error) {
+            button.setDisabled(true);
+            try {
+              new Notice(t("正在检测 Windows 依赖 (winpty)..."));
+              const pythonCmd = resolvePythonCommand(this.plugin.settings.terminalPythonPath);
+              if (!pythonCmd) {
+                new Notice(t("❌ Windows 依赖检测失败：未检测到 Python。"));
+                return;
+              }
+              const result = await probePythonModule(pythonCmd, "winpty");
+              if (result.code !== 0) {
                 new Notice(t("❌ Windows 依赖检测失败：未检测到 winpty 库，请点击右侧按钮安装。"));
               } else {
                 new Notice(t("✅ Windows 依赖检测成功：已检测到 winpty 库，终端可以正常运行。"));
               }
-            });
+            } finally {
+              button.setDisabled(false);
+            }
           })
       )
       .addButton((button) =>
         button
           .setButtonText(t("更新依赖"))
           .onClick(async () => {
-            new Notice(t("正在后台更新 Windows 依赖 (pywinpty)..."));
-            const pythonCmd = getPythonCmd();
-            const installArgs = ["-m", "pip", "install", "-U", "pywinpty"];
-            const installCmd = [pythonCmd, ...installArgs].join(" ");
-            new Notice(t("运行命令: {cmd}", { cmd: installCmd }));
-            child_process.execFile(pythonCmd, installArgs, { windowsHide: true }, (error) => {
-              if (error) {
-                new Notice(t("❌ Windows 依赖更新失败:\n{message}", { message: error.message }));
-                console.error(error);
+            button.setDisabled(true);
+            try {
+              new Notice(t("正在后台更新 Windows 依赖 (pywinpty)..."));
+              const pythonCmd = resolvePythonCommand(this.plugin.settings.terminalPythonPath);
+              if (!pythonCmd) {
+                new Notice(t("❌ Windows 依赖更新失败：未检测到 Python。"));
+                return;
+              }
+              const result = await installPythonPackage(pythonCmd, "pywinpty");
+              if (result.code !== 0) {
+                const message = result.stderr.trim() || result.stdout.trim() || t("未知错误");
+                new Notice(t("❌ Windows 依赖更新失败:\n{message}", { message }));
               } else {
                 new Notice(t("✅ Windows 依赖 (pywinpty) 更新成功！"));
               }
-            });
+            } finally {
+              button.setDisabled(false);
+            }
           })
       );
     this.restoreSettingsScrollTop(rootEl, previousScrollTop);
@@ -1291,7 +1294,7 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
   private captureSettingsUiState(containerEl: HTMLElement): number {
     for (const details of Array.from(
       containerEl.querySelectorAll<HTMLDetailsElement>(
-        "details.mv-senceai-settings-section[data-section-id]",
+        "details.mv-aide-settings-section[data-section-id]",
       ),
     )) {
       const id = details.dataset.sectionId as MainSettingsSectionId | undefined;
@@ -1353,7 +1356,7 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
     title: string,
   ): HTMLElement {
     const details = containerEl.createEl("details", {
-      cls: "mv-senceai-ide-subsection",
+      cls: "mv-aide-ide-subsection",
     });
     details.dataset.subsectionId = id;
     details.open = this.openIdeSubsectionIds.has(id);
@@ -1366,9 +1369,9 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
     });
     details.createEl("summary", {
       text: title,
-      cls: "mv-senceai-settings-section-summary setting-item-name",
+      cls: "mv-aide-settings-section-summary setting-item-name",
     });
-    return details.createDiv({ cls: "mv-senceai-settings-section-body" });
+    return details.createDiv({ cls: "mv-aide-settings-section-body" });
   }
 
   private renderIdeUniversalMcpSettings(containerEl: HTMLElement): void {
@@ -1386,19 +1389,19 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
             this.rerenderSettings("ide");
           }),
       );
-    universalSetting.settingEl.addClass("mv-senceai-universal-mcp-setting");
+    universalSetting.settingEl.addClass("mv-aide-universal-mcp-setting");
 
     const universalStatus = new Setting(containerEl)
       .setName(t("mv-AIDE 协议状态"))
       .setDesc(this.plugin.universalMcpStatus);
-    universalStatus.settingEl.addClass("mv-senceai-universal-mcp-setting");
+    universalStatus.settingEl.addClass("mv-aide-universal-mcp-setting");
     universalStatus.descEl.setAttribute("aria-live", "polite");
 
     if (this.plugin.settings.universalMcp.enabled) {
       const protocolSetting = new Setting(containerEl)
         .setName(t("通用 MCP 协议版本"))
         .setDesc(t("2026-07-28、2025-11-25、2025-03-26（由客户端协商）"));
-      protocolSetting.settingEl.addClass("mv-senceai-universal-mcp-setting");
+      protocolSetting.settingEl.addClass("mv-aide-universal-mcp-setting");
 
       const copyConfig = async (
         config: string | null,
@@ -1431,7 +1434,7 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
         })
         .addButton((button) => {
           // 禁用判断只查运行时是否就绪；配置在用户点击时才生成，
-          // 避免设置页渲染时同步探测系统 Node（spawnSync）卡住主线程。
+          // 避免设置页渲染时探测系统 Node；只在用户点击时刷新状态。
           button
             .setButtonText(t("复制 stdio 配置"))
             .setDisabled(!this.plugin.hasUniversalMcpRuntime())
@@ -1451,7 +1454,7 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
             this.rerenderSettings("ide");
           }),
         );
-      connectionSetting.settingEl.addClass("mv-senceai-universal-mcp-setting");
+      connectionSetting.settingEl.addClass("mv-aide-universal-mcp-setting");
     }
   }
 
@@ -1532,17 +1535,17 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
       );
 
     const claudeStatusEl = claudeSetting.settingEl.createEl("span", {
-      cls: "mv-senceai-status-indicator",
+      cls: "mv-aide-status-indicator",
     });
     if (!this.plugin.settings.ideIntegrations.claudeCode) {
       claudeStatusEl.setText(t("状态：已禁用"));
-      claudeStatusEl.addClass("mv-senceai-status-muted");
+      claudeStatusEl.addClass("mv-aide-status-muted");
     } else if (this.plugin.claudeIdeError) {
       claudeStatusEl.setText(t("● 启动失败: {error}", { error: this.plugin.claudeIdeError }));
-      claudeStatusEl.addClass("mv-senceai-status-error");
+      claudeStatusEl.addClass("mv-aide-status-error");
     } else {
       claudeStatusEl.setText(t("● 运行中"));
-      claudeStatusEl.addClass("mv-senceai-status-success");
+      claudeStatusEl.addClass("mv-aide-status-success");
     }
 
     new Setting(containerEl)
@@ -1575,17 +1578,17 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
       );
 
     const codexStatusEl = codexSetting.settingEl.createEl("span", {
-      cls: "mv-senceai-status-indicator",
+      cls: "mv-aide-status-indicator",
     });
     if (!this.plugin.settings.ideIntegrations.codex) {
       codexStatusEl.setText(t("状态：已禁用"));
-      codexStatusEl.addClass("mv-senceai-status-muted");
+      codexStatusEl.addClass("mv-aide-status-muted");
     } else if (this.plugin.codexIdeError) {
       codexStatusEl.setText(t("● 启动失败: {error}", { error: this.plugin.codexIdeError }));
-      codexStatusEl.addClass("mv-senceai-status-error");
+      codexStatusEl.addClass("mv-aide-status-error");
     } else {
       codexStatusEl.setText(t("● 运行中"));
-      codexStatusEl.addClass("mv-senceai-status-success");
+      codexStatusEl.addClass("mv-aide-status-success");
     }
 
     new Setting(containerEl)
@@ -2004,11 +2007,11 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
   private renderTerminalCustomThemeManager(containerEl: HTMLElement): void {
     const settings = this.plugin.settings;
     const details = containerEl.createEl("details", {
-      cls: "mv-senceai-terminal-theme-manager",
+      cls: "mv-aide-terminal-theme-manager",
     });
     details.createEl("summary", {
       text: t("自定义终端主题"),
-      cls: "mv-senceai-source-profile-summary setting-item-name",
+      cls: "mv-aide-source-profile-summary setting-item-name",
     });
     details.createEl("p", {
       text: t("自定义主题只保存结构化颜色数据，不执行 CSS/JS。浅色和深色内置主题不可直接修改，可复制后调整。"),
@@ -2062,10 +2065,10 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
     theme: TerminalThemePreset,
   ): void {
     const details = containerEl.createEl("details", {
-      cls: "mv-senceai-terminal-theme-card",
+      cls: "mv-aide-terminal-theme-card",
     });
     const summary = details.createEl("summary", {
-      cls: "mv-senceai-source-profile-summary setting-item-name",
+      cls: "mv-aide-source-profile-summary setting-item-name",
     });
     const titleEl = summary.createSpan({ text: theme.name });
 
@@ -2138,7 +2141,7 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
       .setName(t(TERMINAL_THEME_FIELD_LABELS[key]))
       .setDesc(t("支持 #rgb/#rrggbb/#rrggbbaa、rgb()/rgba()、hsl()/hsla()。"));
     const statusEl = setting.descEl.createDiv({
-      cls: "mv-senceai-terminal-color-status",
+      cls: "mv-aide-terminal-color-status",
     });
     setting.addText((text) =>
       text
@@ -2148,11 +2151,11 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
           const next = value.trim();
           if (!isSafeTerminalColor(next)) {
             statusEl.setText(t("颜色格式无效，未保存。"));
-            statusEl.addClass("mv-senceai-status-error");
+            statusEl.addClass("mv-aide-status-error");
             return;
           }
           statusEl.setText("");
-          statusEl.removeClass("mv-senceai-status-error");
+          statusEl.removeClass("mv-aide-status-error");
           theme.palette[key] = next;
           await this.saveTerminalThemeSettings();
         }),
@@ -2244,6 +2247,21 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
           .setValue(this.plugin.settings.browserDownloadsButton)
           .onChange(async (value) => {
             await this.plugin.setBrowserDownloadsButtonEnabled(value);
+          }),
+      );
+
+    new Setting(containerEl)
+      .setName(t("本地文件预览"))
+      .setDesc(
+        t(
+          "在内置浏览器地址栏输入 file:// 或本机绝对路径即可打开本地网页；文件列表中的 HTML 文件右键可用「用网页浏览器打开」。开启时会启动仅绑定 127.0.0.1 的本地预览服务，仅支持相对路径引用的本地资源。",
+        ),
+      )
+      .addToggle((toggle) =>
+        toggle
+          .setValue(this.plugin.settings.browserLocalFilePreview)
+          .onChange(async (value) => {
+            await this.plugin.setBrowserLocalFilePreviewEnabled(value);
           }),
       );
 
@@ -2427,7 +2445,7 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
             }
           }),
       );
-    mirrorSetting.settingEl.addClass("mv-senceai-external-mirror-setting");
+    mirrorSetting.settingEl.addClass("mv-aide-external-mirror-setting");
 
     // 「支持的后缀范围」折叠区：逐后缀开关，固定在默认文件打开器最下面。
     const builtinExtensions = MARKDOWN_EXTERNAL_EXTENSIONS as readonly string[];
@@ -2675,7 +2693,7 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
     for (const profile of this.plugin.settings.sourceAssist.profiles) {
       const source = vimSourceSettings(settings, profile.extension);
       const details = containerEl.createEl("details", {
-        cls: "mv-senceai-source-assist-profile mv-aide-vim-source-profile",
+        cls: "mv-aide-source-assist-profile mv-aide-vim-source-profile",
       });
       details.open = this.openVimSourceProfileExtensions.has(profile.extension);
       details.addEventListener("toggle", () => {
@@ -2686,12 +2704,12 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
         }
       });
       details.createEl("summary", {
-        cls: "mv-senceai-source-assist-profile-summary setting-item-name",
+        cls: "mv-aide-source-assist-profile-summary setting-item-name",
         text: profile.extension === "md"
           ? t("Markdown (.md)")
           : t("源码类型 .{ext}", { ext: profile.extension }),
       });
-      const body = details.createDiv({ cls: "mv-senceai-source-assist-profile-body" });
+      const body = details.createDiv({ cls: "mv-aide-source-assist-profile-body" });
       new Setting(body)
         .setName(t("该源码使用 Vim"))
         .setDesc(t("只在这个后缀的编辑器中加载 Vim；所有后缀都关闭时，Vim 模块不会加载或注册任何运行资源。"))
@@ -2758,7 +2776,7 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
     idx: number,
   ): void {
     const details = containerEl.createEl("details", {
-      cls: "mv-senceai-source-assist-profile",
+      cls: "mv-aide-source-assist-profile",
     });
     const shouldForceOpen = this.forceOpenSourceAssistProfileId === profile.id;
     details.open = shouldForceOpen || this.openSourceAssistProfileIds.has(profile.id);
@@ -2778,10 +2796,10 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
         ? t("Markdown (.md)")
         : t("源码类型 .{ext}", { ext: profile.extension });
     const summary = details.createEl("summary", {
-      cls: "mv-senceai-source-assist-profile-summary",
+      cls: "mv-aide-source-assist-profile-summary",
     });
     const summaryText = summary.createDiv({
-      cls: "mv-senceai-source-assist-profile-summary-text",
+      cls: "mv-aide-source-assist-profile-summary-text",
     });
     summaryText.createDiv({
       cls: "setting-item-name",
@@ -2797,7 +2815,7 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
 
     if (profile.extension !== "md") {
       const deleteButton = summary.createEl("button", {
-        cls: "clickable-icon mv-senceai-source-assist-profile-delete",
+        cls: "clickable-icon mv-aide-source-assist-profile-delete",
         attr: {
           "aria-label": t("删除该源码类型并取消本插件对该后缀的识别"),
           type: "button",
@@ -2815,7 +2833,7 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
       });
     }
 
-    const wrap = details.createDiv({ cls: "mv-senceai-source-assist-profile-body" });
+    const wrap = details.createDiv({ cls: "mv-aide-source-assist-profile-body" });
 
     if (profile.extension !== "md") {
       this.renderSourceAssistProfileHighlightThemeSetting(wrap, profile, idx);
@@ -2975,13 +2993,13 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
     const themes = this.plugin.settings.sourceAssist.customHighlightThemes;
     if (themes.length === 0) {
       containerEl.createDiv({
-        cls: "setting-item-description mv-senceai-source-highlight-empty",
+        cls: "setting-item-description mv-aide-source-highlight-empty",
         text: t("暂无自定义主题。内置主题可直接在上方源码类型中选择。"),
       });
       return;
     }
 
-    const listEl = containerEl.createDiv({ cls: "mv-senceai-source-highlight-theme-list" });
+    const listEl = containerEl.createDiv({ cls: "mv-aide-source-highlight-theme-list" });
     for (const theme of themes) {
       new Setting(listEl)
         .setName(theme.name)
@@ -3004,7 +3022,7 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
 
   private renderSourceAssistHotkeyIntro(containerEl: HTMLElement): void {
     containerEl.createDiv({
-      cls: "setting-item-description mv-senceai-source-assist-hotkey-intro",
+      cls: "setting-item-description mv-aide-source-assist-hotkey-intro",
       text: t("按键说明：手动触发按键用于触发非 automatic 代码展开；下一/上一 tabstop 用于在 $1/$2/$0 等占位点之间跳转。"),
     });
   }
@@ -3018,14 +3036,14 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
       .setDesc(
         t("填写格式与 Code Suite 的代码展开规则一致；可以直接粘贴兼容的规则数组。行首 // 会按 JS 注释处理。"),
       )
-      .setClass("mv-senceai-source-assist-snippets-setting");
+      .setClass("mv-aide-source-assist-snippets-setting");
     setting.controlEl.empty();
 
     const editorWrap = setting.settingEl.createDiv({
-      cls: "mv-senceai-snippets-editor-wrapper",
+      cls: "mv-aide-snippets-editor-wrapper",
     });
     const footer = setting.settingEl.createDiv({
-      cls: "mv-senceai-snippets-footer",
+      cls: "mv-aide-snippets-footer",
     });
     const view = createSourceAssistSnippetsEditor({
       containerEl: editorWrap,
@@ -3058,14 +3076,14 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
       .setDesc(
         t("格式与代码展开面板一致，每项为 { 开头, 结尾, 设置 }；设置填 n=行内、j=行间、nl=行内环境、jl=行间环境。"),
       )
-      .setClass("mv-senceai-source-assist-snippets-setting");
+      .setClass("mv-aide-source-assist-snippets-setting");
     setting.controlEl.empty();
 
     const editorWrap = setting.settingEl.createDiv({
-      cls: "mv-senceai-snippets-editor-wrapper",
+      cls: "mv-aide-snippets-editor-wrapper",
     });
     const footer = setting.settingEl.createDiv({
-      cls: "mv-senceai-snippets-footer",
+      cls: "mv-aide-snippets-footer",
     });
     const view = createSourceAssistSnippetsEditor({
       containerEl: editorWrap,
@@ -3095,16 +3113,16 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
     const setting = new Setting(containerEl)
       .setName(name)
       .setDesc(description)
-      .setClass("mv-senceai-inline-hotkey-setting");
+      .setClass("mv-aide-inline-hotkey-setting");
     const valueEl = setting.controlEl.createEl("span", {
-      cls: "mv-senceai-inline-hotkey-value",
+      cls: "mv-aide-inline-hotkey-value",
       text: formatInlineHotkeyLabel(profile[key]),
     });
     const input = setting.controlEl.createEl("input", {
       type: "text",
       attr: { value: profile[key], placeholder: "Tab" },
     });
-    input.addClass("mv-senceai-source-assist-hotkey-input");
+    input.addClass("mv-aide-source-assist-hotkey-input");
 
     const save = async (value: string) => {
       const target = this.plugin.settings.sourceAssist.profiles[idx];
@@ -3265,7 +3283,7 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
       })
       .addText((text) => {
         const isCustom = (cfg.thinkingMode ?? "default") === "custom";
-        text.inputEl.toggleClass("mv-senceai-is-hidden", !isCustom);
+        text.inputEl.toggleClass("mv-aide-is-hidden", !isCustom);
         text
           .setPlaceholder(t('自定义 JSON，如 {"thinking":{"type":"enabled"}}'))
           .setValue(cfg.thinkingCustom ?? "")
@@ -3283,7 +3301,7 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
       .setDesc(t("发送给模型的系统消息主体部分（角色描述 + 补全规则）。留空或清空则使用内置默认值。"))
       .addTextArea((text) => {
         text.inputEl.rows = 8;
-        text.inputEl.addClass("mv-senceai-inline-prompt-textarea");
+        text.inputEl.addClass("mv-aide-inline-prompt-textarea");
         text
           .setPlaceholder(t("（使用默认提示词主体）"))
           .setValue(cfg.systemPromptBody)
@@ -3302,14 +3320,14 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
 
     {
       const sentinelMatch = DEFAULT_INLINE_NO_COMPLETION_PROMPT.match(/<[^>]+NO_COMPLETION>/);
-      const sentinelToken = sentinelMatch ? sentinelMatch[0] : "<MV_SENCEAI_NO_COMPLETION>";
+      const sentinelToken = sentinelMatch ? sentinelMatch[0] : "<MV_AIDE_NO_COMPLETION>";
       const hintEl = containerEl.createEl("div", {
         text: t(
           "下方「{token}」是无需补全时的返回标记。如果修改或删除该标记，模型将无法正确抑制无效补全。",
           { token: sentinelToken },
         ),
       });
-      hintEl.addClass("mv-senceai-llm-hint");
+      hintEl.addClass("mv-aide-llm-hint");
     }
 
     new Setting(containerEl)
@@ -3317,7 +3335,7 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
       .setDesc(t("控制模型在无需补全时返回的 sentinel 标记指令。修改时请特别注意。"))
       .addTextArea((text) => {
         text.inputEl.rows = 3;
-        text.inputEl.addClass("mv-senceai-inline-prompt-textarea");
+        text.inputEl.addClass("mv-aide-inline-prompt-textarea");
         text
           .setPlaceholder(t("（使用默认无需补全指令）"))
           .setValue(cfg.noCompletionPrompt)
@@ -3350,7 +3368,7 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
       )
       .addTextArea((text) => {
         text.inputEl.rows = 7;
-        text.inputEl.addClass("mv-senceai-inline-prompt-textarea");
+        text.inputEl.addClass("mv-aide-inline-prompt-textarea");
         text
           .setPlaceholder(t("（使用默认拒绝后重生成指令）"))
           .setValue(cfg.rejectPrompt)
@@ -3517,9 +3535,9 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
     const setting = new Setting(containerEl)
       .setName(name)
       .setDesc(description)
-      .setClass("mv-senceai-inline-hotkey-setting");
+      .setClass("mv-aide-inline-hotkey-setting");
     const valueEl = setting.controlEl.createEl("span", {
-      cls: "mv-senceai-inline-hotkey-value",
+      cls: "mv-aide-inline-hotkey-value",
       text: formatInlineHotkeyLabel(
         this.plugin.settings.inlineCompletion.keymap[key],
       ),
@@ -3623,20 +3641,20 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
     idx: number,
     provider: LlmProviderConfig,
   ): void {
-    const wrap = containerEl.createDiv({ cls: "mv-senceai-llm-provider" });
+    const wrap = containerEl.createDiv({ cls: "mv-aide-llm-provider" });
     const header = new Setting(wrap)
-      .setClass("mv-senceai-llm-provider-header")
+      .setClass("mv-aide-llm-provider-header")
       .setHeading();
 
     // Provider name + type + delete, all in the header's control area.
     header.controlEl.empty();
-    header.controlEl.addClass("mv-senceai-llm-provider-head");
+    header.controlEl.addClass("mv-aide-llm-provider-head");
 
     const nameInput = header.controlEl.createEl("input", {
       type: "text",
       attr: { placeholder: t("提供商名称（如：白山）"), value: provider.name },
     });
-    nameInput.addClass("mv-senceai-llm-provider-name");
+    nameInput.addClass("mv-aide-llm-provider-name");
     nameInput.addEventListener("change", async () => {
       const target = this.plugin.settings.llm.providers[idx];
       if (!target) return;
@@ -3737,15 +3755,15 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
     // Models list.
     const modelsHeading = wrap.createEl("div", {
       text: t("模型"),
-      cls: "mv-senceai-llm-models-label",
+      cls: "mv-aide-llm-models-label",
     });
-    const modelsList = wrap.createDiv({ cls: "mv-senceai-llm-models" });
+    const modelsList = wrap.createDiv({ cls: "mv-aide-llm-models" });
     const models = provider.models;
     for (let m = 0; m < models.length; m += 1) {
       const midx = m;
       const model = models[midx];
       if (!model) continue;
-      const row = modelsList.createDiv({ cls: "mv-senceai-llm-model-row" });
+      const row = modelsList.createDiv({ cls: "mv-aide-llm-model-row" });
       const input = row.createEl("input", {
         type: "text",
         attr: {
@@ -3753,7 +3771,7 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
           value: model.name,
         },
       });
-      input.addClass("mv-senceai-llm-model-name");
+      input.addClass("mv-aide-llm-model-name");
       input.addEventListener("change", async () => {
         const p = this.plugin.settings.llm.providers[idx];
         const target = p?.models[midx];
@@ -3762,7 +3780,7 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
         await this.plugin.saveData(this.plugin.settings);
       });
 
-      const delBtn = row.createEl("button", { text: t("删除"), cls: "mv-senceai-llm-model-del" });
+      const delBtn = row.createEl("button", { text: t("删除"), cls: "mv-aide-llm-model-del" });
       delBtn.addEventListener("click", async () => {
         const p = this.plugin.settings.llm.providers[idx];
         if (!p) return;
@@ -3790,7 +3808,7 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
     void modelsHeading; // label rendered above
     const addModelBtn = modelsList.createEl("button", {
       text: t("+ 添加模型"),
-      cls: "mv-senceai-llm-model-add",
+      cls: "mv-aide-llm-model-add",
     });
     addModelBtn.addEventListener("click", async () => {
       const p = this.plugin.settings.llm.providers[idx];
@@ -3822,17 +3840,17 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
     idx: number,
     tpl: LlmPromptTemplate,
   ): void {
-    const setting = new Setting(containerEl).setClass("mv-senceai-llm-tpl");
+    const setting = new Setting(containerEl).setClass("mv-aide-llm-tpl");
     setting.infoEl.empty();
-    setting.infoEl.addClass("mv-senceai-llm-tpl-info");
+    setting.infoEl.addClass("mv-aide-llm-tpl-info");
     setting.controlEl.empty();
-    setting.controlEl.addClass("mv-senceai-llm-tpl-control");
+    setting.controlEl.addClass("mv-aide-llm-tpl-control");
 
     const labelInput = setting.infoEl.createEl("input", {
       type: "text",
       attr: { placeholder: t("菜单显示名（如：翻译）"), value: tpl.label },
     });
-    labelInput.addClass("mv-senceai-llm-tpl-label");
+    labelInput.addClass("mv-aide-llm-tpl-label");
     labelInput.addEventListener("change", async () => {
       const target = this.plugin.settings.llm.templates[idx];
       if (!target) return;
@@ -3844,7 +3862,7 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
     promptArea.setAttr("rows", "3");
     promptArea.setAttr("placeholder", t("提示词，可用 {selection} 占位符"));
     promptArea.value = tpl.prompt;
-    promptArea.addClass("mv-senceai-llm-tpl-prompt");
+    promptArea.addClass("mv-aide-llm-tpl-prompt");
     promptArea.addEventListener("change", async () => {
       const target = this.plugin.settings.llm.templates[idx];
       if (!target) return;
@@ -3854,7 +3872,7 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
 
     // Model selection button + current selection summary, plus enable toggle.
     const modelBtn = setting.controlEl.createEl("button", {
-      cls: "mv-senceai-llm-tpl-model",
+      cls: "mv-aide-llm-tpl-model",
     });
     const refreshModelLabel = () => {
       const p = this.plugin.settings.llm.providers.find((x) => x.id === tpl.providerId);
@@ -3903,11 +3921,11 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
 
     // 思考下拉（默认/开/关/自定义），紧跟「选择模型」之后。选「自定义」展开 JSON 框。
     const thinkingRow = setting.controlEl.createDiv({
-      cls: "mv-senceai-llm-tpl-thinking-row",
+      cls: "mv-aide-llm-tpl-thinking-row",
     });
     const thinkingLabel = thinkingRow.createEl("span", {
       text: t("思考"),
-      cls: "mv-senceai-llm-tpl-thinking-label",
+      cls: "mv-aide-llm-tpl-thinking-label",
     });
     void thinkingLabel;
     const thinkingSelect = thinkingRow.createEl("select");
@@ -3921,7 +3939,7 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
       if ((tpl.thinkingMode ?? "default") === opt.value) o.selected = true;
     }
     const customBox = thinkingRow.createEl("input", { type: "text" });
-    customBox.addClass("mv-senceai-llm-tpl-thinking-custom");
+    customBox.addClass("mv-aide-llm-tpl-thinking-custom");
     customBox.placeholder = t('自定义 JSON，如 {"thinking":{"type":"enabled"}}');
     customBox.value = tpl.thinkingCustom ?? "";
     const refreshCustomVisibility = () => {
@@ -3947,16 +3965,16 @@ export class MvSenceAiIdeSettingTab extends PluginSettingTab {
       text: t(
         "💡 思考下拉决定是否在请求中携带思考参数：开 = {\"thinking\":{\"type\":\"enabled\"}}、关 = {\"thinking\":{\"type\":\"disabled\"}}、自定义 = 你填的 JSON。默认 = 不发送任何思考参数（安全）。是否被模型实际采纳取决于模型与端点，不支持的模型可能报错或忽略。",
       ),
-      cls: "mv-senceai-llm-tpl-hint-thinking",
+      cls: "mv-aide-llm-tpl-hint-thinking",
     });
     void thinkingHint;
 
     const enableRow = setting.controlEl.createDiv({
-      cls: "mv-senceai-llm-tpl-enable-row",
+      cls: "mv-aide-llm-tpl-enable-row",
     });
     const enableToggle = enableRow.createEl("input", { type: "checkbox" });
     enableToggle.checked = tpl.enabled;
-    enableToggle.id = `mv-senceai-llm-tpl-enabled-${idx}`;
+    enableToggle.id = `mv-aide-llm-tpl-enabled-${idx}`;
     const enableLabel = enableRow.createEl("label", { text: t("启用") });
     enableLabel.setAttribute("for", enableToggle.id);
     enableToggle.addEventListener("change", async () => {

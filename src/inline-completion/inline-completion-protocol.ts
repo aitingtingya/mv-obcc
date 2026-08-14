@@ -1,6 +1,6 @@
 import type { InlineCompletionSettings } from "../types";
 
-export const NO_COMPLETION_SENTINEL = "<MV_SENCEAI_NO_COMPLETION>";
+export const NO_COMPLETION_SENTINEL = "<MV_AIDE_NO_COMPLETION>";
 
 export function truncateInlineCompletion(
   text: string,

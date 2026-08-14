@@ -22,7 +22,7 @@ interface PendingFrame {
 }
 
 const CODEX_TUI_CLIENT_ID = "codex-tui";
-const DEFAULT_CLIENT_ID = "mv-senceai-obsidian";
+const DEFAULT_CLIENT_ID = "mv-aide-obsidian";
 const MAX_FRAME_BYTES = 256 * 1024 * 1024;
 
 export function defaultCodexIdeSocketPath(

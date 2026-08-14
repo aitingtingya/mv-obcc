@@ -1,4 +1,4 @@
-export const INLINE_CURSOR_MARKER = "<|mv-senceai-cursor|>";
+export const INLINE_CURSOR_MARKER = "<|mv-aide-cursor|>";
 
 export interface InlineCursorContext {
   before: string;

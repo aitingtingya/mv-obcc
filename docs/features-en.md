@@ -2,7 +2,7 @@
 
 [Back to README](../README_EN.md) | [中文](features.md)
 
-This guide describes mv-AIDE `0.9.6` in the same order as its settings page, including behavior, defaults, boundaries, and recovery procedures. The README is the visual introduction; this document is the complete behavioral reference.
+This guide describes mv-AIDE `0.9.7` in the same order as its settings page, including behavior, defaults, boundaries, and recovery procedures. The README is the visual introduction; this document is the complete behavioral reference.
 
 ## Contents
 
@@ -10,13 +10,14 @@ This guide describes mv-AIDE `0.9.6` in the same order as its settings page, inc
 - [Requirements](#requirements)
 - [Settings map](#settings-map)
 - [1. IDE Bridge](#ide-bridge)
-- [2. Selection Assistant](#selection-assistant)
-- [3. Inline Completion](#inline-completion)
-- [4. Terminal](#terminal)
-- [5. Source Assist](#source-assist)
-- [6. Vim Enhancement](#vim)
-- [7. Default File Opener](#default-opener)
-- [8. Filesystem & Browser](#filesystem-browser)
+- [2. mv-agent](#mv-agent)
+- [3. Selection Assistant](#selection-assistant)
+- [4. Inline Completion](#inline-completion)
+- [5. Terminal](#terminal)
+- [6. Source Assist](#source-assist)
+- [7. Vim Enhancement](#vim)
+- [8. Default File Opener](#default-opener)
+- [9. Filesystem & Browser](#filesystem-browser)
 - [API providers](#api-providers)
 - [Cross-feature behavior](#cross-feature)
 - [Commands and entry points](#commands)
@@ -28,7 +29,7 @@ This guide describes mv-AIDE `0.9.6` in the same order as its settings page, inc
 <a id="overview"></a>
 ## Overview
 
-mv-AIDE is a desktop AI IDE plugin for Obsidian. Its eight feature areas remain independently controllable while sharing a narrow editor-context pipeline: agents can read the active work surface, AI can participate directly in text editing, source tools and a terminal remain inside Obsidian, and Vim, the default opener, and filesystem browsing extend the editor to desktop workflows.
+mv-AIDE is a desktop AI IDE plugin for Obsidian. Its nine feature areas remain independently controllable while sharing a narrow editor-context pipeline: agents can read the active work surface, AI can participate directly in text editing, source tools and a terminal remain inside Obsidian, and Vim, the default opener, and filesystem browsing extend the editor to desktop workflows.
 
 Design principles:
 
@@ -57,14 +58,15 @@ Community Plugins is the recommended installation route. A manual installation m
 
 | Order | Section | Default | Purpose |
 | --- | --- | --- | --- |
-| 1 | IDE Bridge | Claude on; Codex and universal MCP off | Agent context, tools, and diff review |
-| 2 | Selection Assistant | Off | Run LLM templates on Markdown, PDF, and web selections |
-| 3 | Inline Completion | Off | Markdown ghost-text completion |
-| 4 | Terminal | Available; opens on the right | System shell, path links, and MCP output |
-| 5 | Source Assist | On; Markdown profile only | Non-md extensions, Code Suite, linting, and TeX |
-| 6 | Vim Enhancement | Off for every extension | Independent Vim engine and vault vimrc |
-| 7 | Default File Opener | Off | System associations and external-file mirrors |
-| 8 | Filesystem & Browser | All three entry points on | Downloads, history, and arbitrary-directory browsing |
+| 1 | IDE Bridge | Claude on; Codex, universal MCP, and dsh off | Agent context, tools, and diff review |
+| 2 | mv-agent | Off | Built-in DSH workspace: environment install, plugin injection, view, and out-of-vault policy |
+| 3 | Selection Assistant | Off | Run LLM templates on Markdown, PDF, and web selections |
+| 4 | Inline Completion | Off | Markdown ghost-text completion |
+| 5 | Terminal | Available; opens on the right | System shell, path links, and MCP output |
+| 6 | Source Assist | On; Markdown profile only | Non-md extensions, Code Suite, linting, and TeX |
+| 7 | Vim Enhancement | Off for every extension | Independent Vim engine and vault vimrc |
+| 8 | Default File Opener | Off | System associations and external-file mirrors |
+| 9 | Filesystem & Browser | All three entry points on | Downloads, history, and arbitrary-directory browsing |
 
 The UI language defaults to Chinese. Settings are stored per vault and are not automatically shared across vaults.
 
@@ -73,12 +75,13 @@ The UI language defaults to Chinese. Settings are stored per vault and are not a
 
 ### Purpose and Enablement
 
-IDE Bridge provides active Obsidian context to Claude Code, Codex CLI, or general MCP clients, and returns proposed file edits to Obsidian for review.
+IDE Bridge provides active Obsidian context to Claude Code, Codex CLI, general MCP clients, or DeepSeek Harness (DSH), and returns proposed file edits to Obsidian for review.
 
 | Setting | Default | Behavior |
 | --- | --- | --- |
 | Enable Claude Code IDE support | On | Writes the Claude IDE lock, registers the `mv-aide` MCP service, and manages required hooks/config |
 | Enable Codex IDE support | Off | Writes a managed MCP block and exposes `/ide` context |
+| Enable DSH IDE support | Off | Starts the IDE bridge and writes the discovery lock file so the mv-AIDE plugin inside dsh can connect to this vault |
 | Expose the mv-AIDE protocol | Off | Opens separately authorized HTTP/stdio access for other MCP clients |
 | Auto-manage Claude settings for this repo | On | Manages only the current repo's plugin-owned `ANTHROPIC_BASE_URL` |
 | Upstream mode | Native | Native leaves requests unchanged; Compatibility moves IDE system context to the user message without duplication |
@@ -160,8 +163,74 @@ Native mode leaves agent requests untouched. Compatibility mode is intended only
 
 If the bridge fails, the editor, Selection Assistant, Inline Completion, Terminal, and Source Assist still operate independently. “Restart bridge” rebuilds the local service and Claude IDE lock. “Restore plugin-managed Claude settings” restores only the captured `ANTHROPIC_BASE_URL`. “Re-register” and “Clean registration” affect only mv-AIDE's own integration.
 
+### DSH Support
+
+DSH is the fourth adapted agent. With **Enable DSH IDE support** turned on, the plugin starts the IDE bridge and writes the discovery lock file; the installed `@mv-aide/dsh-plugin` scans that lock file and connects to this vault over the same local JSON-RPC protocol as Claude Code (`127.0.0.1`, port `47000 + vault seed % 1500`). Once connected, dsh gains:
+
+- The `/mv-aide` command: `status` (connection state and tool count), `tools` (list IDE tools), `selection` (read the current selection), and `call <name> [json]` (invoke any bridge tool).
+- Native `mv_aide__*` tools (e.g. `mv_aide__getLatestSelection`, `mv_aide__openFile`), matching the public tools in “Context and Tools” and obeying the same switches.
+- Passive context notifications and diff review: dsh agents receive the same selection pushes and `openDiff` review channel as Claude Code.
+
+Plugin injection, environment installation, and the out-of-vault policy belong to the standalone feature area — see [Chapter 2, mv-agent](#mv-agent).
+
+<a id="mv-agent"></a>
+## 2. mv-agent (DSH-powered)
+
+mv-agent is the DeepSeek Harness (DSH) workspace built into the plugin: use the DSH web UI directly inside Obsidian, with environment installation, plugin injection, the view, and out-of-vault boundaries managed in one standalone section. It shares the local bridge service with IDE Bridge — mv-agent installs DSH, connects it, and manages scope, while agent context and tools still flow through the Chapter 1 bridge channel.
+
+### Purpose and Enablement
+
+- The **master switch** lives in the “Adapted agents” area of IDE Bridge (**Enable DSH IDE support**, off by default). When off, the bridge does not start and no lock file is written; the rest of the mv-agent section is preserved but inactive.
+- **View**: the command palette provides **Open mv-agent**, **Close mv-agent**, and **Restart mv-agent**; hotkeys can be bound in Obsidian's hotkey settings. The view is a custom Obsidian view: an iframe on top embeds the DSH web UI (no browser toolbar), with an Obsidian-side status bar below showing the number of connected IDE bridge clients and the latest selection snapshot.
+- **Open region**: left, right, or bottom; right by default. “Restart mv-agent” restarts the plugin-managed `dsh web` process and refreshes every open view.
+- **Address and port**: the DSH web service binds only to `127.0.0.1`, default port `3080`, configurable in settings. The view auto-detects an already running dsh instance; while none is running it shows “mv-agent is not running.”
+
+### Runtime Environment
+
+Settings exposes Node.js, DSH, pnpm, and plugin injection as four independent layers, each with its own status and install, upgrade, inject, or repair action.
+
+- DSH supports Node.js 22.19+ within Node 22, or Node 24+. The mv-AIDE vault runtime uses the official SHA-256-verified Node.js 24.18.1 distribution.
+- When Node.js, DSH, or pnpm is absent, clicking its action asks for a vault or global location. An existing dependency is upgraded strictly in place without asking for a new location.
+- Acting on a lower layer satisfies its prerequisites first. Plugin injection, for example, ensures Node.js, DSH, and pnpm in order and re-inspects real state after every layer.
+- Final vault-installed runtimes live under `<vault>/mv-aide/dsh/`. Downloads, npm caches, installer scripts, and staging files exist only in an operation-scoped temporary workspace and are removed after success, failure, or cancellation. A global write to a protected directory requests native macOS administrator authorization, Windows UAC, or Linux `pkexec`. Refusing authorization stops the chain and never falls back to the vault.
+- For a global macOS Node installation, the verified public `.pkg` is staged temporarily in `/private/tmp` so the system installer service can read it. The temporary file is removed after success, failure, or cancellation.
+- When both locations exist, the vault installation is preferred. Injection targets the active DSH web profile: missing state shows Inject, an incomplete or old state shows Repair, and a ready state can be Updated.
+- Downloads start only from an explicit user action. Node.js is downloaded into a temporary vault directory; checksum failure or cancellation removes temporary files and preserves the previous runtime.
+
+### Plugin Injection and DSH-side Capabilities
+
+**Plugin injection** registers `@mv-aide/dsh-plugin` into the patch layer of the active DSH web profile; DSH hot-loads that directory, so no restart is required. Once injected (capability details in Chapter 1, “DSH Support”):
+
+- `/mv-aide status | tools | selection | call <name> [json]`;
+- native `mv_aide__*` tools matching the public tool switches;
+- passive context notifications and editable Obsidian diff review.
+
+### Diff as Permission
+
+The dsh plugin wraps file-writing tools: when a write would demand DSH's permission confirmation (a `write`/`edit` escalation retry) or would be denied outright by the standing policy (e.g. `str_replace_editor` under read-only), the change opens as an editable Obsidian diff through the bridge instead of the default web approval card:
+
+- **Accept** → the approved (possibly hand-edited) contents are written to disk by the dsh plugin; that write is the permission grant.
+- **Reject** → a synthetic failure (nothing was written).
+- **Bridge down / 5-minute timeout / unreadable file / adapter mismatch** → falls through to DSH's default flow unchanged.
+- Trigger boundaries: never fires under `danger-full-access`, for read-only tools, or for `str_replace_editor` `view`; `bash`/`pwsh` are not covered and keep DSH's own confirmation.
+- In-vault files always review. Files **outside the vault** review only when **Review out-of-vault diffs in Obsidian** is enabled (off by default).
+- Known limitations: the write bypasses DSH's sandbox bookkeeping (no `fs/observed` is emitted and the approval is not recorded in DSH's approval audit), so the model may re-read the file after accepting.
+
+### Passive Context
+
+The bridge pushes selection changes to the dsh plugin, which injects them into the agent's inbox without a tool call. Two delivery modes (Settings → mv-agent → Passive push):
+
+- **Live activity trail (live, default)**: every stable selection state is injected as it happens, with a 400 ms debounce, exact-repeat deduplication, and in-place replacement while pending; pure cursor moves inside the already-reported file and text-less URL changes below the debounce window are skipped.
+- **Push once on send (on-send)**: the selection is only buffered; one snapshot is pushed the moment the user sends a message. Nothing is injected while the agent works. Explicit @mentions steer in both modes.
+
+Both modes: `selection_changed` is injected as plugin context into the inbox, capped at 6000 characters, and does not wake an idle agent; an @mention steers the current agent into action (duplicate mentions within 5 s are dropped). The status bar's **Location** and **Selection** checkboxes control whether the corresponding content is pushed (forced on while the activity trail is active). In-vault agents always receive pushes; out-of-vault agents are governed per channel by the **Out-of-vault tool policy** (all off by default).
+
+### Out-of-vault Project Policy
+
+The “IDE tools” grid in the mv-agent section mirrors the IDE Bridge tool list one-to-one, with one difference: each row's trailing control is a **scope dropdown** — “In-vault workspaces only / Both in- and out-of-vault” — instead of a toggle. Every channel defaults to in-vault only. An out-of-vault agent calling a non-opted channel receives an error instead of a bridge call. The grid's “Diff review behavior” row writes the standalone **Review out-of-vault diffs in Obsidian** switch (off by default), controlling whether out-of-vault writes go through Obsidian diff review.
+
 <a id="selection-assistant"></a>
-## 2. Selection Assistant
+## 3. Selection Assistant
 
 ### Supported Surfaces
 
@@ -182,13 +251,13 @@ Reasoning can be Default, On, Off, or custom JSON. Custom payload support depend
 - Responses stream into a draggable, resizable floating Markdown editor.
 - The result can be inserted at the cursor, replace the original selection, or remain separate.
 - Pinning reuses the current window and prevents automatic closing after insert/replace.
-- The latest content is overwritten at `<vault>/mv-aide-llm-history/latest.md`; this file is hidden from the file tree, search, and quick switcher.
+- The latest content is overwritten at `<vault>/mv-aide/llm-history/latest.md`; this file is hidden from the file tree, search, and quick switcher.
 - Selection auto-trigger defaults to off on every launch and must be armed from the ribbon. It reacts only to new selections created afterward.
 
 Request failures are shown in the floating window and do not modify source text. Disabling the section removes its context menus, injected hotkeys, auto-trigger listeners, and active result pipeline.
 
 <a id="inline-completion"></a>
-## 3. Inline Completion
+## 4. Inline Completion
 
 ### Defaults
 
@@ -210,7 +279,7 @@ Once enabled, the ribbon button controls automatic requests; a manual request ke
 
 ### Prompts and Results
 
-The prompt body, no-completion instruction, and regenerate-after-rejection instruction are configurable. The rejection prompt supports `{rejected}`. `<MV_SENCEAI_NO_COMPLETION>` in the no-completion instruction is a protocol sentinel; changing or deleting it prevents reliable suppression of empty suggestions.
+The prompt body, no-completion instruction, and regenerate-after-rejection instruction are configurable. The rejection prompt supports `{rejected}`. `<MV_AIDE_NO_COMPLETION>` in the no-completion instruction is a protocol sentinel; changing or deleting it prevents reliable suppression of empty suggestions.
 
 Accept applies one editor transaction. Cancel only clears the suggestion. Reject can send the previous suggestion back to request another version. New edits, cursor movement, file switches, or disabling the feature invalidate stale requests so an old response cannot overwrite a new cursor position.
 
@@ -219,7 +288,7 @@ Accept applies one editor transaction. Cancel only clears the suggestion. Reject
 A visible AI suggestion consumes its accept/cancel keys first. See [Cross-feature behavior](#cross-feature) for the complete Vim Insert priority. Selection Assistant and Inline Completion share provider definitions but have independent switches, prompts, and runtime lifecycles.
 
 <a id="terminal"></a>
-## 4. Terminal
+## 5. Terminal
 
 ### Opening and Layout
 
@@ -253,7 +322,7 @@ Multiple terminals can coexist in main, side, and bottom areas. Closing a termin
 `getTerminalOutput` returns only the requested recent lines and does not continuously transmit terminal content. Network activity by commands inside the shell remains the user's responsibility.
 
 <a id="source-assist"></a>
-## 5. Source Assist
+## 6. Source Assist
 
 ### Profiles and Extension Registration
 
@@ -306,7 +375,7 @@ External commands run with the current user's permissions. Empty commands do not
 Prism CSS, highlight.js CSS, VS Code/Shiki/TextMate JSON, and mv-AIDE JSON can be imported with optional format detection. Non-Prism formats are converted to approximate token colors and are not guaranteed to be pixel-identical. Highlight themes affect tokens only, not Code Suite expansion or view registration.
 
 <a id="vim"></a>
-## 6. Vim Enhancement
+## 7. Vim Enhancement
 
 ### Isolation and Enablement
 
@@ -359,7 +428,7 @@ Legacy user-directory or plugin-directory files are read only through explicit m
 `:!` and external programs reached through autocmd require separate authorization, off by default. `:w/:wq/:x` call an explicit save on the current Obsidian view; a failed save never proceeds to quit.
 
 <a id="default-opener"></a>
-## 7. Default File Opener
+## 8. Default File Opener
 
 ### Ownership and Status
 
@@ -408,7 +477,7 @@ Required system-level wrapper registration lives under `~/.mv-aide/`. This is th
 “Show file-type icons inside Obsidian” is on by default and affects only tabs and similar UI. The wrapper application provides system association icons using a white document, extension label, and official Obsidian logo badge.
 
 <a id="filesystem-browser"></a>
-## 8. Filesystem & Browser
+## 9. Filesystem & Browser
 
 All three entry points are on by default and can be disabled independently.
 
@@ -475,13 +544,18 @@ Source Assist profiles are the single source for additional extensions. Code Sui
 
 Normal Markdown/PDF/Web Viewer selections, Vim's logical Visual selection, IDE latest-selection context, and Selection Assistant share one effective-selection interface. Visual Block text is joined by line for AI consumption. Disabling Vim immediately returns ownership to the native Obsidian selection.
 
+### mv-agent and IDE Bridge
+
+mv-agent shares IDE Bridge's local bridge service, the same public tool switches, and the same `openDiff` review channel; mv-agent's **Out-of-vault tool policy** is a scope control layered on top of the public switches that applies to dsh agents only. Turning off **Enable DSH IDE support** stops only the bridge and the lock file; mv-agent's environment-install state and settings are preserved. Disabling the whole mv-agent section does not affect Claude Code / Codex / universal MCP.
+
 ### Failure Isolation
 
 - AI request failures do not disable IDE Bridge, Terminal, or source editing.
 - Code Suite/TeX rendering failures preserve editable source.
 - Vim configuration errors are isolated per directive; an all-off Vim configuration does not load the runtime.
 - Default-opener registration failures do not affect internal Obsidian file routing.
-- Missing terminal dependencies do not prevent the other seven sections from loading.
+- Missing terminal dependencies do not prevent the other eight sections from loading.
+- When the mv-agent environment is missing or DSH is not running, the other eight sections work normally; the view shows “mv-agent is not running” instead of failing.
 
 <a id="commands"></a>
 ## Commands and Entry Points
@@ -490,6 +564,7 @@ Command names are localized with the interface language. Major groups include:
 
 - Send the current selection to Claude/an agent.
 - Open System Terminal.
+- Open, close, and restart mv-agent.
 - Run `mv-run` for the current file.
 - Create a registered non-Markdown source file.
 - Open an external file, open by path, and prune broken external links.
@@ -506,6 +581,7 @@ Only Inline Completion's accept/cancel behavior has default editing keys; mv-AID
 | Feature | macOS | Windows | Linux | Notes |
 | --- | --- | --- | --- | --- |
 | IDE Bridge / MCP | Yes | Yes | Yes | Client executable paths may need manual configuration |
+| mv-agent (DSH) | Yes | Yes | Yes | Global install authorization: macOS administrator / Windows UAC / Linux `pkexec` |
 | Selection / Inline AI | Yes | Yes | Yes | Depends on API compatibility |
 | Terminal | PTY | ConPTY/pywinpty | PTY | Windows dependency checks are available in settings |
 | Source Assist / Code Suite | Yes | Yes | Yes | Desktop CodeMirror only |
@@ -527,7 +603,8 @@ See [WINDOWS-VALIDATION.md](../WINDOWS-VALIDATION.md) for release validation of 
 | `<vault>/mv-aide/vim/.vimrc` | Global Vim configuration for this vault |
 | `<vault>/mv-aide/external-files/mirror` | External-file symlinks or explicitly authorized managed copies |
 | `<vault>/mv-aide/external-files/hosts` | External-file host/mapping state |
-| `<vault>/mv-aide-llm-history/latest.md` | Latest Selection Assistant content, overwritten and hidden from common indexes |
+| `<vault>/mv-aide/llm-history/latest.md` | Latest Selection Assistant content, overwritten and hidden from common indexes |
+| `<vault>/mv-aide/dsh/` | Vault-installed Node.js, DSH, and pnpm runtimes plus the bridge plugin for mv-agent |
 | `~/.mv-aide/` | Default-opener wrapper, owner, and system-association state only |
 
 Except for the default opener, runtime configuration must not be stored in the user directory. Legacy Vim paths are read only when the user explicitly requests migration and are not runtime sources.
@@ -535,6 +612,7 @@ Except for the default opener, runtime configuration must not be stored in the u
 ### Local Ports and External Network
 
 - IDE, universal MCP, and default-opener services bind only to `127.0.0.1`.
+- The DSH web service managed by mv-agent binds only to `127.0.0.1`, default port `3080` (configurable in settings).
 - Universal MCP requires a per-vault Bearer token; rotation invalidates the previous token immediately.
 - Selection Assistant and Inline Completion connect only to the configured API Base URL.
 - Claude/Codex networking, terminal-command networking, and Web Viewer browsing are owned by those programs.
@@ -563,7 +641,7 @@ Check the agent permission mode. `acceptEdits` accepts directly. Third-party age
 1. Check provider, model, Base URL, and API key.
 2. If the console reports CORS/`Failed to fetch`, enable Bypass CORS, with the tradeoff that output no longer streams.
 3. Prefer hotkeys for web selections; experimental menu injection may be blocked by a site.
-4. If Inline Completion cannot suppress empty results, restore the default prompt and keep `<MV_SENCEAI_NO_COMPLETION>` intact.
+4. If Inline Completion cannot suppress empty results, restore the default prompt and keep `<MV_AIDE_NO_COMPLETION>` intact.
 
 ### Windows Terminal Does Not Start
 

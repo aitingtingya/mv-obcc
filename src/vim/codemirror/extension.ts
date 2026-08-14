@@ -50,6 +50,7 @@ export interface VimEditorExtensionContext {
   insertMappingsAllowed: (extension: string) => boolean;
   externalCommandsAllowed: () => boolean;
   shouldYieldKey?: (view: EditorView, event: KeyboardEvent) => boolean;
+  isHostWorkspaceDragEvent?: (ownerDocument: Document, event: DragEvent) => boolean;
   onEnterVisual?: (view: EditorView) => void;
   onStatusChange?: (view: EditorView, status: VimStatus | null) => void;
   onViewFocused?: (view: EditorView) => void;
@@ -81,6 +82,9 @@ export function createVimEditorExtension(
   context: VimEditorExtensionContext,
 ): VimEditorControllerSet {
   const controllers = new Map<EditorView, VimEditorController>();
+  const hostWorkspaceDrags = new HostWorkspaceDragRegistry(
+    context.isHostWorkspaceDragEvent,
+  );
   const optionsCompartment = new Compartment();
   const viewStatusEffect = StateEffect.define<string | null>();
   const viewStatusField = StateField.define<string | null>({
@@ -248,6 +252,7 @@ export function createVimEditorExtension(
           this.controller = new VimEditorController(
             view,
             context,
+            hostWorkspaceDrags,
             optionsCompartment,
             viewStatusField,
             viewStatusEffect,
@@ -284,6 +289,7 @@ export function createVimEditorExtension(
       for (const controller of [...controllers.values()]) controller.prepareForRemoval();
       for (const controller of [...controllers.values()]) controller.disposeFromView();
       controllers.clear();
+      hostWorkspaceDrags.destroy();
     },
     get size() {
       return [...controllers.values()].filter((controller) => controller.active).length;
@@ -316,6 +322,7 @@ class VimEditorController {
   constructor(
     readonly view: EditorView,
     private readonly context: VimEditorExtensionContext,
+    private readonly hostWorkspaceDrags: HostWorkspaceDragRegistry,
     private readonly optionsCompartment: Compartment,
     private readonly viewStatusField: StateField<string | null>,
     private readonly viewStatusEffect: StateEffectType<string | null>,
@@ -640,7 +647,11 @@ class VimEditorController {
     );
     initializing = false;
     this.engineValue = engine;
-    this.inputBoundary = new VimDomInputBoundary(this.view, this);
+    this.inputBoundary = new VimDomInputBoundary(
+      this.view,
+      this,
+      this.hostWorkspaceDrags.acquire(this.view.dom.ownerDocument),
+    );
     this.syncPermissions();
     const generation = this.lifecycleGeneration;
     queueMicrotask(() => {
@@ -836,13 +847,14 @@ class VimDomInputBoundary {
   constructor(
     private readonly view: EditorView,
     private readonly controller: VimEditorController,
+    private readonly hostWorkspaceDrag: HostWorkspaceDragSession | null,
   ) {
     this.router = new VimInputRouter(controller);
     const content = view.contentDOM;
     content.addEventListener("keydown", this.onKeyDownCapture, true);
     content.addEventListener("beforeinput", this.onBeforeInput, true);
-    content.addEventListener("paste", this.onPasteOrDrop, true);
-    content.addEventListener("drop", this.onPasteOrDrop, true);
+    content.addEventListener("paste", this.onPaste, true);
+    content.addEventListener("drop", this.onDrop, true);
     content.addEventListener("copy", this.onCopy, true);
     content.addEventListener("cut", this.onCut, true);
     content.addEventListener("mousedown", this.onMouseDown, true);
@@ -859,8 +871,8 @@ class VimDomInputBoundary {
     const content = this.view.contentDOM;
     content.removeEventListener("keydown", this.onKeyDownCapture, true);
     content.removeEventListener("beforeinput", this.onBeforeInput, true);
-    content.removeEventListener("paste", this.onPasteOrDrop, true);
-    content.removeEventListener("drop", this.onPasteOrDrop, true);
+    content.removeEventListener("paste", this.onPaste, true);
+    content.removeEventListener("drop", this.onDrop, true);
     content.removeEventListener("copy", this.onCopy, true);
     content.removeEventListener("cut", this.onCut, true);
     content.removeEventListener("mousedown", this.onMouseDown, true);
@@ -871,6 +883,7 @@ class VimDomInputBoundary {
     content.removeEventListener("focusout", this.onFocusOut, true);
     this.removeCommandLineInput(false);
     this.stopPointerTracking();
+    this.hostWorkspaceDrag?.release();
   }
 
   syncCommandLineInput(enabled: boolean): void {
@@ -918,8 +931,21 @@ class VimDomInputBoundary {
     consumeDomEvent(event);
   };
 
-  private readonly onPasteOrDrop = (event: ClipboardEvent | DragEvent): void => {
+  private readonly onPaste = (event: ClipboardEvent): void => {
     if (!this.controller.active) return;
+    if (!this.controller.acceptsNativeInput()) {
+      consumeDomEvent(event);
+      return;
+    }
+    this.controller.bypassNextInput();
+  };
+
+  private readonly onDrop = (event: DragEvent): void => {
+    if (!this.controller.active) return;
+    // Workspace tabs are structural host drags, not text input. Obsidian must
+    // receive their unmodified drop event so its top/bottom docking targets
+    // remain available in every Vim mode.
+    if (this.hostWorkspaceDrag?.matches(event)) return;
     if (!this.controller.acceptsNativeInput()) {
       consumeDomEvent(event);
       return;
@@ -1061,6 +1087,138 @@ class VimDomInputBoundary {
     if (!this.pointerTracking) return;
     this.pointerTracking = false;
     this.view.dom.ownerDocument.removeEventListener("mouseup", this.onPointerUp, true);
+  }
+}
+
+type HostWorkspaceDragClassifier = (
+  ownerDocument: Document,
+  event: DragEvent,
+) => boolean;
+
+class HostWorkspaceDragRegistry {
+  private readonly sessions = new Map<Document, HostWorkspaceDragSession>();
+
+  constructor(private readonly classify: HostWorkspaceDragClassifier | undefined) {}
+
+  acquire(ownerDocument: Document): HostWorkspaceDragSession | null {
+    if (!this.classify) return null;
+    let session = this.sessions.get(ownerDocument);
+    if (!session) {
+      session = new HostWorkspaceDragSession(
+        ownerDocument,
+        this.classify,
+        () => this.sessions.delete(ownerDocument),
+      );
+      this.sessions.set(ownerDocument, session);
+    }
+    session.retain();
+    return session;
+  }
+
+  destroy(): void {
+    for (const session of this.sessions.values()) session.destroy();
+    this.sessions.clear();
+  }
+}
+
+class HostWorkspaceDragSession {
+  private references = 0;
+  private workspaceDrag = false;
+  private destroyed = false;
+  private closeTimer: number | null = null;
+
+  constructor(
+    private readonly ownerDocument: Document,
+    private readonly classify: HostWorkspaceDragClassifier,
+    private readonly onEmpty: () => void,
+  ) {}
+
+  get active(): boolean {
+    return !this.destroyed && this.workspaceDrag;
+  }
+
+  matches(event: DragEvent): boolean {
+    if (this.active) return true;
+    if (this.destroyed || !this.classify(this.ownerDocument, event)) return false;
+    this.clearCloseTimer();
+    this.workspaceDrag = true;
+    return true;
+  }
+
+  retain(): void {
+    if (this.destroyed) return;
+    this.references += 1;
+    if (this.references !== 1) return;
+    this.ownerDocument.addEventListener("dragstart", this.onDragStart, true);
+    this.ownerDocument.addEventListener("dragover", this.onDragOver, true);
+    this.ownerDocument.addEventListener("dragend", this.onDragEnd, true);
+    this.ownerDocument.addEventListener("drop", this.onDropFinished, true);
+  }
+
+  release(): void {
+    if (this.destroyed || this.references === 0) return;
+    this.references -= 1;
+    if (this.references !== 0) return;
+    this.removeListeners();
+    this.onEmpty();
+  }
+
+  destroy(): void {
+    if (this.destroyed) return;
+    this.destroyed = true;
+    this.references = 0;
+    this.workspaceDrag = false;
+    this.clearCloseTimer();
+    this.removeListeners();
+  }
+
+  private readonly onDragStart = (event: DragEvent): void => {
+    this.clearCloseTimer();
+    this.workspaceDrag = this.classify(this.ownerDocument, event);
+  };
+
+  private readonly onDragOver = (event: DragEvent): void => {
+    if (!this.workspaceDrag && this.classify(this.ownerDocument, event)) {
+      this.clearCloseTimer();
+      this.workspaceDrag = true;
+    }
+  };
+
+  private readonly onDragEnd = (): void => {
+    this.scheduleClose();
+  };
+
+  private readonly onDropFinished = (): void => {
+    queueMicrotask(() => {
+      if (!this.destroyed) this.workspaceDrag = false;
+    });
+  };
+
+  private scheduleClose(): void {
+    this.clearCloseTimer();
+    const hostWindow = this.ownerDocument.defaultView;
+    if (!hostWindow) {
+      this.workspaceDrag = false;
+      return;
+    }
+    this.closeTimer = hostWindow.setTimeout(() => {
+      this.closeTimer = null;
+      this.workspaceDrag = false;
+    }, 0);
+  }
+
+  private clearCloseTimer(): void {
+    if (this.closeTimer === null) return;
+    this.ownerDocument.defaultView?.clearTimeout(this.closeTimer);
+    this.closeTimer = null;
+  }
+
+  private removeListeners(): void {
+    this.clearCloseTimer();
+    this.ownerDocument.removeEventListener("dragstart", this.onDragStart, true);
+    this.ownerDocument.removeEventListener("dragover", this.onDragOver, true);
+    this.ownerDocument.removeEventListener("dragend", this.onDragEnd, true);
+    this.ownerDocument.removeEventListener("drop", this.onDropFinished, true);
   }
 }
 

@@ -3,7 +3,7 @@ import type { Text } from "@codemirror/state";
 import { t } from "../i18n";
 import { EditorView, type ViewUpdate } from "@codemirror/view";
 
-import type MvSenceAiIdePlugin from "../../main";
+import type MvAideIdePlugin from "../../main";
 import {
   callLlmStreamMessages,
   resolveInlineProvider,
@@ -60,7 +60,7 @@ function editorViewFromMarkdown(view: MarkdownView): EditorView | null {
 }
 
 export class InlineCompletionFeature {
-  private readonly plugin: MvSenceAiIdePlugin;
+  private readonly plugin: MvAideIdePlugin;
   private readonly app: App;
   private readonly controller: InlineCompletionController;
 
@@ -77,7 +77,7 @@ export class InlineCompletionFeature {
   private requestSeq = 0;
   private disposed = false;
 
-  constructor(plugin: MvSenceAiIdePlugin) {
+  constructor(plugin: MvAideIdePlugin) {
     this.plugin = plugin;
     this.app = plugin.app;
     this.armed = plugin.settings.inlineCompletion.armed === true;
@@ -173,7 +173,7 @@ export class InlineCompletionFeature {
       t("行内补全"),
       () => this.toggleArmed(),
     );
-    this.ribbonIconEl.addClass("mv-senceai-inline-completion-ribbon");
+    this.ribbonIconEl.addClass("mv-aide-inline-completion-ribbon");
     this.ribbonIconEl.setAttribute("aria-label", tooltip);
     this.ribbonIconEl.setAttribute("data-tooltip", tooltip);
     this.ribbonIconEl.classList.toggle("is-active", this.armed);

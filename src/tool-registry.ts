@@ -12,6 +12,11 @@ import { resolveVaultPath } from "./path-utils";
 import { getVaultRoot } from "./selection";
 import { ObsidianDiffView } from "./diff-view";
 import { TerminalView } from "./terminal/terminal-view";
+import {
+  isAbsolutePath,
+  readOutsideFileForDiff,
+  validateOutsideOriginal,
+} from "./dsh/dsh-outside-diff";
 import type { LintDiagnosticsFile } from "./lint/lint-feature";
 import {
   getOpenWorkspaceTabs,
@@ -51,6 +56,7 @@ export class ToolRegistry {
     private readonly getLatestWebLeaf: () => WorkspaceLeaf | null,
     private readonly getWebPageMaxCharacters: () => number | null,
     private readonly getDiagnosticsSnapshot: () => LintDiagnosticsFile[] = () => [],
+    private readonly getReviewOutsideVault: () => boolean = () => false,
   ) {}
 
   async call(
@@ -195,18 +201,42 @@ export class ToolRegistry {
     const resolvedNewPath = newFilePath
       ? resolveVaultPath(vaultRoot, newFilePath)
       : resolvedOldPath;
-    if ((!resolvedOldPath && oldFilePath) || !resolvedNewPath) {
+    // Out-of-vault review (the mv-agent "使用 Obsidian 审阅仓库外 diff"
+    // setting): absolute paths outside the vault are reviewed read-only from
+    // disk. Accepting still only REPORTS the approved contents — the caller
+    // (the dsh plugin) is the one that persists them.
+    const canReviewOutside = this.getReviewOutsideVault();
+    const outsideOldPath =
+      !resolvedOldPath && oldFilePath && canReviewOutside && isAbsolutePath(oldFilePath)
+        ? oldFilePath
+        : null;
+    const outsideNewPath =
+      !resolvedNewPath && newFilePath && canReviewOutside && isAbsolutePath(newFilePath)
+        ? newFilePath
+        : null;
+    if (
+      (!resolvedOldPath && !outsideOldPath && oldFilePath) ||
+      (!resolvedNewPath && !outsideNewPath)
+    ) {
       return result(
         {
-          error: "Diff paths must resolve inside the current Obsidian vault.",
+          error:
+            "Diff paths must resolve inside the current Obsidian vault. To review files outside the vault, enable “使用 Obsidian 审阅仓库外 diff” in the mv-agent settings and pass absolute paths.",
           oldFilePath,
           newFilePath,
         },
         true,
       );
     }
-    const oldFile = oldFilePath ? findFile(this.app, oldFilePath) : null;
-    const oldContents = oldFile ? await this.app.vault.cachedRead(oldFile) : "";
+    const oldFile = oldFilePath && resolvedOldPath ? findFile(this.app, oldFilePath) : null;
+    let oldContents = "";
+    if (oldFile) {
+      oldContents = await this.app.vault.cachedRead(oldFile);
+    } else if (outsideOldPath) {
+      const read = await readOutsideFileForDiff(outsideOldPath);
+      if (!read.ok) return result({ error: read.error }, true);
+      oldContents = read.contents;
+    }
     const sessionId = randomUUID();
     const previousLeaf = this.app.workspace.getMostRecentLeaf();
     const leaf = this.app.workspace.getLeaf("tab");
@@ -236,6 +266,9 @@ export class ToolRegistry {
       newContents,
       tabName,
       validateOriginal: async () => {
+        if (outsideOldPath) {
+          return validateOutsideOriginal(outsideOldPath, oldContents);
+        }
         if (!oldFile) return true;
         const currentFile = findFile(this.app, oldFile.path);
         return !!currentFile && (await this.app.vault.cachedRead(currentFile)) === oldContents;

@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { Modal, Notice, Setting, type TFile } from "obsidian";
-import type MvSenceAiIdePlugin from "../../main";
+import type MvAideIdePlugin from "../../main";
 import { t } from "../i18n";
 import { stablePortSeed } from "../path-utils";
 import { getVaultRoot } from "../selection";
@@ -60,7 +60,7 @@ export class RegexReplaceModal extends Modal {
   private busy = false;
 
   constructor(
-    private readonly plugin: MvSenceAiIdePlugin,
+    private readonly plugin: MvAideIdePlugin,
     private readonly anchorFile: TFile,
   ) {
     super(plugin.app);

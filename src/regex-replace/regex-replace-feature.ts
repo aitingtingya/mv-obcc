@@ -2,7 +2,7 @@ import { openSearchPanel, search } from "@codemirror/search";
 import type { Extension } from "@codemirror/state";
 import type { EditorView } from "@codemirror/view";
 import { MarkdownView, Notice } from "obsidian";
-import type MvSenceAiIdePlugin from "../../main";
+import type MvAideIdePlugin from "../../main";
 import { t } from "../i18n";
 import { regexScopeFor } from "./regex-replace-types";
 import { scopeRank } from "./regex-scope";
@@ -18,7 +18,7 @@ import { RegexReplaceModal } from "./regex-replace-modal";
 export class RegexReplaceFeature {
   readonly extensions: Extension[];
 
-  constructor(private readonly plugin: MvSenceAiIdePlugin) {
+  constructor(private readonly plugin: MvAideIdePlugin) {
     this.extensions = [search({ top: true })];
   }
 

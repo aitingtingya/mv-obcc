@@ -12,7 +12,7 @@ import { texMathFormatsDefaultValue } from "./tex-math";
 
 export const SOURCE_ASSIST_EXTENSION_PATTERN = /^[a-z0-9][a-z0-9+_-]*$/;
 export const CUSTOM_MARKDOWN_PLAIN_VISUALS_CLASS =
-  "mv-senceai-source-plain-markdown";
+  "mv-aide-source-plain-markdown";
 
 export function normalizeSourceAssistExtension(value: string): string | null {
   const extension = value.trim().replace(/^\.+/, "").toLowerCase();

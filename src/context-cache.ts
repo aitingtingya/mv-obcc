@@ -7,7 +7,9 @@ export function rememberLatestSelection(
   key: string,
   state: SelectionState,
 ): void {
-  if (state.selection.isEmpty) return;
+  // Empty selections must be remembered too: deselecting (clicking blank)
+  // supersedes the previous snapshot, otherwise getLatestSelection keeps
+  // returning the historical selected text.
   selections.set(key, state);
   selections.set(GLOBAL_CONTEXT_KEY, state);
 }
