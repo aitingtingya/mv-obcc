@@ -25,7 +25,7 @@ import {
 import { mountHoverSidebar } from './hover-sidebar.js';
 import { createUserMessage } from '@deepseek-ai/dsh-llm/message';
 
-export const name = 'mv-aide-dsh';
+export const name = 'mv-agent';
 export const inject = ['commands', 'tools'];
 
 const COMMAND_USAGE =

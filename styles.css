@@ -1681,3 +1681,96 @@ body.mv-fti-tabs .workspace-tab-header-inner-icon svg.svg-icon[class*="mv-fti-"]
 .mv-aide-dsh-status-detail[hidden] {
   display: none;
 }
+
+.mv-aide-dsh-status-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+  padding-top: 6px;
+  border-top: 1px dashed var(--background-modifier-border);
+}
+
+.mv-aide-dsh-manage-plugins-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  background: var(--interactive-accent);
+  border: 1px solid var(--interactive-accent);
+  border-radius: var(--radius-s);
+  color: var(--text-on-accent);
+  cursor: pointer;
+  font-size: var(--font-ui-smaller);
+  font-weight: var(--font-medium);
+  padding: 4px 10px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.18);
+  transition: all 0.15s ease;
+}
+
+.mv-aide-dsh-manage-plugins-btn .mv-aide-dsh-btn-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.mv-aide-dsh-manage-plugins-btn:hover {
+  background: var(--interactive-accent-hover);
+  border-color: var(--interactive-accent-hover);
+  transform: translateY(-1px);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.25);
+}
+
+.mv-aide-dsh-manage-plugins-btn:active {
+  transform: translateY(0);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.15);
+}
+
+/* DSH 插件管理顶部搜索栏与数量提示 */
+.mv-aide-dsh-pm-search-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 6px 0 12px;
+  padding: 0 2px;
+}
+
+.mv-aide-dsh-search-container {
+  flex: 1;
+  max-width: 420px;
+}
+
+.mv-aide-dsh-search-input {
+  width: 100%;
+}
+
+.mv-aide-dsh-pm-count-badge {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  white-space: nowrap;
+}
+
+/* 精准跳转高亮定位脉冲动效 */
+@keyframes mvAideHighlightPulse {
+  0% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--interactive-accent) 60%, transparent);
+    border-color: var(--interactive-accent);
+  }
+  50% {
+    box-shadow: 0 0 0 4px color-mix(in srgb, var(--interactive-accent) 25%, transparent);
+    border-color: var(--interactive-accent);
+  }
+  100% {
+    box-shadow: 0 0 0 0 transparent;
+  }
+}
+
+.mv-aide-highlight-pulse {
+  animation: mvAideHighlightPulse 1.6s ease-out;
+}
+
+.mv-aide-dsh-textarea {
+  width: 100%;
+}

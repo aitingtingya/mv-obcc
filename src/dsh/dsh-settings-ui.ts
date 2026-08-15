@@ -16,6 +16,9 @@ import {
   type DshInstallLayer,
   type DshLayerStatus,
 } from "./dsh-environment";
+import { renderDshPluginManager } from "./dsh-plugin-manager-ui";
+import { renderDshSkillManager } from "./dsh-skill-manager-ui";
+import { renderDshPresetManager } from "./dsh-preset-manager-ui";
 
 function heading(containerEl: HTMLElement, text: string): void {
   new Setting(containerEl).setName(text).setHeading();
@@ -239,7 +242,7 @@ export function renderDshSection(
     text: t("mv-agent 由 DeepSeek Harness（dsh）驱动：本分区负责一键安装 dsh、把 mv-AIDE 桥接插件注入 dsh、并配置 IDE 工具与被动感知对库外项目的开放策略。"),
   });
 
-  // ── 安装与启动（默认展开）──────────────────────────────────────────
+  // ── 安装与启动（规范七：默认折叠，仅会话内 toggle 记忆展开）────────────
   const installEl = subsection(
     containerEl,
     "install",
@@ -435,4 +438,13 @@ export function renderDshSection(
   for (const channel of DSH_ACTIVE_CHANNELS) {
     outsideChannelRow(plugin, activeEl, channel);
   }
+
+  // ── DSH 插件管理（独立子折叠区，默认折叠）───────────────────────────
+  renderDshPluginManager(containerEl, plugin, openSubsectionIds, toggleSubsection);
+
+  // ── DSH 技能管理（独立子折叠区，默认折叠）───────────────────────────
+  renderDshSkillManager(containerEl, plugin, openSubsectionIds, toggleSubsection);
+
+  // ── DSH 子智能体管理（独立子折叠区，默认折叠）─────────────────────────
+  renderDshPresetManager(containerEl, plugin, openSubsectionIds, toggleSubsection);
 }

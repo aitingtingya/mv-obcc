@@ -181,7 +181,7 @@ mv-agent 把 DeepSeek Harness（DSH）内嵌进 Obsidian：直接使用 DSH Web 
 ### 目的与启用方式
 
 - **总开关**位于 IDE 桥接分区的「已适配 agent」区域（「启用 dsh IDE 功能」，默认关）。关闭后桥接不启动、不写 lock 文件，mv-agent 分区的其余设置保留但不生效。
-- **视图**：命令面板提供「打开 mv-agent」「关闭 mv-agent」「重启 mv-agent」，快捷键可在 Obsidian 快捷键设置中绑定。视图是一个自定义 Obsidian 视图：上方 iframe 直接嵌入 DSH Web 界面（无浏览器工具栏），底部是 Obsidian 侧状态栏，显示当前已连接的 IDE 桥接客户端数和最新选区快照。
+- **视图**：命令面板提供「打开 mv-agent」「停止 mv-agent」「重启 mv-agent」，快捷键可在 Obsidian 快捷键设置中绑定。「停止 mv-agent」会关闭所有已打开的 mv-agent 界面并停止对应的 DSH 后台。视图是一个自定义 Obsidian 视图：上方 iframe 直接嵌入 DSH Web 界面（无浏览器工具栏），底部是 Obsidian 侧状态栏，显示当前已连接的 IDE 桥接客户端数和最新选区快照。
 - **打开分区**：可选左/右/下，默认右侧。「重启 mv-agent」会重启插件托管的 `dsh web` 进程并刷新所有已打开视图。
 - **地址与端口**：DSH Web 服务只绑定 `127.0.0.1`，默认端口 `3080`，可在设置中修改。视图自动探测已运行的 dsh 实例；未运行时显示「mv-agent 未运行」。
 

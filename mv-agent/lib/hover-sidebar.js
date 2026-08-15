@@ -24,20 +24,20 @@ div[class*="_sidebarCol"]:has(div[class*="_collapsed"]) {
   overflow: visible !important;
 }
 
-/* 3. Collapsed 56px rail: fixed overlay off-screen, zero footprint */
+/* 3. Collapsed 56px rail: fixed overlay off-screen (uses left to avoid creating containing block for fixed modals) */
 div[class*="_root"][class*="_collapsed"] {
   position: fixed !important;
-  left: 0 !important;
+  left: -56px !important;
   top: 0 !important;
   bottom: 0 !important;
   width: 56px !important;
   z-index: 1000 !important;
-  transform: translateX(-100%) !important;
-  transition: transform 0.22s cubic-bezier(0.4, 0, 0.2, 1), box-shadow 0.22s ease !important;
+  transform: none !important;
+  transition: left 0.22s cubic-bezier(0.4, 0, 0.2, 1), box-shadow 0.22s ease !important;
   box-shadow: none !important;
 }
 
-/* 4. 14px invisible hover sensor trigger zone on the left edge */
+/* 4. 14px invisible hover sensor trigger zone on the right edge of the rail */
 div[class*="_root"][class*="_collapsed"]::after {
   content: "" !important;
   position: absolute !important;
@@ -52,8 +52,29 @@ div[class*="_root"][class*="_collapsed"]::after {
 
 /* 5. Slide in smoothly as an overlay when hovering the left edge or rail */
 div[class*="_root"][class*="_collapsed"]:hover {
-  transform: translateX(0) !important;
+  left: 0 !important;
+  transform: none !important;
   box-shadow: 4px 0 24px rgba(0, 0, 0, 0.28) !important;
+}
+
+/* 6. Breakout safety rule: When Settings modal or any Dialog overlay is open, lock rail and span full viewport */
+div[class*="_root"][class*="_collapsed"]:has(div[class*="_overlay"]),
+div[class*="_root"][class*="_collapsed"]:has(div[class*="_panel"]) {
+  left: 0 !important;
+  transform: none !important;
+  overflow: visible !important;
+}
+
+div[class*="_root"][class*="_collapsed"] div[class*="_overlay"] {
+  position: fixed !important;
+  top: 0 !important;
+  left: 0 !important;
+  right: 0 !important;
+  bottom: 0 !important;
+  width: 100vw !important;
+  height: 100vh !important;
+  max-width: 100vw !important;
+  z-index: 9999 !important;
 }
 `;
 

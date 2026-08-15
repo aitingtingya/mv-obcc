@@ -1,4 +1,11 @@
 import type { ChildProcess } from "node:child_process";
+import {
+  createDefaultDshProcessDiscoveryAdapter,
+  discoverDshProcesses,
+  isObsidianChildProcess,
+  type DshProcessDiscoveryAdapter,
+  type DshProcessInfo,
+} from "./dsh-process-discovery";
 import { runProcess, spawnProcess } from "../process-runner";
 
 /** dsh web prints a line like `dsh web: http://127.0.0.1:3080`. */
@@ -85,6 +92,43 @@ export interface DshWebProbe {
 
 export type DshWebProbeFn = (url: string, timeoutMs: number) => Promise<DshWebProbe>;
 
+export class DshStartCancelledError extends Error {
+  constructor() {
+    super("dsh start cancelled");
+    this.name = "DshStartCancelledError";
+  }
+}
+
+export function isDshStartCancelled(error: unknown): boolean {
+  return error instanceof DshStartCancelledError;
+}
+
+/** Sentinel: this candidate port was occupied when dsh tried to bind it. */
+export class DshPortOccupiedError extends Error {
+  constructor(readonly port: number, output: string) {
+    super(`端口 ${port} 已被其他程序占用。${output ? ` ${output.trim()}` : ""}`.trim());
+    this.name = "DshPortOccupiedError";
+  }
+}
+
+export function isDshPortOccupiedError(error: unknown): error is DshPortOccupiedError {
+  return error instanceof DshPortOccupiedError;
+}
+
+export interface DshStopSummary {
+  stoppedPids: number[];
+  failedPids: number[];
+  stoppedPorts: number[];
+  notRunning: boolean;
+}
+
+export type DshStopResult =
+  | "managed-stopped"
+  | "not-running"
+  | "adopted-stopped"
+  | "adopted-stop-failed"
+  | "adopted-stop-unsupported";
+
 /** GET the root document and classify it, with a short abort timeout. */
 export async function probeDshWeb(url: string, timeoutMs = 1500): Promise<DshWebProbe> {
   const normalized = normalizeDshWebUrl(url);
@@ -134,6 +178,8 @@ export class DshProcessManager {
   private announcedUrl: string | null = null;
   private launchedPort: number | null = null;
   private starting: Promise<string> | null = null;
+  private startGeneration = 0;
+  private cancelPendingLaunch: (() => void) | null = null;
   private disposed = false;
 
   constructor(
@@ -141,6 +187,9 @@ export class DshProcessManager {
     private readonly port: () => number,
     private readonly probe: DshWebProbeFn = probeDshWeb,
     private readonly commandProvider: DshCommandProvider = async () => null,
+    private readonly spawn: typeof spawnProcess = spawnProcess,
+    private readonly discovery: DshProcessDiscoveryAdapter =
+      createDefaultDshProcessDiscoveryAdapter(),
   ) {}
 
   isRunning(): boolean {
@@ -185,9 +234,11 @@ export class DshProcessManager {
 
   /** Confirm one exact endpoint and adopt it as the shared current state. */
   async confirmDshUrl(url: string, timeoutMs = 1500): Promise<string | null> {
+    const generation = this.startGeneration;
     const normalized = normalizeDshWebUrl(url);
     if (!normalized) return null;
     const probe = await this.probe(normalized, timeoutMs);
+    if (generation !== this.startGeneration) return null;
     if (probe.reachable && probe.isDsh) {
       return this.rememberEndpoint(normalized);
     }
@@ -207,14 +258,11 @@ export class DshProcessManager {
    * dsh SPA, or null when none does.
    */
   async findDshUrl(): Promise<string | null> {
-    const preferred = this.port();
-    const candidates = [preferred, ...nextPortCandidates(preferred, 20)];
-    for (const candidate of candidates) {
-      const url = dshWebUrl(candidate);
-      const probe = await this.probe(url, 1500);
-      if (probe.reachable && probe.isDsh) {
-        return this.rememberEndpoint(url, candidate);
-      }
+    const generation = this.startGeneration;
+    const existing = await this.findBestExistingDsh([]);
+    if (generation !== this.startGeneration) return null;
+    if (existing) {
+      return this.rememberEndpoint(existing.url, existing.port);
     }
     this.clearUnmanagedEndpoint();
     return null;
@@ -222,56 +270,113 @@ export class DshProcessManager {
 
   async ensureStarted(timeoutMs = 120_000): Promise<string> {
     if (this.disposed) throw new Error("dsh process manager is disposed");
+    const generation = this.startGeneration;
     if (this.announcedUrl) {
       if (this.isRunning()) return this.announcedUrl;
       const adopted = await this.confirmDshUrl(this.announcedUrl, 2000);
+      this.assertStartActive(generation);
       if (adopted) return adopted;
     }
     if (this.starting) return this.starting;
-    this.starting = this.startInternal(timeoutMs);
-    try {
-      return await this.starting;
-    } finally {
-      this.starting = null;
+    return this.startManaged(timeoutMs, this.port(), true);
+  }
+
+  /** Open policy: prefer an existing DSH, Obsidian children first. */
+  async ensureStartedForOpen(
+    connectedUrls: readonly string[] = [],
+  ): Promise<string> {
+    if (this.disposed) throw new Error("dsh process manager is disposed");
+    const generation = this.startGeneration;
+    const existing = await this.findBestExistingDsh(connectedUrls);
+    this.assertStartActive(generation);
+    if (existing) {
+      return this.rememberEndpoint(existing.url, existing.port);
+    }
+    if (this.starting) return this.starting;
+    return this.startManaged(120_000, this.port(), true);
+  }
+
+  /** Restart policy: never reuse an existing DSH; always spawn one. */
+  async ensureStartedNew(timeoutMs = 120_000): Promise<string> {
+    if (this.disposed) throw new Error("dsh process manager is disposed");
+    if (this.starting) return this.starting;
+    return this.startManaged(timeoutMs, this.port(), false);
+  }
+
+  private startManaged(
+    timeoutMs: number,
+    preferredPort: number,
+    allowAdopt: boolean,
+  ): Promise<string> {
+    const generation = this.startGeneration;
+    const starting = this.startInternal(
+      timeoutMs,
+      generation,
+      preferredPort,
+      allowAdopt,
+    );
+    this.starting = starting;
+    return starting.finally(() => {
+      if (this.starting === starting) this.starting = null;
+    });
+  }
+
+  private assertStartActive(generation: number): void {
+    if (generation !== this.startGeneration || this.disposed) {
+      throw new DshStartCancelledError();
     }
   }
 
-  private async startInternal(timeoutMs: number): Promise<string> {
-    const preferred = this.port();
-    const probe = await this.probe(dshWebUrl(preferred), 2000);
-    if (probe.reachable && probe.isDsh) {
-      // Adopt the running instance: the injection is hot-load, so the plugin
-      // is (or will shortly be) live in it.
-      return this.rememberEndpoint(dshWebUrl(preferred), preferred);
-    }
-    if (probe.reachable && !probe.isDsh) {
-      const free = await this.findFreePort(nextPortCandidates(preferred, 20));
-      if (free === null) {
-        throw new Error(
-          `端口 ${preferred} 已被其他程序占用，且未找到空闲端口，请在设置中更换端口。`,
-        );
+  /**
+   * Walk every port from the preferred one up to 65535. Existing DSH
+   * instances are adopted only when `allowAdopt` is true; restart passes
+   * false so a fresh process is always spawned.
+   */
+  private async startInternal(
+    timeoutMs: number,
+    generation: number,
+    preferredPort: number,
+    allowAdopt: boolean,
+  ): Promise<string> {
+    this.assertStartActive(generation);
+    const firstPort = Math.max(1, Math.min(preferredPort, 65535));
+    for (let candidate = firstPort; candidate <= 65535; candidate += 1) {
+      this.assertStartActive(generation);
+      const url = dshWebUrl(candidate);
+      const probe = await this.probe(url, 1500);
+      this.assertStartActive(generation);
+      if (probe.reachable) {
+        if (allowAdopt && probe.isDsh) {
+          return this.rememberEndpoint(url, candidate);
+        }
+        continue;
       }
-      return this.launch(free, timeoutMs, true);
+      try {
+        return await this.launch(candidate, timeoutMs, generation);
+      } catch (error) {
+        if (isDshPortOccupiedError(error)) continue;
+        throw error;
+      }
     }
-    return this.launch(preferred, timeoutMs, true);
+    throw new Error(
+      `端口 ${firstPort}–65535 均不可用，请在设置中更换端口。`,
+    );
   }
 
-  private async findFreePort(candidates: number[]): Promise<number | null> {
-    for (const candidate of candidates) {
-      const probe = await this.probe(dshWebUrl(candidate), 1200);
-      if (!probe.reachable) return candidate;
-    }
-    return null;
-  }
-
-  private async launch(port: number, timeoutMs: number, allowRetry: boolean): Promise<string> {
+  private async launch(
+    port: number,
+    timeoutMs: number,
+    generation: number,
+  ): Promise<string> {
+    this.assertStartActive(generation);
     const command = await this.commandProvider();
+    this.assertStartActive(generation);
     if (!command) {
       throw new Error("DSH 尚未安装，请先在 mv-agent 设置中点击“安装”。");
     }
     return new Promise((resolve, reject) => {
       const args = [...command.argsPrefix, "web", "--port", String(port)];
-      const child = spawnProcess(command.executable, args, {
+      const child = this.spawn(command.executable, args, {
         cwd: this.vaultRoot(),
         env: command.env,
         stdio: ["ignore", "pipe", "pipe"],
@@ -284,8 +389,30 @@ export class DshProcessManager {
       const fallbackUrl = dshWebUrl(port);
       const startedAt = Date.now();
       let settled = false;
+      let pollTimer: ReturnType<typeof setTimeout> | null = null;
+
+      const clearPending = (): void => {
+        if (pollTimer) clearTimeout(pollTimer);
+        pollTimer = null;
+        if (this.cancelPendingLaunch === cancel) this.cancelPendingLaunch = null;
+      };
+      const resolveLaunch = (url: string): void => {
+        if (settled) return;
+        settled = true;
+        clearPending();
+        resolve(url);
+      };
+      const rejectLaunch = (error: unknown): void => {
+        if (settled) return;
+        settled = true;
+        clearPending();
+        reject(error);
+      };
+      const cancel = (): void => rejectLaunch(new DshStartCancelledError());
+      this.cancelPendingLaunch = cancel;
 
       const onData = (chunk: Buffer) => {
+        if (generation !== this.startGeneration || this.disposed) return;
         this.output += chunk.toString("utf8");
         if (!this.announcedUrl) {
           const parsed = parseDshWebUrl(this.output);
@@ -299,14 +426,17 @@ export class DshProcessManager {
         if (settled) return;
         const target = this.announcedUrl ?? fallbackUrl;
         const probe = await this.probe(target, 1500);
+        if (settled) return;
+        if (generation !== this.startGeneration || this.disposed) {
+          cancel();
+          return;
+        }
         if (probe.reachable && probe.isDsh) {
-          settled = true;
-          resolve(this.rememberEndpoint(target, port));
+          resolveLaunch(this.rememberEndpoint(target, port));
           return;
         }
         if (Date.now() - startedAt > timeoutMs) {
-          settled = true;
-          reject(
+          rejectLaunch(
             new Error(
               this.output.trim() ||
                 `dsh web 未在 ${timeoutMs / 1000}s 内启动（端口 ${port}）。`,
@@ -314,43 +444,33 @@ export class DshProcessManager {
           );
           return;
         }
-        setTimeout(poll, 400);
+        pollTimer = setTimeout(() => void poll(), 400);
       };
 
       child.once("error", (error) => {
-        if (settled) return;
-        settled = true;
-        if (this.child === child) this.child = null;
-        this.clearUnmanagedEndpoint();
-        reject(error);
+        const owned = this.child === child;
+        if (owned) this.child = null;
+        if (owned) this.clearUnmanagedEndpoint();
+        if (!settled) {
+          rejectLaunch(error);
+        }
       });
       child.once("exit", (code) => {
-        if (this.child === child) this.child = null;
-        this.clearUnmanagedEndpoint();
+        const owned = this.child === child;
+        if (owned) this.child = null;
+        if (owned) this.clearUnmanagedEndpoint();
         if (settled) return;
-        settled = true;
+        if (generation !== this.startGeneration || this.disposed) {
+          cancel();
+          return;
+        }
         if (containsEaddrInUse(this.output)) {
-          if (allowRetry) {
-            // The preferred port raced with another process: switch to a free port once.
-            void this.findFreePort(nextPortCandidates(this.port(), 20)).then((free) => {
-              if (free === null) {
-                reject(
-                  new Error(
-                    `端口 ${port} 已被占用，且未找到空闲端口，请在设置中更换端口。`,
-                  ),
-                );
-                return;
-              }
-              this.launch(free, timeoutMs, false).then(resolve, reject);
-            });
-            return;
-          }
-          reject(new Error(`端口 ${port} 已被其他程序占用，请在设置中更换端口。`));
+          rejectLaunch(new DshPortOccupiedError(port, this.output));
           return;
         }
         const friendly = describeDshBootError(this.output);
         const tail = this.output.trim();
-        reject(
+        rejectLaunch(
           new Error(
             friendly ?? `dsh web 提前退出（code ${code ?? "?"}）：${tail || "无输出"}`,
           ),
@@ -361,7 +481,91 @@ export class DshProcessManager {
     });
   }
 
+  private async findBestExistingDsh(
+    connectedUrls: readonly string[],
+  ): Promise<{ url: string; port: number; isObsidianChild: boolean } | null> {
+    interface Candidate {
+      url: string;
+      port: number;
+      isObsidianChild: boolean;
+      connected: boolean;
+    }
+    const candidates = new Map<string, Candidate>();
+
+    const addUrl = (
+      rawUrl: string,
+      isObsidianChild: boolean,
+      connected: boolean,
+    ): void => {
+      const normalized = normalizeDshWebUrl(rawUrl);
+      if (!normalized) return;
+      const port = Number(new URL(normalized).port);
+      if (!Number.isInteger(port) || port <= 0) return;
+      const existing = candidates.get(normalized);
+      if (existing) {
+        existing.isObsidianChild ||= isObsidianChild;
+        existing.connected ||= connected;
+        return;
+      }
+      candidates.set(normalized, { url: normalized, port, isObsidianChild, connected });
+    };
+
+    if (this.announcedUrl) addUrl(this.announcedUrl, false, false);
+    for (const url of connectedUrls) addUrl(url, false, true);
+    for (const candidate of [
+      this.port(),
+      ...nextPortCandidates(this.port(), 20),
+    ]) {
+      addUrl(dshWebUrl(candidate), false, false);
+    }
+
+    let discovered: Awaited<ReturnType<typeof discoverDshProcesses>> = [];
+    try {
+      discovered = await discoverDshProcesses(this.discovery);
+    } catch {
+      discovered = [];
+    }
+    for (const process of discovered) {
+      if (process.port === null) continue;
+      addUrl(dshWebUrl(process.port), process.isObsidianChild, false);
+    }
+
+    const preferred = this.port();
+    const ranked = (
+      await Promise.all(
+        Array.from(candidates.values()).map(async (candidate) => {
+          const probe = await this.probe(candidate.url, 1500);
+          return probe.reachable && probe.isDsh ? candidate : null;
+        }),
+      )
+    ).filter((candidate): candidate is Candidate => candidate !== null);
+    ranked.sort((left, right) => {
+      if (left.isObsidianChild !== right.isObsidianChild) {
+        return left.isObsidianChild ? -1 : 1;
+      }
+      const leftPreferred = left.port === preferred ? 0 : 1;
+      const rightPreferred = right.port === preferred ? 0 : 1;
+      if (left.isObsidianChild) {
+        if (leftPreferred !== rightPreferred) return leftPreferred - rightPreferred;
+        if (left.connected !== right.connected) return left.connected ? -1 : 1;
+      } else {
+        if (left.connected !== right.connected) return left.connected ? -1 : 1;
+        if (leftPreferred !== rightPreferred) return leftPreferred - rightPreferred;
+      }
+      return left.port - right.port;
+    });
+    return ranked[0] ?? null;
+  }
+
+  private invalidatePendingStart(): void {
+    this.startGeneration += 1;
+    this.starting = null;
+    this.cancelPendingLaunch?.();
+    this.cancelPendingLaunch = null;
+  }
+
   async stop(): Promise<void> {
+    this.invalidatePendingStart();
     const child = this.child;
     this.child = null;
     this.announcedUrl = null;
@@ -382,23 +586,131 @@ export class DshProcessManager {
   }
 
   /**
-   * Close the mv-agent dsh instance: the managed child when mv-AIDE started
-   * it, otherwise the adopted listener on the configured port — but only
-   * after confirming that port actually serves dsh, so a foreign service is
+   * Stop every DSH process in the union of:
+   *   1. all DSH processes whose ancestry belongs to Obsidian, and
+   *   2. all DSH endpoints currently connected to an active mv-agent tab.
+   * The union is deduplicated by PID; unrelated external DSH processes are
    * never touched.
    */
-  async closeInstance(): Promise<string> {
-    if (this.child) {
-      const running = this.isRunning();
-      await this.stop();
-      return running
-        ? "已关闭 mv-agent 启动的 dsh 实例。"
-        : "mv-agent 未在运行。";
+  async stopAllTargetDshInstances(
+    connectedUrls: readonly string[] = [],
+  ): Promise<DshStopSummary> {
+    this.invalidatePendingStart();
+    const targets = new Map<number, { pid: number; port: number | null }>();
+    const stoppedPids: number[] = [];
+    const failedPids: number[] = [];
+    const stoppedPorts: number[] = [];
+
+    let discovered: Awaited<ReturnType<typeof discoverDshProcesses>> = [];
+    try {
+      discovered = await discoverDshProcesses(this.discovery);
+    } catch {
+      discovered = [];
     }
-    const preferred = this.port();
-    const probe = await this.probe(dshWebUrl(preferred), 2000);
+    const byPort = new Map<number, (typeof discovered)[number]>();
+    for (const process of discovered) {
+      if (process.port !== null) byPort.set(process.port, process);
+      if (process.isObsidianChild) {
+        targets.set(process.pid, { pid: process.pid, port: process.port });
+      }
+    }
+
+    for (const rawUrl of connectedUrls) {
+      const normalized = normalizeDshWebUrl(rawUrl);
+      if (!normalized) continue;
+      const port = Number(new URL(normalized).port);
+      if (!Number.isInteger(port) || port <= 0) continue;
+      const probe = await this.probe(normalized, 2000);
+      if (!probe.reachable || !probe.isDsh) continue;
+      const discoveredOnPort = byPort.get(port);
+      if (discoveredOnPort) {
+        targets.set(discoveredOnPort.pid, {
+          pid: discoveredOnPort.pid,
+          port: discoveredOnPort.port,
+        });
+        continue;
+      }
+      let pid: number | null = null;
+      try {
+        pid = await this.discovery.listenerPid(port);
+      } catch {
+        pid = null;
+      }
+      if (pid !== null) {
+        targets.set(pid, { pid, port });
+      }
+    }
+
+    const child = this.child;
+    if (child?.pid && this.isRunning()) {
+      targets.set(child.pid, {
+        pid: child.pid,
+        port: this.launchedPort ?? this.currentPort(),
+      });
+    }
+
+    for (const target of targets.values()) {
+      let killed = false;
+      try {
+        killed = await this.discovery.killProcessTree(target.pid);
+      } catch {
+        killed = false;
+      }
+      if (!killed && child?.pid === target.pid) {
+        try {
+          child.kill("SIGKILL");
+          killed = true;
+        } catch {
+          killed = false;
+        }
+      }
+      (killed ? stoppedPids : failedPids).push(target.pid);
+      if (killed && target.port !== null) stoppedPorts.push(target.port);
+    }
+
+    this.child = null;
+    this.announcedUrl = null;
+    this.launchedPort = null;
+    return {
+      stoppedPids,
+      failedPids,
+      stoppedPorts,
+      notRunning: targets.size === 0,
+    };
+  }
+
+  /** Stop the target set, then always spawn one fresh DSH process. */
+  async restartForObsidian(
+    connectedUrls: readonly string[] = [],
+  ): Promise<string> {
+    await this.stopAllTargetDshInstances(connectedUrls);
+    return this.ensureStartedNew();
+  }
+
+  /**
+   * Legacy stop entry retained for the existing lifecycle/unit-test surface:
+   * managed child first, then the adopted listener on the configured port.
+   */
+  async stopInstance(): Promise<DshStopResult> {
+    if (this.child || this.starting) {
+      const running = this.isRunning() || this.starting !== null;
+      await this.stop();
+      return running ? "managed-stopped" : "not-running";
+    }
+    this.invalidatePendingStart();
+    const endpoint = this.announcedUrl ?? dshWebUrl(this.port());
+    const actualPort = (() => {
+      try {
+        return Number(new URL(endpoint).port) || this.port();
+      } catch {
+        return this.port();
+      }
+    })();
+    const probe = await this.probe(endpoint, 2000);
     if (!probe.reachable || !probe.isDsh) {
-      return "mv-agent 未在运行。";
+      this.announcedUrl = null;
+      this.launchedPort = null;
+      return "not-running";
     }
     if (process.platform === "win32") {
       const result = await runProcess(
@@ -406,20 +718,23 @@ export class DshProcessManager {
         [
           "-NoProfile",
           "-Command",
-          `Stop-Process -Id (Get-NetTCPConnection -LocalPort ${preferred} -State Listen).OwningProcess -Force`,
+          `Stop-Process -Id (Get-NetTCPConnection -LocalPort ${actualPort} -State Listen).OwningProcess -Force`,
         ],
         { timeoutMs: 15_000 },
       );
-      return result.code === 0
-        ? "已关闭 mv-agent（复用实例）。"
-        : "关闭失败：无法结束该 dsh 进程。";
+      if (result.code === 0) {
+        this.announcedUrl = null;
+        this.launchedPort = null;
+        return "adopted-stopped";
+      }
+      return "adopted-stop-failed";
     }
-    return "关闭失败：当前平台不支持结束复用实例，请手动关闭。";
+    return "adopted-stop-unsupported";
   }
 
-  /** Close then relaunch, for the 「重启 mv-agent」 command. */
+  /** Stop then relaunch, for the 「重启 mv-agent」 command. */
   async restartInstance(): Promise<void> {
-    await this.closeInstance();
+    await this.stopInstance();
     await this.ensureStarted();
   }
 

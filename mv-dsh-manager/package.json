@@ -1,0 +1,17 @@
+{
+  "name": "@mv-aide/mv-dsh-manager",
+  "version": "0.1.0",
+  "description": "DeepSeek Harness runtime visual management plugin for plugins, skills, and subagents",
+  "main": "lib/index.js",
+  "type": "module",
+  "keywords": [
+    "cordis",
+    "plugin",
+    "dsh",
+    "skills",
+    "subagents",
+    "manager"
+  ],
+  "author": "mv-AIDE",
+  "license": "MIT"
+}

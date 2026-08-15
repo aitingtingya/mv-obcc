@@ -181,7 +181,7 @@ mv-agent embeds DeepSeek Harness (DSH) directly into Obsidian: use the DSH web U
 ### Purpose and Enablement
 
 - The **master switch** lives in the “Adapted agents” area of IDE Bridge (**Enable DSH IDE support**, off by default). When off, the bridge does not start and no lock file is written; the rest of the mv-agent section is preserved but inactive.
-- **View**: the command palette provides **Open mv-agent**, **Close mv-agent**, and **Restart mv-agent**; hotkeys can be bound in Obsidian's hotkey settings. The view is a custom Obsidian view: an iframe on top embeds the DSH web UI (no browser toolbar), with an Obsidian-side status bar below showing the number of connected IDE bridge clients and the latest selection snapshot.
+- **View**: the command palette provides **Open mv-agent**, **Stop mv-agent**, and **Restart mv-agent**; hotkeys can be bound in Obsidian's hotkey settings. **Stop mv-agent** closes every open mv-agent view and stops its DSH backend. The view is a custom Obsidian view: an iframe on top embeds the DSH web UI (no browser toolbar), with an Obsidian-side status bar below showing the number of connected IDE bridge clients and the latest selection snapshot.
 - **Open region**: left, right, or bottom; right by default. “Restart mv-agent” restarts the plugin-managed `dsh web` process and refreshes every open view.
 - **Address and port**: the DSH web service binds only to `127.0.0.1`, default port `3080`, configurable in settings. The view auto-detects an already running dsh instance; while none is running it shows “mv-agent is not running.”
 

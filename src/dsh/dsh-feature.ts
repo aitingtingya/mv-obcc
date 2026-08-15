@@ -9,7 +9,9 @@ import {
 } from "./dsh-inject";
 import {
   classifyProbe,
+  DshStartCancelledError,
   DshProcessManager,
+  isDshStartCancelled,
   type DshWebProbe,
 } from "./dsh-process";
 import {
@@ -47,9 +49,10 @@ import {
   type Rerender,
 } from "./dsh-settings-ui";
 import {
-  openDshWebview,
   DSH_WEB_VIEW_TYPE,
   DshWebView,
+  openDshWebviewInNewLeaf,
+  stopOpenMvAgentViews,
 } from "./dsh-webview";
 
 const COMMAND_ID = "open-mv-agent-for-obsidian";
@@ -138,6 +141,7 @@ export class DshFeature {
   private commandRegistered = false;
   private environment: DshEnvironmentStatus = structuredClone(UNKNOWN_DSH_ENVIRONMENT);
   private environmentBusy = false;
+  private mvAgentOperationGeneration = 0;
   /**
    * Collapsible-subsection open state inside the mv-agent settings section.
    * All subsections default collapsed (开发规范七); user toggles are kept
@@ -187,8 +191,8 @@ export class DshFeature {
     });
     this.plugin.addCommand({
       id: "close-mv-agent",
-      name: t("关闭 mv-agent"),
-      callback: () => void this.closeDshWithNotice(),
+      name: t("停止 mv-agent"),
+      callback: () => void this.stopMvAgentWithNotice(),
     });
     this.plugin.addCommand({
       id: "restart-mv-agent",
@@ -210,6 +214,7 @@ export class DshFeature {
   }
 
   dispose(): void {
+    this.mvAgentOperationGeneration += 1;
     if (this.commandRegistered) {
       this.plugin.removeCommand(COMMAND_ID);
       this.plugin.removeCommand("close-mv-agent");
@@ -461,12 +466,20 @@ export class DshFeature {
   }
 
   async openDshForObsidian(): Promise<void> {
-    const url = await this.processManager.ensureStarted();
-    await openDshWebview(
+    const generation = ++this.mvAgentOperationGeneration;
+    await this.openDshForOperation(generation);
+  }
+
+  private async openDshForOperation(generation: number): Promise<void> {
+    const connectedUrls = this.collectActiveDshUrls();
+    const url = await this.processManager.ensureStartedForOpen(connectedUrls);
+    if (generation !== this.mvAgentOperationGeneration) return;
+    const leaf = await openDshWebviewInNewLeaf(
       this.plugin.app.workspace,
       this.plugin.settings.dsh.autoOpenRegion,
       url,
     );
+    if (generation !== this.mvAgentOperationGeneration) leaf.detach();
   }
 
   /** dsh 实例实际运行的端口（未运行返回 null），供状态栏展示。 */
@@ -489,18 +502,43 @@ export class DshFeature {
    * （配置端口 + 候选端口探测），找不到则启动一个。
    */
   async resolveDshViewUrl(): Promise<string> {
+    const generation = this.mvAgentOperationGeneration;
     const found = await this.processManager.findDshUrl();
+    if (generation !== this.mvAgentOperationGeneration) {
+      throw new DshStartCancelledError();
+    }
     if (found) return found;
-    return this.processManager.ensureStarted();
+    const url = await this.processManager.ensureStarted();
+    if (generation !== this.mvAgentOperationGeneration) {
+      throw new DshStartCancelledError();
+    }
+    return url;
   }
 
-  /** 重启后刷新所有已打开的 mv-agent 视图（不新开窗口）。 */
-  private async refreshOpenDshViews(): Promise<void> {
+  /** URLs of all currently open mv-agent views, active view first. */
+  private collectActiveDshUrls(): string[] {
+    const leaves = this.plugin.app.workspace.getLeavesOfType(DSH_WEB_VIEW_TYPE);
+    const activeLeaf = this.plugin.app.workspace.activeLeaf;
+    const sorted = [...leaves].sort((left, right) => {
+      if (left === activeLeaf) return -1;
+      if (right === activeLeaf) return 1;
+      return 0;
+    });
+    const urls: string[] = [];
+    for (const leaf of sorted) {
+      const view = leaf.view as DshWebView | null;
+      const url = view?.currentViewUrl?.();
+      if (url && !urls.includes(url)) urls.push(url);
+    }
+    return urls;
+  }
+
+  /** Point every open mv-agent view at the same restarted endpoint. */
+  private navigateOpenViewsTo(url: string): void {
     const leaves = this.plugin.app.workspace.getLeavesOfType(DSH_WEB_VIEW_TYPE);
     for (const leaf of leaves) {
-      const view = leaf.view as DshWebView | null;
       try {
-        if (view && typeof view.refresh === "function") await view.refresh();
+        (leaf.view as DshWebView | null)?.navigateTo?.(url);
       } catch {
         /* per-view containment */
       }
@@ -508,9 +546,18 @@ export class DshFeature {
   }
 
   private async openDshWithNotice(): Promise<void> {
+    const generation = ++this.mvAgentOperationGeneration;
     try {
-      await this.openDshForObsidian();
+      await this.openDshForOperation(generation);
+      if (generation !== this.mvAgentOperationGeneration) return;
+      new Notice(t("已打开 mv-agent。"), 8000);
     } catch (error) {
+      if (
+        generation !== this.mvAgentOperationGeneration ||
+        isDshStartCancelled(error)
+      ) {
+        return;
+      }
       new Notice(
         t("打开失败：{message}", {
           message: error instanceof Error ? error.message : String(error),
@@ -520,13 +567,24 @@ export class DshFeature {
     }
   }
 
-  private async closeDshWithNotice(): Promise<void> {
+  private async stopMvAgentWithNotice(): Promise<void> {
+    const generation = ++this.mvAgentOperationGeneration;
     try {
-      const message = await this.processManager.closeInstance();
-      new Notice(`mv-agent：${message}`, 8000);
+      const connectedUrls = this.collectActiveDshUrls();
+      const summary = await this.processManager.stopAllTargetDshInstances(connectedUrls);
+      if (generation !== this.mvAgentOperationGeneration) return;
+      const stoppedViewCount = stopOpenMvAgentViews(this.plugin.app.workspace);
+      const viewMessage = stoppedViewCount > 0
+        ? t("已停止 {count} 个 mv-agent 界面。", { count: stoppedViewCount })
+        : t("没有打开的 mv-agent 界面。");
+      const backendMessage = summary.notRunning
+        ? t("没有发现需要停止的 DSH 后台。")
+        : t("已停止 {count} 个 DSH 后台。", { count: summary.stoppedPids.length });
+      new Notice(`mv-agent：${viewMessage}\n${backendMessage}`, 8000);
     } catch (error) {
+      if (generation !== this.mvAgentOperationGeneration) return;
       new Notice(
-        t("关闭失败：{message}", {
+        t("停止失败：{message}", {
           message: error instanceof Error ? error.message : String(error),
         }),
         8000,
@@ -535,11 +593,25 @@ export class DshFeature {
   }
 
   private async restartDshWithNotice(): Promise<void> {
+    const generation = ++this.mvAgentOperationGeneration;
     try {
-      await this.processManager.restartInstance();
-      await this.refreshOpenDshViews();
+      const connectedUrls = this.collectActiveDshUrls();
+      const url = await this.processManager.restartForObsidian(connectedUrls);
+      if (generation !== this.mvAgentOperationGeneration) return;
+      const currentLeaves = this.plugin.app.workspace.getLeavesOfType(DSH_WEB_VIEW_TYPE);
+      if (currentLeaves.length > 0) {
+        this.navigateOpenViewsTo(url);
+      } else {
+        const leaf = await openDshWebviewInNewLeaf(
+          this.plugin.app.workspace,
+          this.plugin.settings.dsh.autoOpenRegion,
+          url,
+        );
+        if (generation !== this.mvAgentOperationGeneration) leaf.detach();
+      }
       new Notice(t("mv-agent 已重启。"), 8000);
     } catch (error) {
+      if (generation !== this.mvAgentOperationGeneration) return;
       new Notice(
         t("重启失败：{message}", {
           message: error instanceof Error ? error.message : String(error),
@@ -555,5 +627,9 @@ export class DshFeature {
 
   renderSection(containerEl: HTMLElement, rerender: Rerender): void {
     renderDshSection(this.plugin, containerEl, rerender, this.openSubsectionIds);
+  }
+
+  openSubsection(id: string): void {
+    this.openSubsectionIds.add(id);
   }
 }

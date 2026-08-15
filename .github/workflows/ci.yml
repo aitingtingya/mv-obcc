@@ -51,4 +51,3 @@ jobs:
         with:
           name: mv-obcc-ide
           path: release/
-

@@ -29,15 +29,59 @@ export const DSH_VIEW_TITLE = "mv-agent";
  */
 export const DSH_WEB_VIEW_TYPE = "mv-aide-dsh";
 
-/** iframe 加载看门狗：navigation 后若在此时长内未确认可达则自动恢复。 */
+/** iframe 加载看门狗：只标记本次导航超时，不主动重载页面。 */
 const FRAME_LOAD_TIMEOUT_MS = 10_000;
-/** 自动恢复失败后的静默重试间隔。 */
-const AUTO_REFRESH_RETRY_MS = 15_000;
 /** 「打开：」内容的截断长度。 */
 const OPEN_MAX_CHARS = 20;
 
 export function isDshWebviewLeaf(leaf: WorkspaceLeaf): boolean {
   return leaf.view?.getViewType?.() === DSH_WEB_VIEW_TYPE;
+}
+
+/** Stop every open mv-agent UI without conflating it with the DSH backend. */
+export function stopOpenMvAgentViews(workspace: Workspace): number {
+  const count = workspace.getLeavesOfType(DSH_WEB_VIEW_TYPE).length;
+  workspace.detachLeavesOfType(DSH_WEB_VIEW_TYPE);
+  return count;
+}
+
+/**
+ * Resolve a NEW workspace leaf for a region. Left/right append a tab to the
+ * existing sidebar tab group instead of splitting the sidebar; bottom always
+ * creates a fresh main-area leaf.
+ */
+export function resolveNewDshLeaf(
+  workspace: Workspace,
+  region: DshAutoOpenRegion,
+): WorkspaceLeaf | null {
+  switch (region) {
+    case "left":
+      return workspace.getLeftLeaf(false);
+    case "right":
+      return workspace.getRightLeaf(false);
+    case "bottom":
+      return createMainBottomLeaf(workspace);
+  }
+}
+
+/** Open a NEW mv-agent view for the command "打开 mv-agent". */
+export async function openDshWebviewInNewLeaf(
+  workspace: Workspace,
+  region: DshAutoOpenRegion,
+  url: string,
+): Promise<WorkspaceLeaf> {
+  const leaf = resolveNewDshLeaf(workspace, region);
+  if (!leaf) throw new Error("无法在所选分区打开 mv-agent 视图。");
+  await leaf.setViewState({
+    type: DSH_WEB_VIEW_TYPE,
+    active: true,
+    state: { url, title: DSH_VIEW_TITLE, navigate: true },
+  });
+  await workspace.revealLeaf(leaf);
+  if (region === "bottom") {
+    applyBottomTerminalSplitRatio(leaf, workspace, 40);
+  }
+  return leaf;
 }
 
 /**
@@ -177,6 +221,7 @@ export class DshWebView extends ItemView {
   private statusSelectionCheckEl: HTMLSpanElement | null = null;
   private statusSelectionLabelEl: HTMLSpanElement | null = null;
   private statusCopyEl: HTMLButtonElement | null = null;
+  private statusBrowserEl: HTMLButtonElement | null = null;
   private statusFailEl: HTMLSpanElement | null = null;
   private statusFailDividerEl: HTMLSpanElement | null = null;
   private statusDetailEl: HTMLDivElement | null = null;
@@ -191,8 +236,8 @@ export class DshWebView extends ItemView {
   private expanded = false;
   private loadFailed = false;
   private loadWatchdog: number | null = null;
-  private autoRefreshTimer: number | null = null;
   private navigationGeneration = 0;
+  private stateGeneration = 0;
   private closed = false;
 
   constructor(
@@ -219,6 +264,27 @@ export class DshWebView extends ItemView {
     return this.frameEl;
   }
 
+  /** The DSH endpoint this view is currently connected to. */
+  currentViewUrl(): string | null {
+    return normalizeDshWebUrl(this.currentUrl || this.frameEl?.src || "");
+  }
+
+  /**
+   * Switch this view to a concrete DSH endpoint (used by restart). If the
+   * endpoint is unchanged, the old backend was replaced in place, so force a
+   * full iframe reload instead of silently keeping the dead document.
+   */
+  navigateTo(url: string): void {
+    const normalized = normalizeDshWebUrl(url);
+    if (!normalized) return;
+    const frame = this.frameEl;
+    if (frame && sameDshWebUrl(this.currentUrl || frame.src, normalized)) {
+      this.reload();
+      return;
+    }
+    this.navigate(normalized);
+  }
+
   private viewWindow(): Window {
     return this.containerEl.ownerDocument.defaultView ?? activeWindow;
   }
@@ -238,17 +304,27 @@ export class DshWebView extends ItemView {
 
   async setState(state: unknown, result: ViewStateResult): Promise<void> {
     await super.setState(state, result);
-    const generation = this.navigationGeneration;
+    const generation = ++this.stateGeneration;
     const stateObj = state as { url?: unknown } | undefined;
     let url = typeof stateObj?.url === "string" && stateObj.url ? stateObj.url : "";
-    if (!url && this.plugin.dshFeature) {
+    const feature = this.plugin.dshFeature;
+    if (url && feature) {
       try {
-        url = await this.plugin.dshFeature.resolveDshViewUrl();
+        url = (await feature.confirmDshViewUrl(url)) ?? "";
       } catch {
-        /* fallback handled by watchdog */
+        url = "";
       }
     }
-    if (this.closed || generation !== this.navigationGeneration) return;
+    if (!url && feature) {
+      try {
+        url = await feature.resolveDshViewUrl();
+      } catch {
+        this.loadFailed = true;
+        this.renderStatus();
+        return;
+      }
+    }
+    if (this.closed || generation !== this.stateGeneration) return;
     const normalized = normalizeDshWebUrl(url);
     if (!normalized) return;
     this.currentUrl = normalized;
@@ -260,8 +336,8 @@ export class DshWebView extends ItemView {
   async onClose(): Promise<void> {
     this.closed = true;
     this.navigationGeneration += 1;
+    this.stateGeneration += 1;
     this.clearLoadWatchdog();
-    this.clearAutoRefreshTimer();
     this.frameEl?.remove();
     this.frameEl = null;
     this.statusPortEl = null;
@@ -274,6 +350,7 @@ export class DshWebView extends ItemView {
     this.statusSelectionCheckEl = null;
     this.statusSelectionLabelEl = null;
     this.statusCopyEl = null;
+    this.statusBrowserEl = null;
     this.statusFailEl = null;
     this.statusFailDividerEl = null;
     this.statusDetailEl = null;
@@ -370,7 +447,6 @@ export class DshWebView extends ItemView {
     this.navigationGeneration += 1;
     const generation = this.navigationGeneration;
     this.clearLoadWatchdog();
-    this.clearAutoRefreshTimer();
     this.loadFailed = false;
     this.renderStatus();
     apply();
@@ -383,110 +459,55 @@ export class DshWebView extends ItemView {
     this.loadWatchdog = null;
   }
 
-  private clearAutoRefreshTimer(): void {
-    if (this.autoRefreshTimer === null) return;
-    this.viewWindow().clearTimeout(this.autoRefreshTimer);
-    this.autoRefreshTimer = null;
-  }
-
-  /** navigation 后 10s 看门狗：只允许当前导航进入恢复流程。 */
+  /** navigation 后 10s 看门狗：只标记失败，不改变 iframe 或后台进程。 */
   private armLoadWatchdog(generation: number): void {
     this.loadWatchdog = this.viewWindow().setTimeout(() => {
       this.loadWatchdog = null;
       if (this.closed || generation !== this.navigationGeneration) return;
       this.loadFailed = true;
       this.renderStatus();
-      void this.verifyOrRecover(generation);
     }, FRAME_LOAD_TIMEOUT_MS);
   }
 
-  private async handleFrameLoad(): Promise<void> {
+  private handleFrameLoad(): void {
     const feature = this.plugin.dshFeature;
     const frame = this.frameEl;
-    if (!feature || !frame) return;
+    if (!frame) return;
     const generation = this.navigationGeneration;
     const target = normalizeDshWebUrl(this.currentUrl || frame.src);
-    if (!target) return;
-    let confirmed: string | null;
-    try {
-      confirmed = await feature.confirmDshViewUrl(target);
-    } catch {
-      return;
-    }
-    if (
-      this.closed ||
-      generation !== this.navigationGeneration ||
-      !confirmed ||
-      !sameDshWebUrl(confirmed, target)
-    ) {
-      return;
-    }
-    this.currentUrl = confirmed;
     this.clearLoadWatchdog();
-    this.clearAutoRefreshTimer();
     this.loadFailed = false;
     this.renderStatus();
-  }
-
-  /**
-   * 静默自动恢复（重启 Obsidian 后视图恢复、dsh 尚未启动的场景）：
-   * 探测已开的 dsh 端口，找不到就拉起（等待启动 ≤120s），成功即导航；
-   * 失败每 15s 静默重试，直到成功或视图关闭。不弹通知。
-   */
-  private async verifyOrRecover(generation: number): Promise<void> {
-    const feature = this.plugin.dshFeature;
-    const frame = this.frameEl;
-    if (
-      !feature ||
-      !frame ||
-      this.closed ||
-      generation !== this.navigationGeneration
-    ) {
-      return;
-    }
-    try {
-      const url = await feature.resolveDshViewUrl();
-      if (this.closed || generation !== this.navigationGeneration) return;
-      if (!sameDshWebUrl(frame.src, url)) {
-        this.navigate(url);
-      } else {
-        this.reload();
+    if (!feature || !target) return;
+    void feature.confirmDshViewUrl(target).then((confirmed) => {
+      if (
+        this.closed ||
+        generation !== this.navigationGeneration ||
+        !confirmed ||
+        !sameDshWebUrl(confirmed, target)
+      ) {
+        return;
       }
-    } catch {
-      if (this.closed || generation !== this.navigationGeneration) return;
-      this.loadFailed = true;
+      this.currentUrl = confirmed;
       this.renderStatus();
-      this.autoRefreshTimer = this.viewWindow().setTimeout(() => {
-        this.autoRefreshTimer = null;
-        if (
-          !this.frameEl ||
-          !this.loadFailed ||
-          this.closed ||
-          generation !== this.navigationGeneration
-        ) {
-          return;
-        }
-        void this.verifyOrRecover(generation);
-      }, AUTO_REFRESH_RETRY_MS);
-    }
+    }).catch(() => undefined);
   }
 
   private buildUI(): void {
     const container = this.containerEl;
     container.empty();
     container.addClass("mv-aide-dsh-view");
-    const state = this.leaf.getViewState().state as { url?: unknown } | undefined;
-    const url = typeof state?.url === "string" ? state.url : "";
     const frame = container.createEl("iframe", {
       cls: "mv-aide-dsh-frame",
+      attr: {
+        id: "mv-aide-dsh-frame",
+        title: DSH_VIEW_TITLE,
+      },
     });
     this.frameEl = frame;
     frame.addEventListener("load", () => {
-      void this.handleFrameLoad();
+      this.handleFrameLoad();
     });
-    if (url) {
-      this.navigate(url);
-    }
 
     const bar = container.createDiv({ cls: "mv-aide-dsh-statusbar" });
     bar.addEventListener("click", () => this.toggleExpanded());
@@ -550,6 +571,43 @@ export class DshWebView extends ItemView {
     this.detailSelectionTextEl.hide();
     this.detailFailureEl.hide();
 
+    const actionsEl = this.statusDetailEl.createDiv({
+      cls: "mv-aide-dsh-status-actions",
+    });
+
+    const createActionBtn = (iconName: string, text: string, subsectionId: "plugins" | "skills" | "presets") => {
+      const btn = actionsEl.createEl("button", {
+        cls: "mv-aide-dsh-manage-plugins-btn",
+        attr: { type: "button" },
+      });
+      const iconSpan = btn.createSpan({ cls: "mv-aide-dsh-btn-icon" });
+      setIcon(iconSpan, iconName);
+      btn.createSpan({ text });
+      btn.addEventListener("click", (event) => {
+        event.stopPropagation();
+        this.openDshManagerSettings(subsectionId);
+      });
+      return btn;
+    };
+
+    createActionBtn("blocks", t("插件管理"), "plugins");
+    createActionBtn("sparkles", t("技能管理"), "skills");
+    createActionBtn("bot", t("子智能体"), "presets");
+
+    this.statusBrowserEl = actionsEl.createEl("button", {
+      cls: "mv-aide-dsh-open-browser-btn",
+      attr: { type: "button" },
+    });
+    const browserIcon = this.statusBrowserEl.createSpan({
+      cls: "mv-aide-dsh-btn-icon",
+    });
+    setIcon(browserIcon, "external-link");
+    this.statusBrowserEl.createSpan({ text: t("浏览器打开") });
+    this.statusBrowserEl.addEventListener("click", (event) => {
+      event.stopPropagation();
+      void this.openDshInBrowser();
+    });
+
     const bindCheck = (
       el: HTMLSpanElement | null,
       key: "pushLocation" | "pushSelection",
@@ -570,6 +628,102 @@ export class DshWebView extends ItemView {
     this.registerInterval(
       this.viewWindow().setInterval(() => this.renderStatus(), 1000),
     );
+  }
+
+  private openDshManagerSettings(subsectionId: "plugins" | "skills" | "presets" = "plugins"): void {
+    const appSetting = (this.app as unknown as {
+      setting?: {
+        open: () => void;
+        openTabById: (id: string) => unknown;
+      };
+    }).setting;
+
+    if (!appSetting) return;
+
+    // 1. 预先向 dshFeature 注入对应子折叠区展开状态
+    this.plugin.dshFeature?.openSubsection(subsectionId);
+
+    // 2. 打开设置 Tab
+    appSetting.open();
+    const tab = appSetting.openTabById(this.plugin.manifest.id) as {
+      forceOpenSection?: string;
+      openSettingsSections?: Set<string>;
+      display?: () => void;
+    } | null;
+
+    // 3. 预先向设置 Tab 注入父级 mv-agent 展开状态
+    if (tab) {
+      if (tab.openSettingsSections) {
+        tab.openSettingsSections.add("mv-agent");
+      }
+      tab.forceOpenSection = "mv-agent";
+      tab.display?.();
+    }
+
+    // 4. 定位与容器级平滑滚动
+    const performScroll = (): void => {
+      const targetDetails = (document.querySelector(`details[data-subsection-id="${subsectionId}"]`) ||
+        document.getElementById(`mv-agent-dsh-${subsectionId === "plugins" ? "plugin" : subsectionId === "skills" ? "skill" : "preset"}-manager`)) as HTMLDetailsElement | null;
+
+      if (targetDetails) {
+        targetDetails.open = true;
+        const parentDetails = targetDetails.closest("details");
+        if (parentDetails) parentDetails.open = true;
+
+        const scrollContainer =
+          targetDetails.closest<HTMLElement>(".vertical-tab-content") ??
+          targetDetails.closest<HTMLElement>(".modal-content") ??
+          document.querySelector<HTMLElement>(".vertical-tab-content");
+
+        if (scrollContainer) {
+          const containerRect = scrollContainer.getBoundingClientRect();
+          const targetRect = targetDetails.getBoundingClientRect();
+          const scrollDelta = targetRect.top - containerRect.top;
+          scrollContainer.scrollTo({
+            top: scrollContainer.scrollTop + scrollDelta - 24,
+            behavior: "smooth",
+          });
+        } else {
+          targetDetails.scrollIntoView({ behavior: "smooth", block: "start" });
+        }
+
+        targetDetails.classList.add("mv-aide-highlight-pulse");
+        setTimeout(() => {
+          targetDetails.classList.remove("mv-aide-highlight-pulse");
+        }, 1800);
+      }
+    };
+
+    setTimeout(performScroll, 100);
+    setTimeout(performScroll, 280);
+  }
+
+  private async openDshInBrowser(): Promise<void> {
+    const url =
+      this.plugin.dshFeature?.currentDshUrl() ??
+      normalizeDshWebUrl(this.currentUrl || this.frameEl?.src || "");
+    if (!url) return;
+    try {
+      const electron = (
+        globalThis as unknown as {
+          require?: (moduleName: string) => {
+            shell?: {
+              openExternal?: (target: string) => Promise<void>;
+            };
+          };
+        }
+      ).require?.("electron");
+      if (electron?.shell && typeof electron.shell.openExternal === "function") {
+        await electron.shell.openExternal(url);
+        return;
+      }
+    } catch {
+      // Fall through to window.open.
+    }
+    const opened = this.viewWindow().open(url, "_blank", "noopener");
+    if (!opened) {
+      new Notice(t("无法打开浏览器，请复制 DSH 地址后手动打开。"), 8000);
+    }
   }
 
   private async copyDshAddress(): Promise<void> {
@@ -618,6 +772,17 @@ export class DshWebView extends ItemView {
       this.statusCopyEl.setAttr(
         "title",
         actualUrl ? t("复制 DSH 地址") : t("mv-agent 未运行"),
+      );
+    }
+    if (this.statusBrowserEl) {
+      this.statusBrowserEl.disabled = actualUrl === null;
+      this.statusBrowserEl.setAttr(
+        "aria-label",
+        actualUrl ? t("浏览器打开") : t("mv-agent 未运行"),
+      );
+      this.statusBrowserEl.setAttr(
+        "title",
+        actualUrl ? t("浏览器打开") : t("mv-agent 未运行"),
       );
     }
     if (this.statusDotEl) {

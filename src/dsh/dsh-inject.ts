@@ -2,11 +2,14 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { processOutput, runProcess } from "../process-runner";
-import { DSH_PLUGIN_FILES } from "./dsh-plugin-bundle";
+import { MV_AGENT_PLUGIN_FILES, MV_DSH_MANAGER_PLUGIN_FILES } from "./dsh-plugin-bundle";
 import type { DshCommand } from "./dsh-process";
 
-export const DSH_PLUGIN_NAME = "@mv-aide/dsh-plugin";
-const ROW_ID = "mv-aide";
+export const DSH_AGENT_PLUGIN_NAME = "@mv-aide/mv-agent";
+export const DSH_PM_PLUGIN_NAME = "@mv-aide/mv-dsh-manager";
+export const DSH_PLUGIN_NAME = DSH_AGENT_PLUGIN_NAME;
+const AGENT_ROW_ID = "mv-agent";
+const PM_ROW_ID = "mv-dsh-manager";
 
 const DEFAULT_PATCH_FILE =
   "# Your patch layer for this dsh profile, applied after every bundle layer:\n" +
@@ -16,8 +19,10 @@ const DEFAULT_PATCH_FILE =
 
 const PATCH_INSERT_BLOCK = [
   "- insert:",
-  "    - id: mv-aide",
-  "      name: '@mv-aide/dsh-plugin'",
+  "    - id: mv-agent",
+  "      name: '@mv-aide/mv-agent'",
+  "    - id: mv-dsh-manager",
+  "      name: '@mv-aide/mv-dsh-manager'",
   "",
 ].join("\n");
 
@@ -30,8 +35,10 @@ export function webProfileDir(): string {
 }
 
 /** mv-AIDE-owned DSH files stay inside the current vault. */
-export function stablePluginDir(vaultRoot: string): string {
-  return path.join(vaultRoot, "mv-aide", "dsh", "plugin");
+export function stablePluginDir(vaultRoot: string, subName?: string): string {
+  return subName
+    ? path.join(vaultRoot, "mv-aide", "dsh", "plugin", subName)
+    : path.join(vaultRoot, "mv-aide", "dsh", "plugin");
 }
 
 export interface InjectResult {
@@ -86,11 +93,20 @@ function fileSpec(dir: string): string {
 }
 
 function bundlesContainPlugin(manifest: ProfileManifest): boolean {
-  return manifest.dsh?.profile?.bundles?.includes(DSH_PLUGIN_NAME) === true;
+  const bundles = manifest.dsh?.profile?.bundles ?? [];
+  return (
+    bundles.includes(DSH_AGENT_PLUGIN_NAME) ||
+    bundles.includes(DSH_PM_PLUGIN_NAME) ||
+    bundles.includes("@mv-aide/mv-plugin-manager") ||
+    bundles.includes("@mv-aide/dsh-plugin")
+  );
 }
 
-function hasMvAideRow(content: string): boolean {
-  return /id:\s*['"]?mv-aide['"]?/u.test(content);
+function hasMvAideRows(content: string): boolean {
+  return (
+    (/id:\s*['"]?mv-agent['"]?/u.test(content) || /id:\s*['"]?mv-aide['"]?/u.test(content)) &&
+    (/id:\s*['"]?mv-dsh-manager['"]?/u.test(content) || /id:\s*['"]?mv-plugin-manager['"]?/u.test(content))
+  );
 }
 
 function hasEmptyListToken(content: string): boolean {
@@ -98,7 +114,7 @@ function hasEmptyListToken(content: string): boolean {
 }
 
 export function isHealthyPatchFile(content: string): boolean {
-  return hasMvAideRow(content) && !hasEmptyListToken(content);
+  return hasMvAideRows(content) && !hasEmptyListToken(content);
 }
 
 export function healPatchFile(content: string): string {
@@ -112,7 +128,13 @@ export function healPatchFile(content: string): string {
       let j = i + 1;
       while (j < lines.length && /^\s/u.test(lines[j])) j += 1;
       const block = lines.slice(i + 1, j).join("\n");
-      if (hasMvAideRow(block) || block.includes(DSH_PLUGIN_NAME)) {
+      if (
+        block.includes("mv-aide") ||
+        block.includes("mv-agent") ||
+        block.includes("mv-dsh-manager") ||
+        block.includes("mv-plugin-manager") ||
+        block.includes("@mv-aide/")
+      ) {
         i = j - 1;
         continue;
       }
@@ -133,35 +155,65 @@ async function cleanupBundles(profileDir: string): Promise<void> {
   const manifest = await readProfileManifest(profileDir);
   if (!manifest) return;
   const bundles = manifest.dsh?.profile?.bundles ?? [];
-  if (!bundles.includes(DSH_PLUGIN_NAME)) return;
+  const filtered = bundles.filter(
+    (name) =>
+      name !== DSH_AGENT_PLUGIN_NAME &&
+      name !== DSH_PM_PLUGIN_NAME &&
+      name !== "@mv-aide/mv-plugin-manager" &&
+      name !== "@mv-aide/dsh-plugin",
+  );
+  if (filtered.length === bundles.length) return;
   manifest.dsh = {
     ...manifest.dsh,
     profile: {
       ...(manifest.dsh?.profile ?? {}),
-      bundles: bundles.filter((name) => name !== DSH_PLUGIN_NAME),
+      bundles: filtered,
     },
   };
   await writeProfileManifest(profileDir, manifest);
 }
 
-async function materializePlugin(vaultRoot: string): Promise<string> {
-  const target = stablePluginDir(vaultRoot);
-  const installedInProfile = path.join(webProfileDir(), "node_modules", "@mv-aide", "dsh-plugin");
-  await fs.rm(target, { recursive: true, force: true });
-  for (const [relativePath, content] of Object.entries(DSH_PLUGIN_FILES)) {
-    const output = path.join(target, relativePath);
+async function materializePackage(
+  targetDir: string,
+  nodeModulesTargetDirs: string[],
+  files: Readonly<Record<string, string>>,
+): Promise<void> {
+  await fs.rm(targetDir, { recursive: true, force: true });
+  for (const [relativePath, content] of Object.entries(files)) {
+    const output = path.join(targetDir, relativePath);
     await fs.mkdir(path.dirname(output), { recursive: true });
     await fs.writeFile(output, content, "utf8");
 
-    try {
-      const profileOutput = path.join(installedInProfile, relativePath);
-      await fs.mkdir(path.dirname(profileOutput), { recursive: true });
-      await fs.writeFile(profileOutput, content, "utf8");
-    } catch {
-      // Ignore if node_modules/@mv-aide/dsh-plugin does not exist yet before first install
+    for (const installedDir of nodeModulesTargetDirs) {
+      try {
+        const profileOutput = path.join(installedDir, relativePath);
+        await fs.mkdir(path.dirname(profileOutput), { recursive: true });
+        await fs.writeFile(profileOutput, content, "utf8");
+      } catch {
+        // Ignore if directory doesn't exist yet before first install
+      }
     }
   }
-  return target;
+}
+
+async function materializePlugin(vaultRoot: string): Promise<{ agentDir: string; pmDir: string }> {
+  const agentDir = stablePluginDir(vaultRoot, "mv-agent");
+  const pmDir = stablePluginDir(vaultRoot, "mv-dsh-manager");
+  const profileDir = webProfileDir();
+
+  const agentNodeModules = [
+    path.join(profileDir, "node_modules", "@mv-aide", "mv-agent"),
+    path.join(profileDir, "node_modules", "@mv-aide", "dsh-plugin"),
+  ];
+  const pmNodeModules = [
+    path.join(profileDir, "node_modules", "@mv-aide", "mv-dsh-manager"),
+    path.join(profileDir, "node_modules", "@mv-aide", "mv-plugin-manager"),
+  ];
+
+  await materializePackage(agentDir, agentNodeModules, MV_AGENT_PLUGIN_FILES);
+  await materializePackage(pmDir, pmNodeModules, MV_DSH_MANAGER_PLUGIN_FILES);
+
+  return { agentDir, pmDir };
 }
 
 /** Inspect actual files. Persisted settings are deliberately ignored. */
@@ -171,19 +223,28 @@ export async function inspectDshInjection(vaultRoot: string): Promise<DshInjecti
   const patch = await fs
     .readFile(path.join(profileDir, "cordis.patch.yml"), "utf8")
     .catch(() => "");
-  const packageInstalled = await pathExists(
-    path.join(profileDir, "node_modules", "@mv-aide", "dsh-plugin", "package.json"),
-  );
-  const sourceReady = await pathExists(path.join(stablePluginDir(vaultRoot), "package.json"));
-  const dependencyRegistered = Boolean(manifest?.dependencies?.[DSH_PLUGIN_NAME]);
+
+  const agentInstalled =
+    (await pathExists(path.join(profileDir, "node_modules", "@mv-aide", "mv-agent", "package.json"))) ||
+    (await pathExists(path.join(profileDir, "node_modules", "@mv-aide", "dsh-plugin", "package.json")));
+  const pmInstalled =
+    (await pathExists(path.join(profileDir, "node_modules", "@mv-aide", "mv-dsh-manager", "package.json"))) ||
+    (await pathExists(path.join(profileDir, "node_modules", "@mv-aide", "mv-plugin-manager", "package.json")));
+
+  const agentSource = await pathExists(path.join(stablePluginDir(vaultRoot, "mv-agent"), "package.json"));
+  const pmSource = await pathExists(path.join(stablePluginDir(vaultRoot, "mv-dsh-manager"), "package.json"));
+
+  const dependencyRegistered =
+    Boolean(manifest?.dependencies?.[DSH_AGENT_PLUGIN_NAME]) ||
+    Boolean(manifest?.dependencies?.["@mv-aide/dsh-plugin"]);
   const legacyBundle = bundlesContainPlugin(manifest ?? {});
   const patchReady = isHealthyPatchFile(patch);
 
-  if (packageInstalled && patchReady && !legacyBundle) {
-    return { state: "ready", detail: "DSH web profile 中的插件包与热加载配置均有效。" };
+  if (agentInstalled && pmInstalled && patchReady && !legacyBundle) {
+    return { state: "ready", detail: "DSH web profile 中的 mv-agent 与 mv-dsh-manager 插件包及热加载配置均有效。" };
   }
-  if (sourceReady || packageInstalled || dependencyRegistered || hasMvAideRow(patch) || legacyBundle) {
-    return { state: "partial", detail: "检测到不完整或旧版注入，需要修复。" };
+  if (agentSource || pmSource || agentInstalled || pmInstalled || dependencyRegistered || hasMvAideRows(patch) || legacyBundle) {
+    return { state: "partial", detail: "检测到不完整或旧版注入，需要更新修复。" };
   }
   return { state: "missing", detail: "尚未向 DSH web profile 注入插件。" };
 }
@@ -195,17 +256,19 @@ async function verifyInjection(command: DshCommand): Promise<{ ok: boolean; deta
     { timeoutMs: 120_000, env: command.env },
   );
   const detail = processOutput(result);
-  return { ok: result.code === 0 && detail.includes(ROW_ID), detail };
+  const hasAgent = detail.includes(AGENT_ROW_ID) || detail.includes("mv-aide");
+  const hasPm = detail.includes(PM_ROW_ID) || detail.includes("mv-plugin-manager");
+  return { ok: result.code === 0 && hasAgent && hasPm, detail };
 }
 
-/** Install and verify the bridge package without blocking the renderer. */
+/** Install and verify the bridge packages without blocking the renderer. */
 export async function injectDshPlugin(
   vaultRoot: string,
   command: DshCommand,
 ): Promise<InjectResult> {
-  let target: string;
+  let dirs: { agentDir: string; pmDir: string };
   try {
-    target = await materializePlugin(vaultRoot);
+    dirs = await materializePlugin(vaultRoot);
   } catch (error) {
     return {
       ok: false,
@@ -219,11 +282,12 @@ export async function injectDshPlugin(
   if (before.state === "ready") {
     const verified = await verifyInjection(command);
     if (verified.ok) {
-      return { ok: true, message: "mv-AIDE 插件已注入并通过实际配置校验。" };
+      return { ok: true, message: "mv-agent 与 mv-dsh-manager 插件已注入并通过实际配置校验。" };
     }
   }
 
-  const installed = await runProcess(
+  // Install mv-agent
+  const installedAgent = await runProcess(
     command.executable,
     [
       ...command.argsPrefix,
@@ -231,17 +295,34 @@ export async function injectDshPlugin(
       "--profile",
       "web",
       "add",
-      fileSpec(target),
+      fileSpec(dirs.agentDir),
     ],
-    {
-      timeoutMs: 300_000,
-      env: command.env,
-    },
+    { timeoutMs: 300_000, env: command.env },
   );
-  if (installed.code !== 0) {
+  if (installedAgent.code !== 0) {
     return {
       ok: false,
-      message: `DSH 插件安装失败：${processOutput(installed) || "无输出"}`,
+      message: `DSH mv-agent 插件安装失败：${processOutput(installedAgent) || "无输出"}`,
+    };
+  }
+
+  // Install mv-dsh-manager
+  const installedPm = await runProcess(
+    command.executable,
+    [
+      ...command.argsPrefix,
+      "plugin",
+      "--profile",
+      "web",
+      "add",
+      fileSpec(dirs.pmDir),
+    ],
+    { timeoutMs: 300_000, env: command.env },
+  );
+  if (installedPm.code !== 0) {
+    return {
+      ok: false,
+      message: `DSH mv-dsh-manager 插件安装失败：${processOutput(installedPm) || "无输出"}`,
     };
   }
 
@@ -258,7 +339,7 @@ export async function injectDshPlugin(
   const disk = await inspectDshInjection(vaultRoot);
   const verified = await verifyInjection(command);
   if (disk.state === "ready" && verified.ok) {
-    return { ok: true, message: "DSH 与 mv-AIDE 插件均已安装并通过校验。" };
+    return { ok: true, message: "DSH、mv-agent 与 mv-dsh-manager 插件均已安装并通过校验。" };
   }
   return {
     ok: false,

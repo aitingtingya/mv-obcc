@@ -150,16 +150,24 @@ export function dshNodeDir(vaultRoot: string): string {
   return path.join(vaultRoot, ...DSH_NODE_RELATIVE_PATH.split("/"));
 }
 
-export function managedNodeExecutable(vaultRoot: string, platform = process.platform): string {
+function nodeExecutableAt(directory: string, platform: NodeJS.Platform): string {
   return platform === "win32"
-    ? path.join(dshNodeDir(vaultRoot), "node.exe")
-    : path.join(dshNodeDir(vaultRoot), "bin", "node");
+    ? path.join(directory, "node.exe")
+    : path.join(directory, "bin", "node");
+}
+
+function npmExecutableAt(directory: string, platform: NodeJS.Platform): string {
+  return platform === "win32"
+    ? path.join(directory, "npm.cmd")
+    : path.join(directory, "bin", "npm");
+}
+
+export function managedNodeExecutable(vaultRoot: string, platform = process.platform): string {
+  return nodeExecutableAt(dshNodeDir(vaultRoot), platform);
 }
 
 export function managedNpmExecutable(vaultRoot: string, platform = process.platform): string {
-  return platform === "win32"
-    ? path.join(dshNodeDir(vaultRoot), "npm.cmd")
-    : path.join(dshNodeDir(vaultRoot), "bin", "npm");
+  return npmExecutableAt(dshNodeDir(vaultRoot), platform);
 }
 
 function normalizedArch(arch: string): "arm64" | "x64" | null {
@@ -406,28 +414,56 @@ async function installVaultNode(
   vaultRoot: string,
   artifact: NodeArtifact,
   archive: string,
+  workspaceRoot: string,
   runner: typeof runProcess,
   platform: NodeJS.Platform,
 ): Promise<ProcessResult> {
   const target = dshNodeDir(vaultRoot);
-  const staging = `${target}.staging-${Date.now()}`;
-  const backup = `${target}.backup-${Date.now()}`;
-  await fs.rm(staging, { recursive: true, force: true });
-  await fs.mkdir(staging, { recursive: true });
-  const extracted = await extractArchive(artifact, archive, staging, runner, platform);
+
+  // Extract and preflight the runtime inside the 0700 tmp install workspace
+  // (规范三). Only the validated runtime is copied into the vault for the
+  // final same-directory atomic swap below.
+  const tmpStaging = path.join(workspaceRoot, "vault-node-staging");
+  await fs.rm(tmpStaging, { recursive: true, force: true });
+  await fs.mkdir(tmpStaging, { recursive: true });
+  const extracted = await extractArchive(artifact, archive, tmpStaging, runner, platform);
   if (extracted.code !== 0) {
-    await fs.rm(staging, { recursive: true, force: true });
+    await fs.rm(tmpStaging, { recursive: true, force: true });
     return extracted;
   }
-  const root = await firstDirectory(staging);
-  if (!root) {
-    await fs.rm(staging, { recursive: true, force: true });
+  const extractedRoot = await firstDirectory(tmpStaging);
+  if (!extractedRoot) {
+    await fs.rm(tmpStaging, { recursive: true, force: true });
     return { code: null, stdout: "", stderr: t("Node.js 压缩包没有有效的运行时目录。"), timedOut: false };
   }
-  const hadTarget = await fs.access(target).then(() => true, () => false);
+  const preflight = await runner(nodeExecutableAt(extractedRoot, platform), ["--version"], {
+    timeoutMs: 30_000,
+  });
+  if (preflight.code !== 0 || !processOutput(preflight).includes(DSH_NODE_RUNTIME_VERSION)) {
+    await fs.rm(tmpStaging, { recursive: true, force: true });
+    return {
+      code: null,
+      stdout: "",
+      stderr: processOutput(preflight) || t("Node.js 安装后校验失败。"),
+      timedOut: false,
+    };
+  }
+
+  const staging = `${target}.staging-${Date.now()}`;
+  const backup = `${target}.backup-${Date.now()}`;
+  const stagedRoot = path.join(staging, path.basename(extractedRoot));
+  let hadTarget = false;
+  let targetMoved = false;
   try {
-    if (hadTarget) await fs.rename(target, backup);
-    await fs.rename(root, target);
+    await fs.rm(staging, { recursive: true, force: true });
+    await fs.mkdir(staging, { recursive: true });
+    await fs.cp(extractedRoot, stagedRoot, { recursive: true });
+    hadTarget = await fs.access(target).then(() => true, () => false);
+    if (hadTarget) {
+      await fs.rename(target, backup);
+      targetMoved = true;
+    }
+    await fs.rename(stagedRoot, target);
     const verified = await runner(managedNodeExecutable(vaultRoot, platform), ["--version"], {
       timeoutMs: 30_000,
     });
@@ -437,8 +473,10 @@ async function installVaultNode(
     await fs.rm(backup, { recursive: true, force: true });
     return verified;
   } catch (error) {
-    await fs.rm(target, { recursive: true, force: true });
-    if (hadTarget) await fs.rename(backup, target).catch(() => undefined);
+    if (targetMoved) {
+      await fs.rm(target, { recursive: true, force: true });
+      if (hadTarget) await fs.rename(backup, target).catch(() => undefined);
+    }
     return {
       code: null,
       stdout: "",
@@ -447,6 +485,7 @@ async function installVaultNode(
     };
   } finally {
     await fs.rm(staging, { recursive: true, force: true });
+    await fs.rm(tmpStaging, { recursive: true, force: true });
   }
 }
 
@@ -575,7 +614,7 @@ export async function installOrUpgradeNodeRuntime(
   try {
     await (options.downloader ?? downloadAndVerify)(artifact, archive);
     result = await (target === "vault"
-      ? installVaultNode(vaultRoot, artifact, archive, runner, platform)
+      ? installVaultNode(vaultRoot, artifact, archive, workspace.root, runner, platform)
       : installGlobalNode(workspace.root, artifact, archive, runner, platform));
   } catch (error) {
     result = {

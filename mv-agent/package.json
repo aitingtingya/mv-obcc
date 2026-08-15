@@ -1,7 +1,7 @@
 {
-  "name": "@mv-aide/dsh-plugin",
+  "name": "@mv-aide/mv-agent",
   "version": "0.1.0",
-  "description": "mv-AIDE bridge plugin for DeepSeek Harness (DSH): a /mv-aide slash command plus native mv_aide__* tools that connect to the mv-AIDE Obsidian IDE bridge over its own WebSocket JSON-RPC protocol.",
+  "description": "mv-AIDE bridge plugin for DeepSeek Harness (DSH): a /mv-aide slash command plus native mv_aide__* tools that connect to the mv-AIDE IDE bridge over its own WebSocket JSON-RPC protocol.",
   "license": "MIT",
   "type": "module",
   "main": "lib/index.js",
