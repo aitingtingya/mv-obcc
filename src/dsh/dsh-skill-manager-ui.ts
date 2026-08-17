@@ -77,6 +77,10 @@ class NewSkillModal extends Modal {
               new Notice(t("请输入技能名称"));
               return;
             }
+            if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/u.test(this.name.trim())) {
+              new Notice(t("技能名称不合法：DSH 只接受小写 kebab-case，例如 code-reviewer"));
+              return;
+            }
             this.close();
             await this.onSave(this.name.trim(), this.description.trim(), this.content.trim());
           }),

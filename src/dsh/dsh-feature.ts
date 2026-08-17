@@ -133,7 +133,7 @@ async function probeDshWebViaRequestUrl(
 /**
  * Self-contained `mv-agent` (DSH-driven) feature, wired by `main.ts` only.
  * Owns the always-on Ctrl+P command, the managed `dsh web` child process,
- * one-click install, and the hot-load profile injection — none of which touch
+ * one-click install, and the dual-face profile injection — none of which touch
  * existing core logic.
  */
 export class DshFeature {
@@ -440,7 +440,7 @@ export class DshFeature {
       await this.ensurePackage(vaultRoot, "pnpm", null, chooseTarget, false);
       const { nodes, runtime } = await this.inspectActualEnvironment(vaultRoot);
       if (!runtime.command) throw new Error(t("DSH 命令解析失败。"));
-      const result = await injectDshPlugin(vaultRoot, runtime.command);
+      let result = await injectDshPlugin(vaultRoot, runtime.command);
       const actual = await inspectDshInjection(vaultRoot);
       this.environment = environmentFrom(
         nodes,
@@ -448,6 +448,18 @@ export class DshFeature {
         { state: actual.state, detail: actual.detail },
       );
       await this.updatePersistedInjectionState(result.ok && actual.state === "ready");
+      if (result.ok) {
+        const connectedUrls = this.collectActiveDshUrls();
+        const hadRunningDsh = connectedUrls.length > 0 || this.processManager.currentUrl() !== null;
+        if (hadRunningDsh) {
+          const restartedUrl = await this.processManager.restartForObsidian(connectedUrls);
+          this.navigateOpenViewsTo(restartedUrl);
+          result = {
+            ...result,
+            message: `${result.message}\n已重启运行中的 DSH，以加载 mv-agent 浏览器端模块。`,
+          };
+        }
+      }
       return result;
     } catch (error) {
       const vaultRoot = getVaultRoot(this.plugin.app);

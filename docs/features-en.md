@@ -79,9 +79,9 @@ IDE Bridge provides active Obsidian context to Claude Code, Codex CLI, general M
 
 | Setting | Default | Behavior |
 | --- | --- | --- |
-| Enable Claude Code IDE support | On | Writes the Claude IDE lock, registers the `mv-aide` MCP service, and manages required hooks/config |
+| Enable Claude Code IDE support | On | Writes the unified discovery lock (`~/.mv-aide/ide`) plus the Claude compatibility mirror in `~/.claude/ide`, registers the `mv-aide` MCP service, and manages required hooks/config |
 | Enable Codex IDE support | Off | Writes a managed MCP block and exposes `/ide` context |
-| Enable DSH IDE support | Off | Starts the IDE bridge and writes the discovery lock file so the mv-AIDE plugin inside dsh can connect to this vault |
+| Enable DSH IDE support | Off | Starts the IDE bridge and writes the authoritative discovery lock to `~/.mv-aide/ide` so the mv-AIDE plugin inside dsh can connect to this vault |
 | Expose the mv-AIDE protocol | Off | Opens separately authorized HTTP/stdio access for other MCP clients |
 | Auto-manage Claude settings for this repo | On | Manages only the current repo's plugin-owned `ANTHROPIC_BASE_URL` |
 | Upstream mode | Native | Native leaves requests unchanged; Compatibility moves IDE system context to the user message without duplication |
@@ -161,13 +161,13 @@ Kimi currently exposes allow/block rather than a programmable “approve.” Ski
 
 Native mode leaves agent requests untouched. Compatibility mode is intended only for custom Anthropic upstreams: it moves IDE system context into the same request's user message and can temporarily point this repo's `ANTHROPIC_BASE_URL` to a local compatibility endpoint. Leaving the Anthropic upstream field empty reads Claude's configuration automatically, while settings displays the detected value. Disabling it restores only the value taken over by mv-AIDE.
 
-If the bridge fails, the editor, Selection Assistant, Inline Completion, Terminal, and Source Assist still operate independently. “Restart bridge” rebuilds the local service and Claude IDE lock. “Restore plugin-managed Claude settings” restores only the captured `ANTHROPIC_BASE_URL`. “Re-register” and “Clean registration” affect only mv-AIDE's own integration.
+If the bridge fails, the editor, Selection Assistant, Inline Completion, Terminal, and Source Assist still operate independently. “Restart bridge” rebuilds the local service and the unified discovery lock (including the Claude compatibility mirror). “Restore plugin-managed Claude settings” restores only the captured `ANTHROPIC_BASE_URL`. “Re-register” and “Clean registration” affect only mv-AIDE's own integration.
 
 ### DSH Support
 
-DSH is the fourth adapted agent. With **Enable DSH IDE support** turned on, the plugin starts the IDE bridge and writes the discovery lock file; the installed `@mv-aide/dsh-plugin` scans that lock file and connects to this vault over the same local JSON-RPC protocol as Claude Code (`127.0.0.1`, port `47000 + vault seed % 1500`). Once connected, dsh gains:
+DSH is the fourth adapted agent. With **Enable DSH IDE support** turned on, the plugin starts the IDE bridge and writes the authoritative discovery lock to `~/.mv-aide/ide`; the installed `@mv-aide/dsh-plugin` scans that lock file and connects to this vault over the same local JSON-RPC protocol as Claude Code (`127.0.0.1`, port `47000 + vault seed % 1500`). Once connected, dsh gains:
 
-- The `/mv-aide` command: `status` (connection state and tool count), `tools` (list IDE tools), `selection` (read the current selection), and `call <name> [json]` (invoke any bridge tool).
+- The `/mv-aide` command: `status` (per-session connection state and bridge info), `bridges` (list all IDE bridges), `connect <index|port|path|auto>` (per-session manual selection / back to auto), `tools` (list IDE tools), `selection` (read the current selection), and `call <name> [json]` (invoke any bridge tool). Bridge selection is persisted per dsh session and restored after dsh restarts. Picking `mv-aide` from the `/` menu first completes the command into the composer (`/mv-aide `, then `/mv-aide connect ` for `connect`) before opening each recursive popup (`connect` shows the bridge list, `call` shows the tool list) and executes only when a leaf is selected; errors raised by the picker itself are shown in Chinese.
 - Native `mv_aide__*` tools (e.g. `mv_aide__getLatestSelection`, `mv_aide__openFile`), matching the public tools in “Context and Tools” and obeying the same switches.
 - Passive context notifications and diff review: dsh agents receive the same selection pushes and `openDiff` review channel as Claude Code.
 
@@ -201,9 +201,18 @@ Settings exposes Node.js, DSH, pnpm, and plugin injection as four independent la
 
 **Plugin injection** registers `@mv-aide/dsh-plugin` into the patch layer of the active DSH web profile; DSH hot-loads that directory, so no restart is required. Once injected (capability details in Chapter 1, “DSH Support”):
 
-- `/mv-aide status | tools | selection | call <name> [json]`;
+- `/mv-aide status | tools | bridges | connect <index|port|path|auto> | selection | call <name> [json]`;
 - native `mv_aide__*` tools matching the public tool switches;
 - passive context notifications and editable Obsidian diff review.
+
+### DSH Plugin, Skill, and Preset Management
+
+The `/api/mv-aide/*` management panels injected into the mv-agent settings and the DSH web page now perform real installation instead of config-only writes:
+
+- **Import plugin**: a local directory is installed with `dsh plugin --profile web add file:<dir>` into `profiles/web/node_modules` before its patch row is registered; if `dsh` is unavailable it falls back to `file:` hot-loading with an explicit notice. Uninstall removes both the patch row and the profile dependency.
+- **Clone preset**: copies the complete source preset directory (including `agent.cordis.yml` and local plugin files) so the clone mounts normally; DSH-unknown `base:` fields are no longer written.
+- **Preset enable/disable**: user presets are truly hidden/restored by renaming their directory (`<id>.disabled`) instead of writing a `disabled:` key DSH never reads; system presets cannot be disabled.
+- **New skill**: writes into `$DSH_HOME/skills` (DSH's real, hot-watched user skill root) and enforces DSH's kebab-case name rule so the created skill is never silently ignored.
 
 ### Diff as Permission
 
@@ -472,7 +481,7 @@ The receiver must not live under `.obsidian`, and Obsidian startup must never sc
 
 Windows requests no elevation and never writes protected `UserChoice`. Select **MV AIDE File Opener**, not Windows Based Script Host, in the system UI.
 
-Required system-level wrapper registration lives under `~/.mv-aide/`. This is the only mv-AIDE runtime data allowed in the user directory. The wrapper is not a daemon: if Obsidian is closed it first wakes the target vault through an Obsidian URL, then waits for the plugin service; if Obsidian is already running it brings the window forward.
+Required system-level wrapper registration lives under the approved `~/.mv-aide/` system-state root, alongside cross-process state such as IDE discovery and dsh bridge selection. The wrapper is not a daemon: if Obsidian is closed it first wakes the target vault through an Obsidian URL, then waits for the plugin service; if Obsidian is already running it brings the window forward.
 
 “Show file-type icons inside Obsidian” is on by default and affects only tabs and similar UI. The wrapper application provides system association icons using a white document, extension label, and official Obsidian logo badge.
 
@@ -605,9 +614,11 @@ See [WINDOWS-VALIDATION.md](../WINDOWS-VALIDATION.md) for release validation of 
 | `<vault>/mv-aide/external-files/hosts` | External-file host/mapping state |
 | `<vault>/mv-aide/llm-history/latest.md` | Latest Selection Assistant content, overwritten and hidden from common indexes |
 | `<vault>/mv-aide/dsh/` | Vault-installed Node.js, DSH, and pnpm runtimes plus the bridge plugin for mv-agent |
-| `~/.mv-aide/` | Default-opener wrapper, owner, and system-association state only |
+| `~/.mv-aide/ide/` | Unified IDE bridge discovery registry (authoritative mv-AIDE lock files) |
+| `~/.mv-aide/dsh-bridge-selection.json` | Per-session dsh bridge selections (persisted, partitioned by session key) |
+| `~/.mv-aide/` | Default-opener wrapper, owner, system association, and the IDE/dsh state above |
 
-Except for the default opener, runtime configuration must not be stored in the user directory. Legacy Vim paths are read only when the user explicitly requests migration and are not runtime sources.
+Except for the `~/.mv-aide/` entries listed above, runtime configuration must not be stored in the user directory. Legacy Vim paths are read only when the user explicitly requests migration and are not runtime sources.
 
 ### Local Ports and External Network
 

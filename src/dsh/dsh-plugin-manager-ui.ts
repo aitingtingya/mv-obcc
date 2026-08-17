@@ -181,9 +181,9 @@ export function renderDshPluginManager(
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ spec }),
             });
-            const data = (await res.json()) as { ok: boolean; error?: string };
+            const data = (await res.json()) as { ok: boolean; error?: string; message?: string; warning?: string };
             if (data.ok) {
-              new Notice(t("插件导入成功！请在上方点击“插件注入”自动构建并激活。"));
+              new Notice(data.warning ? `${data.message} ${data.warning}` : (data.message || t("插件导入成功！")));
               await loadPlugins();
             } else {
               new Notice(t("导入失败：{error}", { error: data.error || t("未知错误") }));

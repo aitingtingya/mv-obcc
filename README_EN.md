@@ -137,7 +137,7 @@ npm run deploy:local
 
 - The IDE bridge, universal MCP endpoint, and default-opener service listen on `127.0.0.1` only.
 - API keys are stored as plain text in `data.json` inside the current vault's plugin directory. Protect the vault and its backups accordingly.
-- Vim configuration, external-file mirrors, and other vault-level data live under `mv-aide/` in the current vault. System registration data for the default-opener wrapper is the only runtime data allowed in the user directory.
+- Vim configuration, external-file mirrors, and other vault-level data live under `mv-aide/` in the current vault. mv-AIDE system state that must be discovered across processes or while Obsidian is closed lives under `~/.mv-aide/`, including IDE discovery, dsh bridge selection, and default-opener state.
 - mv-agent environment installation accesses the network only after the user clicks an action. Vault-installed Node.js, DSH, pnpm, and bridge files live under `<vault>/mv-aide/dsh/`; downloads, npm caches, and installer scripts use an operation-scoped temporary workspace that is removed when the action ends. Global installation or in-place upgrade uses a native administrator prompt and never silently falls back to the vault.
 - Windows default-app confirmation must be completed by the user. The plugin writes only to the current user's registry, requests no administrator privileges, and never modifies the protected `UserChoice`.
 - Modules have independent switches. When Vim is disabled for every extension, its runtime, listeners, and editor extensions are not loaded.

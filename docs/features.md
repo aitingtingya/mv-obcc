@@ -79,9 +79,9 @@ IDE 桥接把 Obsidian 的活动上下文提供给 Claude Code、Codex CLI、通
 
 | 设置 | 默认值 | 行为 |
 | --- | --- | --- |
-| 启用 Claude Code IDE 功能 | 开 | 写入 Claude IDE lock，注册 `mv-aide` MCP，并管理必要 hooks/config |
+| 启用 Claude Code IDE 功能 | 开 | 写入统一 discovery lock（`~/.mv-aide/ide`）并在 `~/.claude/ide` 写 Claude 兼容镜像，注册 `mv-aide` MCP，并管理必要 hooks/config |
 | 启用 Codex IDE 功能 | 关 | 写入受管 MCP 配置块，提供 `/ide` 上下文 |
-| 启用 dsh IDE 功能 | 关 | 启动 IDE 桥接并写 discovery lock 文件，使 dsh 中的 mv-AIDE 插件可连接本仓库 |
+| 启用 dsh IDE 功能 | 关 | 启动 IDE 桥接并把权威 discovery lock 写入 `~/.mv-aide/ide`，使 dsh 中的 mv-AIDE 插件可连接本仓库 |
 | 暴露 mv-AIDE 协议 | 关 | 向其它 MCP 客户端开放独立授权的 HTTP/stdio 接口 |
 | 自动管理当前仓库 Claude 设置 | 开 | 仅管理当前仓库被插件接管的 `ANTHROPIC_BASE_URL` |
 | 上游模式 | 原生 | 原生不改请求；兼容模式把 IDE system 上下文移动到 user 消息，不复制两份 |
@@ -161,13 +161,13 @@ Kimi 当前只有放行/阻止，没有可编程“批准”；接受 Diff 后�
 
 原生模式不改 Agent 请求。兼容模式只用于自定义 Anthropic 上游：它把 IDE system 上下文移动到同一请求的 user 消息中，并可把当前仓库的 `ANTHROPIC_BASE_URL` 临时指向本地兼容端点。Anthropic 上游地址留空时自动读取 Claude 配置，设置页同时显示当前识别结果；关闭后只恢复插件接管前的值。
 
-桥接失败时，编辑器、划词助手、行内补全、终端和源码工具仍可独立运行。“重启桥接”会重建本地服务和 Claude IDE lock；“恢复插件管理的 Claude 设置”只恢复被接管的 `ANTHROPIC_BASE_URL`。也可使用“重新注册”或“清理注册”，清理不会删除其它 MCP 服务。
+桥接失败时，编辑器、划词助手、行内补全、终端和源码工具仍可独立运行。“重启桥接”会重建本地服务与统一 discovery lock（含 Claude 兼容镜像）；“恢复插件管理的 Claude 设置”只恢复被接管的 `ANTHROPIC_BASE_URL`。也可使用“重新注册”或“清理注册”，清理不会删除其它 MCP 服务。
 
 ### dsh 支持
 
-dsh 是第四个已适配 Agent。开启「启用 dsh IDE 功能」后，插件启动 IDE 桥接并写入 discovery lock 文件，dsh 中安装的 `@mv-aide/dsh-plugin` 会扫描该 lock 文件，用与 Claude Code 相同的本地 JSON-RPC 协议连接本仓库（`127.0.0.1`、端口 `47000 + 仓库种子 % 1500`）。连接后 dsh 侧出现：
+dsh 是第四个已适配 Agent。开启「启用 dsh IDE 功能」后，插件启动 IDE 桥接并把权威 discovery lock 写入 `~/.mv-aide/ide`，dsh 中安装的 `@mv-aide/dsh-plugin` 会扫描该 lock 文件，用与 Claude Code 相同的本地 JSON-RPC 协议连接本仓库（`127.0.0.1`、端口 `47000 + 仓库种子 % 1500`）。连接后 dsh 侧出现：
 
-- `/mv-aide` 命令：`status`（连接状态与工具数）、`tools`（列出 IDE 工具）、`selection`（读取当前选区）、`call <name> [json]`（调用任意桥接工具）。
+- `/mv-aide` 命令：`status`（本会话连接状态与桥信息）、`bridges`（列出所有 IDE 桥）、`connect <序号|端口|路径|auto>`（单会话手动选择/切回自动）、`tools`（列出 IDE 工具）、`selection`（读取当前选区）、`call <name> [json]`（调用任意桥接工具）。桥接选择按 dsh 会话独立持久化，重启 dsh 后仍恢复。在 `/` 菜单选中 `mv-aide` 后会先把命令补全进输入框（`/mv-aide `，选 `connect` 后为 `/mv-aide connect `），再继续弹出二级字段（`connect` 再弹桥列表、`call` 再弹工具列表），选中叶子才执行；选择器自身的错误以中文显示。
 - `mv_aide__*` 原生工具（如 `mv_aide__getLatestSelection`、`mv_aide__openFile`），与本章「上下文与工具」的公共工具一一对应，遵守同一组工具开关。
 - 被动上下文通知与 Diff 审核：dsh Agent 获得与 Claude Code 相同的选区推送和 `openDiff` 审核通道。
 
@@ -201,9 +201,18 @@ mv-agent 把 DeepSeek Harness（DSH）内嵌进 Obsidian：直接使用 DSH Web 
 
 「插件注入」把 `@mv-aide/dsh-plugin` 注册进当前 DSH web profile 的 patch 层，DSH 热加载该目录，无需重启。注入后（能力细节见第 1 章「dsh 支持」）：
 
-- `/mv-aide status | tools | selection | call <name> [json]` 命令；
+- `/mv-aide status | tools | bridges | connect <序号|端口|路径|auto> | selection | call <name> [json]` 命令；
 - 与公共工具开关对应的 `mv_aide__*` 原生工具；
 - 被动上下文通知与 Obsidian 可编辑 Diff 审核。
+
+### DSH 插件、技能与预设管理
+
+mv-agent 设置页和 DSH Web 页注入的 `/api/mv-aide/*` 管理面板现在执行真实安装而不是只写配置：
+
+- **导入插件**：本地目录先经 `dsh plugin --profile web add file:<目录>` 安装到 `profiles/web/node_modules`，再注册 patch 行；`dsh` 不可用时回退为 `file:` 热加载并明确提示。卸载同时移除 patch 行与 profile 依赖。
+- **克隆预设**：复制源预设的完整目录（含 `agent.cordis.yml` 与本地插件文件），新预设可被 DSH 正常挂载；不再写 DSH 不认识的 `base:` 字段。
+- **预设启停**：用户预设通过目录改名（`<id>.disabled`）真实隐藏/恢复，不再写 DSH 不读取的 `disabled:` 字段；系统预设不支持停用。
+- **新建技能**：写入 `$DSH_HOME/skills`（DSH 的真实用户技能根，热监听），并强制名称符合 DSH 的 kebab-case 规则，避免生成被静默忽略的技能。
 
 ### Diff 即权限
 
@@ -470,7 +479,7 @@ Vim 由 mv-AIDE 独立实现，不依赖 Obsidian 内置 Vim 或第三方 Vim �
 
 Windows 不申请管理员权限、不写受保护的 `UserChoice`。在系统列表中应选择 **MV AIDE File Opener**，不是 Windows Based Script Host。
 
-系统 wrapper 的必要注册状态位于 `~/.mv-aide/`，这是本插件唯一允许写入用户目录的运行数据。它不是守护进程：Obsidian 关闭时先通过 Obsidian URL 唤醒目标 vault，再等待插件服务；Obsidian 已打开时会将窗口带到前台。
+系统 wrapper 的必要注册状态位于批准的 `~/.mv-aide/` 系统状态目录中，与 IDE discovery、dsh bridge selection 等跨进程状态共享同一根目录。它不是守护进程：Obsidian 关闭时先通过 Obsidian URL 唤醒目标 vault，再等待插件服务；Obsidian 已打开时会将窗口带到前台。
 
 “Obsidian 内显示文件类型图标”默认开启，只影响标签页等界面；系统文件关联图标由 wrapper 应用提供，样式为白色文档、后缀标注与 Obsidian 官方 logo 徽章。
 
@@ -603,9 +612,11 @@ Windows 默认打开器的发布前验证步骤见 [WINDOWS-VALIDATION.md](../WI
 | `<vault>/mv-aide/external-files/hosts` | 库外文件 host/映射状态 |
 | `<vault>/mv-aide/llm-history/latest.md` | 最近一次划词助手内容，覆盖写入并从常用索引隐藏 |
 | `<vault>/mv-aide/dsh/` | mv-agent 仓库级安装的 Node.js、DSH、pnpm 运行时与桥接插件 |
-| `~/.mv-aide/` | 仅默认打开器 wrapper、owner、系统关联所需状态 |
+| `~/.mv-aide/ide/` | 统一 IDE 桥接发现注册表（mv-AIDE 权威 lock 文件） |
+| `~/.mv-aide/dsh-bridge-selection.json` | dsh 各会话的桥接选择（持久化，会话键分区） |
+| `~/.mv-aide/` | 默认打开器 wrapper、owner、系统关联，以及上述 IDE/dsh 状态 |
 
-除默认打开器外，运行配置不得放在用户目录。旧 Vim 配置路径只在用户点击迁移时读取，不作为运行时来源。
+除本表列出的 `~/.mv-aide/` 条目外，运行配置不得放在用户目录。旧 Vim 配置路径只在用户点击迁移时读取，不作为运行时来源。
 
 ### 本地端口与外部网络
 

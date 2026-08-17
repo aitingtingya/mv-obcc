@@ -1523,7 +1523,7 @@ export class MvAideIdeSettingTab extends PluginSettingTab {
     addHeading(containerEl, t("Claude Code"));
     const claudeSetting = new Setting(containerEl)
       .setName(t("启用 Claude Code IDE 功能"))
-      .setDesc(t("默认开启。关闭后不写 Claude IDE lock、不注册 Claude MCP、不接管 Claude 设置。"))
+      .setDesc(t("默认开启。关闭后不写统一 discovery lock（~/.mv-aide/ide，Claude 兼容镜像也不写）、不注册 Claude MCP、不接管 Claude 设置。"))
       .addToggle((toggle) =>
         toggle
           .setValue(this.plugin.settings.ideIntegrations.claudeCode)
@@ -1777,7 +1777,7 @@ export class MvAideIdeSettingTab extends PluginSettingTab {
     addHeading(containerEl, t("维护"));
     new Setting(containerEl)
       .setName(t("重启桥接"))
-      .setDesc(t("重建本地服务和 Claude Code IDE lock 文件。"))
+      .setDesc(t("重建本地服务与统一 discovery lock 文件（含 Claude 兼容镜像）。"))
       .addButton((button) =>
         button.setButtonText(t("重启")).onClick(async () => {
           await this.plugin.restartBridge();

@@ -4,12 +4,16 @@
 import { listPlugins, togglePlugin, deletePlugin, importPlugin, openPluginFolder } from './plugins-service.js';
 import { listSkills, toggleSkill, importSkill, deleteSkill, openSkillFolder } from './skills-service.js';
 import { listPresets, copyPreset, deletePreset, togglePreset, openPresetFolder } from './presets-service.js';
+import { discoverBridges, listTools } from './bridge-service.js';
+import { installPlanReviewControl } from './plan-review-control.js';
 import { UI_SCRIPT_TAG } from './ui-script.js';
 
 export const name = 'mv-dsh-manager';
 export const inject = ['webServer'];
 
 export function apply(ctx) {
+  installPlanReviewControl(ctx);
+
   const webServer = ctx.get ? ctx.get('webServer') : ctx.webServer;
   if (!webServer || typeof webServer.register !== 'function') {
     ctx.logger?.warn?.('webServer service not available; mv-dsh-manager API will not be mounted.');
@@ -147,7 +151,7 @@ export function apply(ctx) {
         if (pathname === '/api/mv-aide/presets/copy' && method === 'POST') {
           const payload = await readJsonBody();
           const { sourceId, newId, name: presetName, description } = payload;
-          const result = await copyPreset(sourceId, newId, presetName, description);
+          const result = await copyPreset(ctx, sourceId, newId, presetName, description);
           return sendJson(200, result);
         }
 
@@ -162,6 +166,16 @@ export function apply(ctx) {
           const payload = await readJsonBody();
           const result = await openPresetFolder(payload.presetId);
           return sendJson(200, result);
+        }
+
+        // ── Recursive slash-command picker API ──
+        if (pathname === '/api/mv-aide/bridges' && method === 'GET') {
+          const bridges = await discoverBridges();
+          return sendJson(200, { bridges });
+        }
+
+        if (pathname === '/api/mv-aide/tools' && method === 'GET') {
+          return sendJson(200, { tools: listTools() });
         }
 
         return sendJson(404, { ok: false, error: `Route not found: ${method} ${pathname}` });

@@ -69,6 +69,10 @@ class ClonePresetModal extends Modal {
               new Notice(t("请输入新预设 ID"));
               return;
             }
+            if (!/^[a-z0-9][a-z0-9-]*$/u.test(this.targetId.trim())) {
+              new Notice(t("新预设 ID 只能包含小写字母、数字和连字符，且不能以连字符开头"));
+              return;
+            }
             this.close();
             await this.onClone(this.targetId.trim(), this.targetName.trim());
           }),
@@ -223,9 +227,10 @@ export function renderDshPresetManager(
         .setName(`${preset.name} (${preset.id})`)
         .setDesc(`${trustLabel} · ${preset.description || t("无描述")}`);
 
-      // 启停开关
+      // 启停开关（DSH 只支持隐藏/恢复用户预设目录；系统预设不可停用）
       itemSetting.addToggle((toggle) => {
         toggle.setValue(preset.enabled !== false);
+        toggle.setDisabled(preset.trust === "system");
         toggle.onChange(async (newValue) => {
           const targetDisabled = !newValue;
           try {

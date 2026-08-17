@@ -62,6 +62,8 @@ import { TerminalView } from "./src/terminal/terminal-view";
 import { normalizeTerminalThemeSettings } from "./src/terminal/terminal-themes";
 import {
   cleanStaleObsidianLocks,
+  claudeCompatibilityLockDirectory,
+  discoveryLockDirectory,
   removeLockFile,
   writeLockFile,
 } from "./src/lock-file";
@@ -423,7 +425,8 @@ export default class MvAideIdePlugin extends Plugin {
   codexIdeError: string | null = null;
   private server: BridgeServer | null = null;
   private bridgeAuthToken: string | null = null;
-  private bridgeHasClaudeLock = false;
+  private bridgeHasDiscoveryLock = false;
+  private bridgeHasClaudeMirror = false;
   private readonly latestSelections = new Map<string, SelectionState>();
   private latestWebLeaf: WorkspaceLeaf | null = null;
   /** 每个 webviewer 叶子的页内推送缓存：{text 选区文本, url 导航中目标 URL}。 */
@@ -722,10 +725,6 @@ export default class MvAideIdePlugin extends Plugin {
     this.fileExplorerPathBar.register();
     this.fileExplorerPathBar.setEnabled(this.settings.fileExplorerPathBar);
     this.dshFeature = new DshFeature(this);
-    if (this.settings.browserLocalFilePreview) {
-      this.localWebPreview = new LocalWebPreviewFeature(this);
-      void this.localWebPreview.setEnabled(true);
-    }
     this.texOutline = new TexOutlineFeature(this.app, () =>
       this.texOutlineFeatureEnabled(),
     );
@@ -2126,8 +2125,14 @@ export default class MvAideIdePlugin extends Plugin {
       this.dshFeature?.requiresBridge() === true;
     if (!bridgeRequested || !this.server || !this.port) {
       this.clearScheduledMcpRegistration();
-      if (this.bridgeHasClaudeLock && this.port) removeLockFile(this.port);
-      this.bridgeHasClaudeLock = false;
+      if (this.bridgeHasDiscoveryLock && this.port) {
+        removeLockFile(this.port, discoveryLockDirectory());
+      }
+      if (this.bridgeHasClaudeMirror && this.port) {
+        removeLockFile(this.port, claudeCompatibilityLockDirectory());
+      }
+      this.bridgeHasDiscoveryLock = false;
+      this.bridgeHasClaudeMirror = false;
       if (!this.settings.ideIntegrations.claudeCode) {
         this.mcpStatus = t("Claude Code IDE 已关闭");
         await this.restoreClaudeSettings();
@@ -2135,14 +2140,21 @@ export default class MvAideIdePlugin extends Plugin {
       return;
     }
 
-    cleanStaleObsidianLocks();
-    if (!this.bridgeHasClaudeLock) {
-      writeLockFile(
-        this.port,
-        getVaultRoot(this.app),
-        this.bridgeAuthToken ?? randomUUID(),
-      );
-      this.bridgeHasClaudeLock = true;
+    const vaultRoot = getVaultRoot(this.app);
+    const authToken = this.bridgeAuthToken ?? randomUUID();
+    this.bridgeAuthToken = authToken;
+    cleanStaleObsidianLocks(discoveryLockDirectory());
+    cleanStaleObsidianLocks(claudeCompatibilityLockDirectory());
+    if (!this.bridgeHasDiscoveryLock) {
+      writeLockFile(this.port, vaultRoot, authToken, discoveryLockDirectory());
+      this.bridgeHasDiscoveryLock = true;
+    }
+    if (this.settings.ideIntegrations.claudeCode && !this.bridgeHasClaudeMirror) {
+      writeLockFile(this.port, vaultRoot, authToken, claudeCompatibilityLockDirectory());
+      this.bridgeHasClaudeMirror = true;
+    } else if (!this.settings.ideIntegrations.claudeCode && this.bridgeHasClaudeMirror) {
+      removeLockFile(this.port, claudeCompatibilityLockDirectory());
+      this.bridgeHasClaudeMirror = false;
     }
     if (this.settings.ideIntegrations.claudeCode) {
       await this.applyClaudeSettingsBestEffort(notify);
@@ -2199,8 +2211,10 @@ export default class MvAideIdePlugin extends Plugin {
     this.bridgeAuthToken = null;
     await this.server?.stop();
     this.server = null;
-    if (port && this.bridgeHasClaudeLock) removeLockFile(port);
-    this.bridgeHasClaudeLock = false;
+    if (port && this.bridgeHasDiscoveryLock) removeLockFile(port, discoveryLockDirectory());
+    if (port && this.bridgeHasClaudeMirror) removeLockFile(port, claudeCompatibilityLockDirectory());
+    this.bridgeHasDiscoveryLock = false;
+    this.bridgeHasClaudeMirror = false;
   }
 
   private async applyClaudeSettings(): Promise<void> {
@@ -2903,6 +2917,10 @@ export default class MvAideIdePlugin extends Plugin {
         this.syncCodexIdeProvider(),
       );
       if (this.unloaded) return;
+      await this.startupPerformance.measure("post-layout.local-web-preview", () =>
+        this.startLocalWebPreviewIfEnabled(),
+      );
+      if (this.unloaded) return;
       await this.startupPerformance.measure("post-layout.local-services", () =>
         this.syncLocalServices(false, false),
       );
@@ -2920,6 +2938,14 @@ export default class MvAideIdePlugin extends Plugin {
       }));
       console.debug("[mv-aide] startup performance", metrics);
     }
+  }
+
+  private async startLocalWebPreviewIfEnabled(): Promise<void> {
+    if (this.unloaded || !this.settings.browserLocalFilePreview) return;
+    if (!this.localWebPreview) {
+      this.localWebPreview = new LocalWebPreviewFeature(this);
+    }
+    await this.localWebPreview.setEnabled(true);
   }
 
   getStartupPerformanceSnapshot(): StartupPerformanceSnapshot {

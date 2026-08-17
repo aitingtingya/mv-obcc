@@ -177,13 +177,30 @@ export async function toggleSkill(skillId, disabled) {
   }
 }
 
+/**
+ * Normalize a user-supplied skill name to DSH's real grammar:
+ * /^[a-z0-9]+(?:-[a-z0-9]+)*$/ (kebab-case; underscores are NOT allowed and
+ * would make dsh-skill silently ignore the file). Returns '' when nothing
+ * usable remains.
+ */
+export function normalizeSkillName(name) {
+  const normalized = String(name || '')
+    .trim()
+    .toLowerCase()
+    .replace(/_+/gu, '-')
+    .replace(/[^a-z0-9-]+/gu, '-')
+    .replace(/-+/gu, '-')
+    .replace(/^-+|-+$/gu, '');
+  return /^[a-z0-9]+(?:-[a-z0-9]+)*$/u.test(normalized) ? normalized : '';
+}
+
 export async function importSkill(name, description, content) {
   if (!name || typeof name !== 'string') {
     return { ok: false, error: 'Skill name is required' };
   }
-  const cleanName = name.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '-');
+  const cleanName = normalizeSkillName(name);
   if (!cleanName) {
-    return { ok: false, error: 'Invalid skill name' };
+    return { ok: false, error: `技能名称不合法：DSH 只接受小写 kebab-case（${normalizeSkillName.rule ?? '^[a-z0-9]+(?:-[a-z0-9]+)*$'}），例如 "code-reviewer"` };
   }
 
   const dshHome = process.env.DSH_HOME || path.join(os.homedir(), '.dsh');
@@ -191,6 +208,13 @@ export async function importSkill(name, description, content) {
   const targetFile = path.join(targetDir, 'SKILL.md');
 
   try {
+    try {
+      await fs.access(targetFile);
+      return { ok: false, exists: true, error: `技能 "${cleanName}" 已存在；请先删除旧技能或使用新名称` };
+    } catch {
+      // Target does not exist yet
+    }
+
     await fs.mkdir(targetDir, { recursive: true });
 
     let bodyText = content || `# ${cleanName}\n\nSkill instructions here.`;
@@ -206,6 +230,10 @@ export async function importSkill(name, description, content) {
       metadata = { ...metadata, ...parsed.metadata };
       bodyText = parsed.body;
     }
+    // The canonical name always comes from the validated directory/file name;
+    // a conflicting frontmatter name would otherwise make DSH ignore the file.
+    metadata.name = cleanName;
+    if (description && description.trim()) metadata.description = description.trim();
 
     const finalContent = stringifyFrontmatter(metadata, bodyText);
     await fs.writeFile(targetFile, finalContent, 'utf-8');

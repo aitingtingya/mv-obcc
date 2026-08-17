@@ -364,7 +364,7 @@ export const en: Record<string, string> = {
 
   // ── 设置面板：IDE 桥接 / IDE bridge settings ────────────────────────
   "启用 Claude Code IDE 功能": "Enable Claude Code IDE features",
-  "默认开启。关闭后不写 Claude IDE lock、不注册 Claude MCP、不接管 Claude 设置。": "Enabled by default. When off, no Claude IDE lock is written, no Claude MCP is registered, and Claude settings are not managed.",
+  "默认开启。关闭后不写统一 discovery lock（~/.mv-aide/ide，Claude 兼容镜像也不写）、不注册 Claude MCP、不接管 Claude 设置。": "Enabled by default. When off, no unified discovery lock is written (~/.mv-aide/ide, including the Claude compatibility mirror), no Claude MCP is registered, and Claude settings are not managed.",
   "状态：已禁用": "Status: disabled",
   "● 启动失败: {error}": "● Startup failed: {error}",
   "● 运行中": "● Running",
@@ -481,7 +481,7 @@ export const en: Record<string, string> = {
   "Diff 审核行为": "Diff review behavior",
   "完全跟随 Claude Code 权限模式：默认权限会显示审核；acceptEdits 会直接接受编辑，插件不会额外弹窗。": "Follows Claude Code's permission mode exactly: the default permission shows a review; acceptEdits accepts edits directly without an extra dialog.",
   "重启桥接": "Restart bridge",
-  "重建本地服务和 Claude Code IDE lock 文件。": "Rebuilds the local service and the Claude Code IDE lock file.",
+  "重建本地服务与统一 discovery lock 文件（含 Claude 兼容镜像）。": "Rebuilds the local service and the unified discovery lock file (including the Claude compatibility mirror).",
   "重启": "Restart",
   "mv-AIDE 桥接已重启。": "The mv-AIDE bridge has been restarted.",
   "恢复插件管理的 Claude 设置": "Restore plugin-managed Claude settings",
@@ -1001,7 +1001,7 @@ export const en: Record<string, string> = {
   "● 运行中（端口 {port}）": "● Running (port {port})",
   "● 等待启动": "● Starting",
   "向 dsh 注入 mv-aide 插件": "Inject the mv-aide plugin into dsh",
-  "把 @mv-aide/dsh-plugin 注册进 dsh 的 web profile，使 /mv-aide 与 mv_aide__* 工具在 dsh 中可用。注入后运行中的 dsh 会自动热加载，无需重启。": "Registers @mv-aide/dsh-plugin into the dsh web profile, enabling the /mv-aide command and mv_aide__* tools in dsh. A running dsh instance hot-loads it automatically — no restart needed.",
+  "把 @mv-aide/dsh-plugin 注册进 dsh 的 web profile，使 /mv-aide 与 mv_aide__* 工具在 dsh 中可用。注入后运行中的 dsh 会自动热加载，无需重启。": "Registers mv-agent in the dsh web profile, enabling /mv-aide and mv_aide__* tools. A running DSH is restarted once so its browser module graph includes mv-agent.",
   "mv-agent 由 DeepSeek Harness（dsh）驱动：本分区负责一键安装 dsh、把 mv-AIDE 桥接插件注入 dsh、并配置 IDE 工具与被动感知对库外项目的开放策略。": "mv-agent is powered by DeepSeek Harness (dsh): this section installs dsh in one click, injects the mv-AIDE bridge plugin into dsh, and configures which IDE tools and passive notifications are open to projects outside the vault.",
   "安装与启动": "Install & launch",
   "选择安装位置": "Choose installation location",
@@ -1242,6 +1242,7 @@ export const en: Record<string, string> = {
   "我的专属子智能体": "My custom subagent",
   "确认克隆": "Confirm clone",
   "请输入新预设 ID": "Please enter new preset ID",
+  "新预设 ID 只能包含小写字母、数字和连字符，且不能以连字符开头": "New preset ID may only contain lowercase letters, numbers, and hyphens, and must not start with a hyphen",
   "DSH 子智能体管理": "DSH subagent management",
   "子智能体与 Agent 预设": "Subagents & Agent presets",
   "查看与管理 DeepSeek Harness 的 Agent 预设模板，支持快速克隆生成新子智能体。": "View and manage DeepSeek Harness agent presets with quick clone support.",
@@ -1283,6 +1284,8 @@ export const en: Record<string, string> = {
   "实时查看与管理 DeepSeek Harness 中加载的 Cordis 插件，支持毫秒级热启停与管理。": "View and manage Cordis plugins loaded in DeepSeek Harness, supporting real-time hot enable/disable and management.",
   "请输入要导入的插件包名或本地路径 (例如: @scope/pkg 或 file:/path/to/pkg):": "Please enter plugin package name or local path to import (e.g. @scope/pkg or file:/path/to/pkg):",
   "插件导入成功！请在上方点击“插件注入”自动构建并激活。": "Plugin imported successfully! Click 'Plugin Injection' above to build and activate.",
+  "插件导入成功！": "Plugin imported successfully!",
+  "技能名称不合法：DSH 只接受小写 kebab-case，例如 code-reviewer": "Invalid skill name: DSH accepts lowercase kebab-case only, e.g. code-reviewer",
   "导入失败：{error}": "Import failed: {error}",
   "DSH 子智能体列表": "DSH subagent list",
 };

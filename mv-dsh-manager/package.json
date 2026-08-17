@@ -1,9 +1,24 @@
 {
   "name": "@mv-aide/mv-dsh-manager",
-  "version": "0.1.0",
-  "description": "DeepSeek Harness runtime visual management plugin for plugins, skills, and subagents",
+  "version": "0.1.3",
+  "description": "DeepSeek Harness runtime visual management plugin for plugins, skills, and subagents; also provides the recursive slash-command field picker",
   "main": "lib/index.js",
   "type": "module",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-commands",
+        "@deepseek-ai/dsh-client-runtime",
+        "@deepseek-ai/dsh-api-remotes"
+      ],
+      "platform": "web"
+    }
+  },
   "keywords": [
     "cordis",
     "plugin",

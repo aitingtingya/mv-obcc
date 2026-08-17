@@ -831,6 +831,10 @@ export const UI_SCRIPT_BODY = `
       });
       if (!values) return;
       const name = values.name;
+      if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/u.test(name)) {
+        toast('技能名称不合法：DSH 只接受小写 kebab-case，例如 code-reviewer', 'error');
+        return;
+      }
       const desc = values.description;
       fetch('/api/mv-aide/skills/import', {
         method: 'POST',
@@ -1029,6 +1033,10 @@ export const UI_SCRIPT_BODY = `
         ]
       });
       if (!values) return;
+      if (!/^[a-z0-9][a-z0-9-]*$/u.test(values.newId)) {
+        toast('新预设 ID 只能包含小写字母、数字和连字符，且不能以连字符开头', 'error');
+        return;
+      }
       fetch('/api/mv-aide/presets/copy', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1101,6 +1109,12 @@ export const UI_SCRIPT_BODY = `
           'background: ' + (isEn ? 'var(--dsw-alias-bg-layer-1, rgba(255,255,255,0.08))' : 'var(--dsw-alias-state-success-primary, #10b981)'),
           'color: ' + (isEn ? 'var(--dsw-alias-label-secondary, #aaa)' : '#fff'),
         ].join('; ');
+        if (isSys) {
+          toggleBtn.disabled = true;
+          toggleBtn.title = '系统内置预设不支持停用；可先克隆再停用副本';
+          toggleBtn.style.cursor = 'not-allowed';
+          toggleBtn.style.opacity = '0.5';
+        }
 
         toggleBtn.onclick = async function() {
           toggleBtn.disabled = true;
@@ -1147,6 +1161,10 @@ export const UI_SCRIPT_BODY = `
             ]
           });
           if (!values) return;
+          if (!/^[a-z0-9][a-z0-9-]*$/u.test(values.newId)) {
+            toast('新预设 ID 只能包含小写字母、数字和连字符，且不能以连字符开头', 'error');
+            return;
+          }
           fetch('/api/mv-aide/presets/copy', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },

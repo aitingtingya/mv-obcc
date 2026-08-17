@@ -11,7 +11,13 @@ export interface LockFileData {
   authToken: string;
 }
 
-export function lockDirectory(): string {
+/** Canonical mv-AIDE bridge registry: all lock-based agents discover from here. */
+export function discoveryLockDirectory(): string {
+  return path.join(os.homedir(), ".mv-aide", "ide");
+}
+
+/** Claude Code compatibility mirror: Claude CLI only scans $CLAUDE_CONFIG_DIR/ide. */
+export function claudeCompatibilityLockDirectory(): string {
   return path.join(os.homedir(), ".claude", "ide");
 }
 
@@ -19,7 +25,7 @@ export function writeLockFile(
   port: number,
   workspaceFolder: string,
   authToken: string,
-  directory = lockDirectory(),
+  directory = discoveryLockDirectory(),
 ): string {
   fs.mkdirSync(directory, { recursive: true });
   const target = path.join(directory, `${port}.lock`);
@@ -36,7 +42,7 @@ export function writeLockFile(
   return target;
 }
 
-export function removeLockFile(port: number, directory = lockDirectory()): void {
+export function removeLockFile(port: number, directory = discoveryLockDirectory()): void {
   try {
     fs.unlinkSync(path.join(directory, `${port}.lock`));
   } catch {
@@ -44,7 +50,7 @@ export function removeLockFile(port: number, directory = lockDirectory()): void 
   }
 }
 
-export function cleanStaleObsidianLocks(directory = lockDirectory()): void {
+export function cleanStaleObsidianLocks(directory = discoveryLockDirectory()): void {
   let entries: string[];
   try {
     entries = fs.readdirSync(directory).filter((entry) => entry.endsWith(".lock"));

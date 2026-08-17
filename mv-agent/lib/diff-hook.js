@@ -301,12 +301,15 @@ async function writeApprovedFile(targetPath, contents) {
 
 /**
  * Create the `tools/execute` interceptor.
- * @param ctx - the plugin context (reads `fs`, `sandboxPolicy` lazily).
- * @param supervisor - the bridge supervisor (folders, review flag, callTool).
- * @param log - warning sink.
+ * @param {object} opts
+ * @param {object} ctx - the plugin context (reads `fs`, `sandboxPolicy` lazily).
+ * @param {object|((exec:any)=>object|null)} [opts.supervisor] - a bridge
+ *   supervisor, or a resolver returning the supervisor for the executing
+ *   agent's session. `resolveSupervisor` takes precedence when both are given.
+ * @param {function} log - warning sink.
  * @returns the async waterfall handler `(exec, next) => Promise<result>`.
  */
-export function createDiffHook({ ctx, supervisor, log }) {
+export function createDiffHook({ ctx, supervisor, resolveSupervisor, log }) {
   return async function diffHook(exec, next) {
     const toolName = exec?.name;
     if (!WRITE_TOOL_NAMES.includes(toolName)) return next();
@@ -320,6 +323,12 @@ export function createDiffHook({ ctx, supervisor, log }) {
     }
     // Without a confining filesystem there is no permission wall to replace.
     if (ctx.get('fs')?.sandboxMode === undefined) return next();
+
+    const currentSupervisor =
+      typeof resolveSupervisor === 'function'
+        ? await resolveSupervisor(exec)
+        : supervisor ?? null;
+    if (!currentSupervisor) return next();
 
     let policy;
     try {
@@ -343,9 +352,9 @@ export function createDiffHook({ ctx, supervisor, log }) {
       args,
       policy,
       targetPath,
-      workspaceFolders: supervisor.workspaceFolders,
-      reviewOutsideVault: supervisor.reviewOutsideVault,
-      bridgeConnected: supervisor.isConnected(),
+      workspaceFolders: currentSupervisor.workspaceFolders,
+      reviewOutsideVault: currentSupervisor.reviewOutsideVault,
+      bridgeConnected: currentSupervisor.isConnected(),
     });
     if (!review) {
       // A permission moment existed but the review was skipped: say WHY, so
@@ -353,10 +362,10 @@ export function createDiffHook({ ctx, supervisor, log }) {
       // silently degrading to the default approval card.
       const escalation = isEscalationRetry(args);
       if (escalation || wouldBeDenied(policy, targetPath)) {
-        const reason = !supervisor.isConnected()
+        const reason = !currentSupervisor.isConnected()
           ? 'bridge not connected'
-          : !isInsideAny(targetPath, supervisor.workspaceFolders ?? []) &&
-              supervisor.reviewOutsideVault !== true
+          : !isInsideAny(targetPath, currentSupervisor.workspaceFolders ?? []) &&
+              currentSupervisor.reviewOutsideVault !== true
             ? 'outside vault with "reviewOutsideVault" disabled'
             : 'unknown (adapter rejected the call)';
         log(
@@ -380,7 +389,7 @@ export function createDiffHook({ ctx, supervisor, log }) {
 
     try {
       const result = await withTimeout(
-        supervisor.callTool(
+        currentSupervisor.callTool(
           'openDiff',
           {
             old_file_path: targetPath,
