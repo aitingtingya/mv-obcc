@@ -375,8 +375,15 @@ export class DshProcessManager {
       throw new Error("DSH 尚未安装，请先在 mv-agent 设置中点击“安装”。");
     }
     return new Promise((resolve, reject) => {
-      const args = [...command.argsPrefix, "web", "--port", String(port)];
-      const child = this.spawn(command.executable, args, {
+      const rawArgs = [...command.argsPrefix, "web", "--port", String(port)];
+      let executable = command.executable;
+      let args = rawArgs;
+      if (process.platform !== "win32") {
+        const shell = process.env.SHELL || "/bin/zsh";
+        args = ["-l", "-c", 'exec "$@"', "_", executable, ...rawArgs];
+        executable = shell;
+      }
+      const child = this.spawn(executable, args, {
         cwd: this.vaultRoot(),
         env: command.env,
         stdio: ["ignore", "pipe", "pipe"],
