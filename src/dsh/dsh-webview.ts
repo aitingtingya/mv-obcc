@@ -502,6 +502,7 @@ export class DshWebView extends ItemView {
       attr: {
         id: "mv-aide-dsh-frame",
         title: DSH_VIEW_TITLE,
+        allow: "clipboard-read; clipboard-write",
       },
     });
     this.frameEl = frame;
