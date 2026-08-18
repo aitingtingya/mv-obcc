@@ -386,6 +386,35 @@ export function renderDshSection(
         }),
     );
 
+  new Setting(installEl)
+    .setName(t("终端感知增强"))
+    .setDesc(
+      t("开启时 mv-agent 使用 mv-AIDE 原生终端控制工具；关闭时恢复使用基础 IDE getTerminalOutput。该设置只影响 mv-agent / DSH。"),
+    )
+    .addToggle((toggle) =>
+      toggle
+        .setValue(plugin.settings.dsh.terminalAwarenessEnhanced)
+        .onChange(async (value) => {
+          plugin.settings.dsh.terminalAwarenessEnhanced = value;
+          await plugin.saveAndApplySettings();
+        }),
+    );
+
+  new Setting(installEl)
+    .setName(t("隐藏 Obsidian 原生状态栏"))
+    .setDesc(
+      t("仅隐藏 Obsidian 窗口底部原生 .status-bar 容器，不操作 mv-agent 自有状态栏。"),
+    )
+    .addToggle((toggle) =>
+      toggle
+        .setValue(plugin.settings.hideObsidianStatusBar)
+        .onChange(async (value) => {
+          plugin.settings.hideObsidianStatusBar = value;
+          await plugin.saveData(plugin.settings);
+          plugin.applyObsidianStatusBarVisibility();
+        }),
+    );
+
   // ── IDE 工具（100% 照抄 IDE桥接设置条目，仅开关换成作用域下拉；
   //    被动/主动是其中的两个嵌套子折叠区）──────────────────────────
   const toolsEl = subsection(

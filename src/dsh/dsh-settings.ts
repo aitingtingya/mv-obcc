@@ -32,6 +32,8 @@ export interface DshSettings {
   reviewOutsideVault: boolean;
   /** Passive delivery mode; default "live". */
   passiveDelivery: DshPassiveDelivery;
+  /** Use mv-agent's private native terminal control tools instead of getTerminalOutput. */
+  terminalAwarenessEnhanced: boolean;
   /**
    * 状态栏「打开」勾选框：推送位置信息（文件/页面地址）。轨迹跟踪开时
    * 强制生效；关时按此开关决定（默认 true，可取消勾选不再推送）。
@@ -58,6 +60,7 @@ export const DEFAULT_DSH_SETTINGS: DshSettings = {
   injected: false,
   reviewOutsideVault: false,
   passiveDelivery: "live",
+  terminalAwarenessEnhanced: false,
   pushLocation: true,
   pushSelection: true,
   outsideToolPolicy: {},
@@ -111,6 +114,7 @@ export function normalizeDshSettings(raw: unknown): DshSettings {
     injected: value.injected === true,
     reviewOutsideVault: value.reviewOutsideVault === true,
     passiveDelivery: normalizePassiveDelivery(value.passiveDelivery),
+    terminalAwarenessEnhanced: value.terminalAwarenessEnhanced === true,
     pushLocation: value.pushLocation !== false,
     pushSelection: value.pushSelection !== false,
     outsideToolPolicy: normalizeOutsideToolPolicy(value.outsideToolPolicy),

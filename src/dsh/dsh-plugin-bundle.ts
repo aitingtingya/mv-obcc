@@ -7,10 +7,12 @@ import agentDiffHook from "inline:../../mv-agent/lib/diff-hook.js";
 import agentHoverSidebar from "inline:../../mv-agent/lib/hover-sidebar.js";
 import agentIndex from "inline:../../mv-agent/lib/index.js";
 import agentPassiveState from "inline:../../mv-agent/lib/passive-state.js";
+import agentTerminalTools from "inline:../../mv-agent/lib/terminal-tools.js";
 
 import dshManagerPackageJson from "inline:../../mv-dsh-manager/package.json?text";
 import dshManagerIndex from "inline:../../mv-dsh-manager/lib/index.js";
 import dshManagerPluginsService from "inline:../../mv-dsh-manager/lib/plugins-service.js";
+import dshManagerPluginToggleState from "inline:../../mv-dsh-manager/lib/plugin-toggle-state.js";
 import dshManagerSkillsService from "inline:../../mv-dsh-manager/lib/skills-service.js";
 import dshManagerPresetsService from "inline:../../mv-dsh-manager/lib/presets-service.js";
 import dshManagerBridgeService from "inline:../../mv-dsh-manager/lib/bridge-service.js";
@@ -30,12 +32,14 @@ export const MV_AGENT_PLUGIN_FILES: Readonly<Record<string, string>> = {
   "lib/hover-sidebar.js": agentHoverSidebar,
   "lib/index.js": agentIndex,
   "lib/passive-state.js": agentPassiveState,
+  "lib/terminal-tools.js": agentTerminalTools,
 };
 
 export const MV_DSH_MANAGER_PLUGIN_FILES: Readonly<Record<string, string>> = {
   "package.json": dshManagerPackageJson,
   "lib/index.js": dshManagerIndex,
   "lib/plugins-service.js": dshManagerPluginsService,
+  "lib/plugin-toggle-state.js": dshManagerPluginToggleState,
   "lib/skills-service.js": dshManagerSkillsService,
   "lib/presets-service.js": dshManagerPresetsService,
   "lib/bridge-service.js": dshManagerBridgeService,

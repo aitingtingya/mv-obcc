@@ -1,312 +1,297 @@
-// Presets & Subagents Service for @mv-aide/mv-dsh-manager
+// Agent Presets adapter for @mv-aide/mv-dsh-manager.
+// DSH remains the active-roster authority. The one intentional filesystem
+// supplement is the manager's historical user-preset disable lifecycle:
+// <id> <-> <id>.disabled under DSH's official user preset root.
 import fs from 'node:fs/promises';
-import path from 'node:path';
 import os from 'node:os';
+import path from 'node:path';
+import { parse } from 'yaml';
 
-/** DSH accepts only this shape for a preset directory name (dsh-agent-presets PRESET_ID). */
 const PRESET_ID = /^[a-z0-9][a-z0-9-]*$/u;
-const DISABLED_SUFFIX = '.disabled';
+const USER_PRESET_DIR = '.agent-presets';
+const COMPOSITION_FILE = 'agent.cordis.yml';
+const METADATA_FILE = 'preset.yml';
 
 function dshHome() {
   return process.env.DSH_HOME || path.join(os.homedir(), '.dsh');
 }
 
-function userPresetsDir() {
-  return path.join(dshHome(), '.agent-presets');
-}
-
-function parseSimpleYaml(raw) {
-  const result = {};
-  const lines = raw.split(/\r?\n/u);
-  for (const line of lines) {
-    const colonIdx = line.indexOf(':');
-    if (colonIdx > 0 && !line.startsWith(' ') && !line.startsWith('-')) {
-      const key = line.slice(0, colonIdx).trim();
-      let val = line.slice(colonIdx + 1).trim();
-      if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
-        val = val.slice(1, -1);
-      }
-      result[key] = val;
-    }
-  }
-  return result;
-}
-
-async function readMetadata(dir) {
-  try {
-    return parseSimpleYaml(await fs.readFile(path.join(dir, 'preset.yml'), 'utf8'));
-  } catch {
-    return {};
-  }
-}
-
-async function pathExists(target) {
-  try {
-    await fs.access(target);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function quoteYaml(value) {
-  return `"${String(value).replace(/\\/gu, '\\\\').replace(/"/gu, '\\"')}"`;
+function userPresetRoot() {
+  return path.join(dshHome(), USER_PRESET_DIR);
 }
 
 function getAgentPresetsService(ctx) {
+  // DSH rc.7 reflect contexts can reject undeclared service property reads.
+  // Dynamic manager consumers must use the official lookup seam.
   try {
-    if (ctx && ctx.reflect && typeof ctx.reflect.get === 'function') {
-      return ctx.reflect.get('agentPresets');
-    }
+    const service = ctx?.get?.('agentPresets');
+    if (service && typeof service.list === 'function') return service;
   } catch {
-    // Ignore
+    // Fall through to reflection for older access shapes.
+  }
+  try {
+    const service = ctx?.reflect?.get?.('agentPresets');
+    if (service && typeof service.list === 'function') return service;
+  } catch {
+    // No roster service in this context.
   }
   return null;
 }
 
-/** Scan one user-root directory (normal or `.disabled`) into a preset row. */
-async function readUserPresetEntry(dir, id, enabled) {
-  const meta = await readMetadata(dir);
+function getApiProxy(ctx) {
+  try {
+    const service = ctx?.get?.('apiProxy');
+    if (service?.agentPresets) return service;
+  } catch {
+    // Fall through to reflection for older access shapes.
+  }
+  try {
+    const service = ctx?.reflect?.get?.('apiProxy');
+    if (service?.agentPresets) return service;
+  } catch {
+    // No host opener service in this composition.
+  }
+  return null;
+}
+
+function mapPreset(item, defaultId, enabled = true) {
   return {
-    id,
-    name: meta.name || id,
-    description: meta.description || '',
-    trust: 'user',
+    id: item.id,
+    name: item.name || item.id,
+    description: item.description || '',
+    trust: item.trust,
+    path: item.path || null,
     enabled,
-    path: dir,
+    isDefault: item.id === defaultId,
+    writable: item.trust === 'user',
+    broken: item.broken || null,
+    order: item.order,
   };
 }
 
-async function scanUserPresetDirs() {
-  const root = userPresetsDir();
-  const entries = [];
+async function readDisabledMetadata(directory, id) {
   try {
-    const dirs = await fs.readdir(root, { withFileTypes: true });
-    for (const ent of dirs) {
-      if (!ent.isDirectory()) continue;
-      const disabled = ent.name.endsWith(DISABLED_SUFFIX);
-      const id = disabled ? ent.name.slice(0, -DISABLED_SUFFIX.length) : ent.name;
-      if (!PRESET_ID.test(id)) continue;
-      entries.push(await readUserPresetEntry(path.join(root, ent.name), id, !disabled));
-    }
+    const raw = await fs.readFile(path.join(directory, METADATA_FILE), 'utf8');
+    const value = parse(raw);
+    return {
+      name: typeof value?.name === 'string' && value.name ? value.name : id,
+      description: typeof value?.description === 'string' ? value.description : '',
+      order: Number.isFinite(value?.order) ? value.order : undefined,
+    };
   } catch {
-    // Directory not present yet
+    return { name: id, description: '', order: undefined };
   }
-  return entries;
+}
+
+async function listDisabledUserPresets() {
+  const root = userPresetRoot();
+  let entries;
+  try {
+    entries = await fs.readdir(root, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  const result = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !entry.name.endsWith('.disabled')) continue;
+    const id = entry.name.slice(0, -'.disabled'.length);
+    if (!PRESET_ID.test(id)) continue;
+    const directory = path.join(root, entry.name);
+    const composition = path.join(directory, COMPOSITION_FILE);
+    try {
+      await fs.access(composition);
+    } catch {
+      continue;
+    }
+    const metadata = await readDisabledMetadata(directory, id);
+    result.push(mapPreset({
+      id,
+      trust: 'user',
+      path: composition,
+      name: metadata.name,
+      description: metadata.description,
+      order: metadata.order,
+    }, undefined, false));
+  }
+  return result;
 }
 
 export async function listPresets(ctx) {
-  const presets = [];
-
-  // 1. Agent preset service view (system presets plus valid user presets).
-  const agentPresets = getAgentPresetsService(ctx);
-  if (agentPresets && typeof agentPresets.list === 'function') {
-    try {
-      const list = await agentPresets.list();
-      for (const item of list) {
-        presets.push({
-          id: item.id,
-          name: (item.metadata && item.metadata.name) || item.id,
-          description: (item.metadata && item.metadata.description) || '',
-          trust: item.trust || 'system',
-          enabled: item.disabled ? false : true,
-          path: item.path || '',
-          broken: item.broken || false,
-        });
-      }
-    } catch {
-      // Fall back to disk scan below
-    }
+  const service = getAgentPresetsService(ctx);
+  if (!service) {
+    return { ok: false, presets: [], authorable: false, error: 'DSH agentPresets service is not available in current context' };
   }
-
-  // 2. Merge user-root rows so `.disabled` presets stay visible and re-enableable.
-  for (const entry of await scanUserPresetDirs()) {
-    if (presets.some((preset) => preset.id === entry.id)) continue;
-    presets.push(entry);
+  try {
+    const list = await service.list();
+    const defaultId = service.defaultId;
+    const active = (list || []).map((item) => mapPreset(item, defaultId, true));
+    const activeIds = new Set(active.map((item) => item.id));
+    const disabled = (await listDisabledUserPresets()).filter((item) => !activeIds.has(item.id));
+    return {
+      ok: true,
+      presets: [...active, ...disabled],
+      authorable: service.authorable !== false,
+    };
+  } catch (error) {
+    return { ok: false, presets: [], authorable: false, error: error instanceof Error ? error.message : String(error) };
   }
-
-  // 3. Add default system presets if nothing was found at all.
-  if (presets.length === 0) {
-    presets.push(
-      { id: 'standard', name: '标准模式', description: '全功能自主编程与交互预设', trust: 'system', enabled: true },
-      { id: 'code', name: '极简编码', description: '专注文件编辑与 Shell 执行的轻量预设', trust: 'system', enabled: true }
-    );
-  }
-
-  return { ok: true, presets };
 }
 
-/**
- * Enable/disable a USER preset by renaming its directory to `<id>.disabled`.
- * DSH's discovery only reads directory names matching PRESET_ID, so a renamed
- * directory is genuinely hidden from new sessions; the old `disabled:` key in
- * preset.yml is not read by DSH and is no longer written.
- */
-export async function togglePreset(presetId, disabled) {
+export async function togglePreset(ctx, presetId, disabled) {
   if (!presetId || !PRESET_ID.test(presetId)) {
     return { ok: false, error: 'presetId is required and must be a valid DSH preset id' };
   }
+  const service = getAgentPresetsService(ctx);
+  if (!service) return { ok: false, error: 'DSH agentPresets service is not available in current context' };
+  const listed = await listPresets(ctx);
+  if (!listed.ok) return listed;
+  const target = listed.presets.find((preset) => preset.id === presetId);
+  if (!target) return { ok: false, error: `预设 "${presetId}" 不存在` };
+  if (target.trust === 'system') {
+    return { ok: false, system: true, error: `系统内置预设 "${presetId}" 不支持停用；如需删除必须走高危删除确认。` };
+  }
+  if (!target.path) return { ok: false, error: `预设 "${presetId}" 缺少可操作路径` };
 
-  const root = userPresetsDir();
-  const enabledDir = path.join(root, presetId);
-  const disabledDir = path.join(root, `${presetId}${DISABLED_SUFFIX}`);
+  const wantDisabled = Boolean(disabled);
+  if (wantDisabled === (target.enabled === false)) {
+    return { ok: true, id: presetId, enabled: !wantDisabled, message: `预设 "${presetId}" 已处于目标状态。` };
+  }
+
+  const currentDir = path.dirname(target.path);
+  const disabledSuffix = '.disabled';
+  const nextDir = wantDisabled
+    ? `${currentDir}${disabledSuffix}`
+    : currentDir.endsWith(disabledSuffix)
+      ? currentDir.slice(0, -disabledSuffix.length)
+      : currentDir;
+  if (nextDir === currentDir) return { ok: false, error: `预设 "${presetId}" 的目录状态无法切换` };
 
   try {
-    if (disabled) {
-      if (await pathExists(disabledDir)) {
-        return { ok: true, id: presetId, enabled: false, message: `子智能体预设 "${presetId}" 已停用` };
-      }
-      if (await pathExists(enabledDir)) {
-        await fs.mkdir(root, { recursive: true });
-        await fs.rename(enabledDir, disabledDir);
-        return { ok: true, id: presetId, enabled: false, message: `子智能体预设 "${presetId}" 已停用` };
-      }
-      return { ok: false, error: `系统内置预设 "${presetId}" 不支持停用；如需停用请删除用户预设或使用克隆副本` };
-    }
-
-    if (await pathExists(enabledDir)) {
-      return { ok: true, id: presetId, enabled: true, message: `子智能体预设 "${presetId}" 已启用` };
-    }
-    if (await pathExists(disabledDir)) {
-      await fs.mkdir(root, { recursive: true });
-      await fs.rename(disabledDir, enabledDir);
-      return { ok: true, id: presetId, enabled: true, message: `子智能体预设 "${presetId}" 已启用` };
-    }
-    return { ok: false, error: `子智能体预设 "${presetId}" 不存在` };
-  } catch (err) {
-    return { ok: false, error: err instanceof Error ? err.message : String(err) };
-  }
-}
-
-/**
- * Clone a preset into the user root as a REAL, mountable preset: copy the
- * source directory (agent.cordis.yml + local plugin files + metadata), then
- * rewrite preset.yml to only the fields DSH reads (name/description/order).
- * A `base:` pointer would be silently ignored by DSH, so it is never written.
- */
-export async function copyPreset(ctx, sourceId, newId, displayName, description) {
-  if (!sourceId || !newId) {
-    return { ok: false, error: 'sourceId and newId are required' };
-  }
-  if (!PRESET_ID.test(newId)) {
-    return { ok: false, error: `新预设 ID "${newId}" 不合法，必须匹配 /^[a-z0-9][a-z0-9-]*$/` };
-  }
-
-  const targetDir = path.join(userPresetsDir(), newId);
-  if (await pathExists(targetDir)) {
-    return { ok: false, error: `预设 "${newId}" 已存在，克隆不会覆盖；请先删除或换一个 ID` };
-  }
-
-  // Resolve the real source directory: agentPresets service first, then user root.
-  let sourceDir = null;
-  let sourceMeta = {};
-  const agentPresets = getAgentPresetsService(ctx);
-  if (agentPresets && typeof agentPresets.resolve === 'function') {
-    try {
-      const resolved = await agentPresets.resolve(sourceId);
-      if (typeof resolved?.path === 'string' && resolved.path.length > 0) {
-        sourceDir = path.dirname(resolved.path);
-        sourceMeta = {
-          name: resolved.name,
-          description: resolved.description,
-          order: typeof resolved.order === 'number' ? resolved.order : undefined,
-        };
-      }
-    } catch {
-      // Unknown in the service view; fall through to the user root.
-    }
-  }
-
-  if (!sourceDir) {
-    const userSource = path.join(userPresetsDir(), sourceId);
-    if (await pathExists(path.join(userSource, 'agent.cordis.yml'))) {
-      sourceDir = userSource;
-      const meta = await readMetadata(userSource);
-      sourceMeta = {
-        name: meta.name,
-        description: meta.description,
-        order: Number.isFinite(Number(meta.order)) ? Number(meta.order) : undefined,
-      };
-    }
-  }
-
-  if (!sourceDir) {
-    return { ok: false, error: `源预设 "${sourceId}" 不存在或无法定位其 agent.cordis.yml` };
+    await fs.access(nextDir);
+    return { ok: false, error: `目标目录已存在，拒绝覆盖：${nextDir}` };
+  } catch {
+    // Expected: destination must not exist.
   }
 
   try {
-    await fs.mkdir(targetDir, { recursive: true });
-    await fs.cp(sourceDir, targetDir, { recursive: true, force: true });
-
-    // DSH preset metadata only understands name / description / order.
-    const name = displayName || sourceMeta.name || sourceId;
-    const desc = description || sourceMeta.description || `从 ${sourceId} 克隆的预设`;
-    const metaLines = [`name: ${quoteYaml(name)}`, `description: ${quoteYaml(desc)}`];
-    if (sourceMeta.order !== undefined) metaLines.push(`order: ${sourceMeta.order}`);
-    await fs.writeFile(path.join(targetDir, 'preset.yml'), `${metaLines.join('\n')}\n`, 'utf8');
-
-    return {
-      ok: true,
-      id: newId,
-      name,
-      path: targetDir,
-      message: `预设 "${sourceId}" 已完整克隆为 "${newId}"（含 agent.cordis.yml）。`,
-    };
-  } catch (err) {
-    return { ok: false, error: err instanceof Error ? err.message : String(err) };
-  }
-}
-
-export async function deletePreset(presetId, force = false) {
-  const isSystem = presetId === 'standard' || presetId === 'code' || presetId === 'base';
-  if (isSystem && !force) {
-    return {
-      ok: false,
-      isSystem: true,
-      error: `警告：预设 "${presetId}" 属于官方系统内置预设，删除可能影响基础会话功能。请在确认框中选择强制删除。`
-    };
-  }
-
-  const root = userPresetsDir();
-  const targets = [path.join(root, presetId), path.join(root, `${presetId}${DISABLED_SUFFIX}`)];
-
-  try {
-    let removed = 0;
-    for (const target of targets) {
-      if (!await pathExists(target)) continue;
-      await fs.rm(target, { recursive: true, force: true });
-      removed += 1;
-    }
-    if (removed === 0) {
-      return { ok: false, error: `预设 "${presetId}" 不存在` };
+    await fs.rename(currentDir, nextDir);
+    const observed = await service.list();
+    const present = (observed || []).some((preset) => preset.id === presetId);
+    if (wantDisabled ? present : !present) {
+      await fs.rename(nextDir, currentDir).catch(() => undefined);
+      return { ok: false, error: `目录已改名，但 DSH roster 未观察到预设 "${presetId}" 的目标状态，已尝试回滚。` };
     }
     return {
       ok: true,
       id: presetId,
-      message: `子智能体预设 "${presetId}" 已成功删除。`,
+      enabled: !wantDisabled,
+      message: `预设 "${presetId}" 已通过目录${wantDisabled ? '隐藏' : '恢复'}并由 DSH roster 重新观测。`,
     };
-  } catch (err) {
-    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) };
   }
 }
 
-export async function openPresetFolder(presetId) {
-  let targetPath = userPresetsDir();
-  if (presetId) {
-    const candidate = path.join(targetPath, presetId);
-    targetPath = await pathExists(candidate) ? candidate : targetPath;
+export async function copyPreset(ctx, sourceId, newId, displayName) {
+  if (!sourceId || !newId) return { ok: false, error: 'sourceId and newId are required' };
+  if (!PRESET_ID.test(newId)) {
+    return { ok: false, error: `新预设 ID "${newId}" 不合法，必须匹配 /^[a-z0-9][a-z0-9-]*$/` };
   }
-  await fs.mkdir(targetPath, { recursive: true });
+  const service = getAgentPresetsService(ctx);
+  if (!service || typeof service.copy !== 'function') {
+    return { ok: false, error: 'DSH agentPresets.copy is not available in current context' };
+  }
+  try {
+    await service.copy(sourceId, newId, displayName || undefined);
+    const observed = await service.list();
+    const created = (observed || []).find((preset) => preset.id === newId);
+    if (!created) {
+      return { ok: false, error: `agentPresets.copy returned, but DSH roster does not contain "${newId}"` };
+    }
+    return {
+      ok: true,
+      id: newId,
+      name: created.name || newId,
+      message: `预设 "${newId}" 已由 DSH agentPresets.copy 创建并重新观测。`,
+    };
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) };
+  }
+}
 
-  const platform = os.platform();
-  const { spawn } = await import('node:child_process');
-  if (platform === 'darwin') {
-    spawn('open', [targetPath], { detached: true, stdio: 'ignore' }).unref();
-  } else if (platform === 'win32') {
-    spawn('explorer.exe', [targetPath], { detached: true, stdio: 'ignore' }).unref();
-  } else {
-    spawn('xdg-open', [targetPath], { detached: true, stdio: 'ignore' }).unref();
+export async function deletePreset(ctx, presetId, force = false) {
+  if (!presetId || !PRESET_ID.test(presetId)) {
+    return { ok: false, error: 'presetId is required and must be a valid DSH preset id' };
+  }
+  const service = getAgentPresetsService(ctx);
+  if (!service || typeof service.remove !== 'function') {
+    return { ok: false, error: 'DSH agentPresets.remove is not available in current context' };
+  }
+  const listed = await listPresets(ctx);
+  if (!listed.ok) return listed;
+  const target = listed.presets.find((preset) => preset.id === presetId);
+  if (!target) return { ok: false, error: `预设 "${presetId}" 不存在` };
+
+  if (target.trust === 'system' && !force) {
+    return {
+      ok: false,
+      requiresForce: true,
+      system: true,
+      error: `预设 "${presetId}" 是 DeepSeek 官方系统内置预设，删除前必须经过高危确认。`,
+    };
   }
 
-  return { ok: true, path: targetPath };
+  try {
+    if (target.trust === 'system') {
+      if (!target.path) return { ok: false, error: `系统预设 "${presetId}" 缺少路径，无法执行高危删除` };
+      await fs.rm(path.dirname(target.path), { recursive: true, force: false });
+    } else if (target.enabled === false) {
+      if (!target.path) return { ok: false, error: `停用预设 "${presetId}" 缺少路径` };
+      await fs.rm(path.dirname(target.path), { recursive: true, force: false });
+    } else {
+      await service.remove(presetId);
+    }
+
+    const observed = await service.list();
+    if ((observed || []).some((preset) => preset.id === presetId)) {
+      return { ok: false, error: `删除操作返回，但 DSH roster 仍包含 "${presetId}"` };
+    }
+    const disabledStillThere = (await listDisabledUserPresets()).some((preset) => preset.id === presetId);
+    if (disabledStillThere) {
+      return { ok: false, error: `删除操作返回，但停用目录仍包含 "${presetId}"` };
+    }
+    return {
+      ok: true,
+      id: presetId,
+      forcedSystemDelete: target.trust === 'system',
+      message: target.trust === 'system'
+        ? `系统预设 "${presetId}" 已在高危确认后从其实际目录删除。`
+        : `预设 "${presetId}" 已删除并由 DSH roster 重新观测。`,
+    };
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+export async function openPresetDocument(ctx, presetId) {
+  if (!presetId || !PRESET_ID.test(presetId)) {
+    return { ok: false, error: 'presetId is required and must be a valid DSH preset id' };
+  }
+  const apiProxy = getApiProxy(ctx);
+  const openDocument = apiProxy?.agentPresets?.openDocument;
+  if (typeof openDocument !== 'function') {
+    return { ok: false, error: 'DSH apiProxy.agentPresets.openDocument is not available in current context' };
+  }
+  try {
+    const response = await openDocument({
+      rpcId: `mv-dsh-manager:${Date.now()}:${Math.random().toString(16).slice(2)}`,
+      payload: { agentPreset: presetId },
+    });
+    if (!response?.result?.ok) {
+      return { ok: false, error: response?.result?.error?.message || `DSH refused to open preset "${presetId}"` };
+    }
+    return { ok: true, ...response.result.value };
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) };
+  }
 }

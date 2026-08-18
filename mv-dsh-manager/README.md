@@ -46,7 +46,7 @@ Example:
 [status | on <pro|flash> [--text <s>] | off <pro|flash>] [--preset <id>]
 ```
 
-becomes the picker leaves `status`, `on pro`, `on flash`, `off pro`, `off flash`. Commands with only free-text hints (for example `<text>` or `text to echo`) keep DSH's default input behavior.
+becomes a nested picker: first `status` / `on` / `off`, then `on` and `off` open `pro` / `flash`. Enumerable multi-token hints are grouped by their shared token prefix; commands with only free-text hints (for example `<text>` or `text to echo`) keep DSH's default input behavior.
 
 DSH writes some free-text slots as bare words inside hints — `/plan` is `[off|message]`, where `message` means "any message", not a fixed choice. The parser drops the verified bare-word slot `message`, so `/plan` shows only the real leaf `off`; manually typing `/plan <anything>` still uses DSH's default free-form input and can never send a literal `message`. Other slot names (`text`, `objective`, `preset`, …) appear inside `<...>` and are already left unexpanded, so no word list is maintained for them.
 

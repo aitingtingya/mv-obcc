@@ -37,6 +37,7 @@ window.__ModuleLoader__.load({
 
     // ── Generic recursive command tree registry ──────────────────────────
     const trees = new Map();
+    const explicitTrees = new Set();
     const dynamicLoaders = {
       bridges: async (signal) => {
         const response = await fetch('/api/mv-aide/bridges', { signal });
@@ -59,6 +60,20 @@ window.__ModuleLoader__.load({
      * loader key ('bridges' | 'tools') for this built-in plugin.
      */
     function registerCommandTree(name, root) {
+      const generated = hintDecorations.get(name);
+      if (generated) {
+        try {
+          generated.dispose?.();
+        } catch {
+          // Explicit command trees take precedence even if disposal is already stale.
+        }
+        hintDecorations.delete(name);
+      }
+      trees.set(name, root);
+      explicitTrees.add(name);
+    }
+
+    function registerGeneratedCommandTree(name, root) {
       trees.set(name, root);
     }
 
@@ -82,11 +97,14 @@ window.__ModuleLoader__.load({
 
     // ── Option building ──────────────────────────────────────────────────
     function makeOption(field, parentPath, command) {
+      const children = typeof field.children === 'string' || Array.isArray(field.children)
+        ? field.children
+        : null;
       const meta = {
         command,
         path: [...parentPath, field.key],
         line: typeof field.line === 'string' ? field.line : null,
-        children: typeof field.children === 'string' ? field.children : null,
+        children,
       };
       return {
         id: JSON.stringify(meta),
@@ -122,17 +140,89 @@ window.__ModuleLoader__.load({
         if (!root) return [];
         return root.fields.map((field) => makeOption(field, parentPath, command));
       }
+      if (Array.isArray(children)) {
+        return children.map((field) => makeOption(field, parentPath, command));
+      }
       const fields = await dynamicFields(children, signal);
       return fields.map((field) => makeOption(field, parentPath, command));
     }
 
+    // Every popup owned by this recursive picker is deny-by-default. The first
+    // popup is authorized only by an actual slash-menu pick; deeper popups are
+    // authorized only by selecting their parent row.
+    const pickerSpecDepth = new WeakMap();
+    const authorizedChildOpens = new WeakMap();
+    const menuDispatchPermits = new WeakMap();
+    const patchedCommandUis = new WeakSet();
+
+    function menuPermitSet(commandUi, sessionId, create) {
+      let bySession = menuDispatchPermits.get(commandUi);
+      if (!bySession && create) {
+        bySession = new Map();
+        menuDispatchPermits.set(commandUi, bySession);
+      }
+      if (!bySession) return undefined;
+      let commands = bySession.get(sessionId);
+      if (!commands && create) {
+        commands = new Set();
+        bySession.set(sessionId, commands);
+      }
+      return commands;
+    }
+
+    function hasMenuDispatchPermit(commandUi, sessionId, command) {
+      if (!commandUi || typeof sessionId !== 'string') return false;
+      return menuPermitSet(commandUi, sessionId, false)?.has(command) === true;
+    }
+
+    function consumeMenuDispatchPermit(commandUi, sessionId, command) {
+      const commands = menuPermitSet(commandUi, sessionId, false);
+      if (!commands?.has(command)) return false;
+      commands.delete(command);
+      return true;
+    }
+
+    function installMenuDispatchGate(ctx, commandUi) {
+      if (!commandUi || patchedCommandUis.has(commandUi) || typeof commandUi.dispatch !== 'function') return;
+      const originalDispatch = commandUi.dispatch;
+      const wrappedDispatch = function (pick) {
+        const command = pick && pick.candidate && typeof pick.candidate.name === 'string'
+          ? pick.candidate.name
+          : '';
+        const sessionId = pick && pick.session && typeof pick.session.sessionId === 'string'
+          ? pick.session.sessionId
+          : '';
+        if (!command || !sessionId || !trees.has(command)) return originalDispatch.call(this, pick);
+        const commands = menuPermitSet(commandUi, sessionId, true);
+        commands.add(command);
+        try {
+          return originalDispatch.call(this, pick);
+        } finally {
+          commands.delete(command);
+        }
+      };
+      commandUi.dispatch = wrappedDispatch;
+      patchedCommandUis.add(commandUi);
+      try {
+        ctx.effect(() => () => {
+          if (commandUi.dispatch === wrappedDispatch) commandUi.dispatch = originalDispatch;
+          menuDispatchPermits.delete(commandUi);
+          patchedCommandUis.delete(commandUi);
+        }, 'mv-dsh-manager: slash menu picker gate');
+      } catch {
+        // Optional lifecycle cleanup for minimal/headless client shims.
+      }
+    }
+
     function specForPath(command, parentPath, children, ctx) {
-      return {
+      const spec = {
         kind: 'popupSelect',
         draftLine: commandLine(command, parentPath),
         options: (session, signal) => optionsFor(command, parentPath, children, session, signal),
         onSelect: (option, session) => selectOption(option, session, ctx),
       };
+      pickerSpecDepth.set(spec, { command, depth: parentPath.length });
+      return spec;
     }
 
     // ── Session controller plumbing (token segment capture + draft write) ─
@@ -169,23 +259,54 @@ window.__ModuleLoader__.load({
         const draft = state && typeof state.draft === 'string' ? state.draft : '';
         let caret = draft.length;
         let element = null;
+        let prefix = '';
+        let suffix = '';
+        let commandStart = 0;
+        let preserveSurrounding = false;
+        const span = segment && segment.span;
+        const spanIsUsable = span
+          && typeof span.start === 'number'
+          && typeof span.end === 'number'
+          && span.start >= 0
+          && span.start <= span.end
+          && span.end <= draft.length
+          && draft.slice(span.start, span.end).startsWith('/');
+        if (spanIsUsable) {
+          prefix = draft.slice(0, span.start);
+          suffix = draft.slice(span.end);
+          commandStart = span.start;
+          preserveSurrounding = true;
+        }
         const active = typeof document !== 'undefined' && typeof HTMLTextAreaElement !== 'undefined' && document.activeElement instanceof HTMLTextAreaElement
           ? document.activeElement
           : null;
         if (active) {
           element = active;
           if (typeof active.selectionStart === 'number') caret = active.selectionStart;
-        } else if (
-          segment && segment.span &&
-          typeof segment.span.end === 'number' &&
-          segment.span.end >= 0 && segment.span.end <= draft.length
-        ) {
-          caret = segment.span.end;
+        } else if (spanIsUsable) {
+          caret = span.end;
         }
-        return { draft, caret, element };
+        return { draft, caret, element, prefix, suffix, commandStart, preserveSurrounding };
       } catch {
         return null;
       }
+    }
+
+    function composePickerDraft(captured, commandLine) {
+      if (!captured || captured.preserveSurrounding !== true) return commandLine;
+      const suffix = commandLine.endsWith(' ') && captured.suffix.startsWith(' ')
+        ? captured.suffix.slice(1) : captured.suffix;
+      return `${captured.prefix}${commandLine}${suffix}`;
+    }
+
+    function pickerCommandCaret(captured, commandLine) {
+      if (!captured || captured.preserveSurrounding !== true) return commandLine.length;
+      return captured.commandStart + commandLine.length;
+    }
+
+    function surroundingDraft(captured) {
+      if (!captured || captured.preserveSurrounding !== true) return '';
+      return `${captured.prefix}${captured.suffix}`;
     }
 
     /**
@@ -218,7 +339,7 @@ window.__ModuleLoader__.load({
      * when the text is already correct; the conditional write remains as a
      * compatibility guard for hosts that do mutate it.
      */
-    function ensureConfirmedDraft(sessionId, captured, draft, ctx) {
+    function ensureConfirmedDraft(sessionId, captured, draft, caret, ctx) {
       const input = inputFor(sessionId, ctx);
       if (input) {
         try {
@@ -231,7 +352,7 @@ window.__ModuleLoader__.load({
           // If the session input facade is read-only, at least restore focus.
         }
       }
-      focusComposerAt(sessionId, captured, draft.length, ctx);
+      focusComposerAt(sessionId, captured, caret, ctx);
     }
 
     /**
@@ -277,75 +398,60 @@ window.__ModuleLoader__.load({
       }
     }
 
-    function clearDraft(sessionId, ctx) {
+    function restoreSurroundingDraft(sessionId, captured, ctx) {
       const input = inputFor(sessionId, ctx);
-      if (!input) return;
+      const draft = surroundingDraft(captured);
+      const caret = captured && captured.preserveSurrounding === true ? captured.commandStart : 0;
+      if (!input) return { draft, caret };
       try {
-        input.setDraft('');
+        input.setDraft(draft);
       } catch {
         // Never let composer plumbing failures break command execution.
       }
+      return { draft, caret };
     }
 
     /**
      * Write the completed command text into the composer before a popup
-     * level opens. Menu picks preserve any leading text through the span;
-     * enter-path picks replace the whole draft.
+     * level opens. The first popup captures the original slash-token span;
+     * every deeper level reuses that snapshot so surrounding user text stays.
      */
-    function completeDraft(sessionId, spec, segment, ctx) {
+    function completeDraft(sessionId, spec, captured, ctx) {
       if (!spec || typeof spec.draftLine !== 'string' || spec.draftLine.length === 0) return;
       const input = inputFor(sessionId, ctx);
       if (!input) return;
-      if (segment && segment.via === 'menu' && segment.span) {
-        try {
-          const state = input.state && typeof input.state.getSnapshot === 'function'
-            ? input.state.getSnapshot()
-            : undefined;
-          const draft = state && typeof state.draft === 'string' ? state.draft : '';
-          const span = segment.span;
-          if (
-            state &&
-            typeof state.draftRev === 'number' &&
-            span &&
-            typeof span.start === 'number' &&
-            typeof span.end === 'number' &&
-            typeof span.draftRev === 'number' &&
-            state.draftRev === span.draftRev &&
-            span.start >= 0 &&
-            span.start <= span.end &&
-            span.end <= draft.length &&
-            draft.slice(0, span.start).trim() === ''
-          ) {
-            input.setDraft(draft.slice(0, span.start) + spec.draftLine);
-            return;
-          }
-        } catch {
-          // Fall through to the full-draft write below.
-        }
-      }
-      input.setDraft(spec.draftLine);
+      input.setDraft(composePickerDraft(captured, spec.draftLine));
     }
 
-    function prepareSession(sessionId, ctx) {
+    function prepareSession(sessionId, ctx, commandUi) {
       const sessions = ctx.get('sessions');
       const actx = sessions && typeof sessions.scope === 'function' ? sessions.scope(sessionId) : undefined;
       if (!actx) return;
-      const controller = ctx.commandUi.popupFor(actx);
+      const controller = commandUi.popupFor(actx);
       if (!controller || patchedControllers.has(controller)) return;
-      const flow = { sessionId, captured: null, activeLine: '' };
+      const flow = { sessionId, captured: null, activeLine: '', activeCaret: 0 };
       pickerFlows.set(controller, flow);
       const originalOpen = controller.open.bind(controller);
       controller.open = (command, spec, context, segment) => {
         const sid = (context && context.sessionId) || flow.sessionId;
+        const pickerMeta = pickerSpecDepth.get(spec);
+        if (pickerMeta && pickerMeta.depth === 0) {
+          if (!consumeMenuDispatchPermit(commandUi, sid, pickerMeta.command)) return;
+        } else if (pickerMeta) {
+          if (authorizedChildOpens.get(spec) !== controller) return;
+          authorizedChildOpens.delete(spec);
+        }
         if (!flow.sessionId && sid) flow.sessionId = sid;
         if (flow.captured === null) {
           flow.captured = captureComposerState(sid, ctx, segment);
         }
         capturedSegments.set(controller, segment);
         // The popup's completed line is its Escape return point.
-        flow.activeLine = spec && typeof spec.draftLine === 'string' ? spec.draftLine : '';
+        const commandLine = spec && typeof spec.draftLine === 'string' ? spec.draftLine : '';
+        flow.activeLine = composePickerDraft(flow.captured, commandLine);
+        flow.activeCaret = pickerCommandCaret(flow.captured, commandLine);
         // Land the completed command text first, then publish the next popup.
-        completeDraft(sid, spec, segment, ctx);
+        completeDraft(sid, spec, flow.captured, ctx);
         return originalOpen(command, spec, context, segment);
       };
       if (typeof controller.dismiss === 'function') {
@@ -353,11 +459,13 @@ window.__ModuleLoader__.load({
         controller.dismiss = (opts) => {
           const captured = flow.captured;
           const activeLine = flow.activeLine;
+          const activeCaret = flow.activeCaret;
           flow.captured = null;
           flow.activeLine = '';
+          flow.activeCaret = 0;
           originalDismiss(opts);
           if (opts != null && opts.focusComposer === true) {
-            if (activeLine.length > 0) ensureConfirmedDraft(flow.sessionId, captured, activeLine, ctx);
+            if (activeLine.length > 0) ensureConfirmedDraft(flow.sessionId, captured, activeLine, activeCaret, ctx);
           }
           // Outside-pointer dismissal stays a plain DSH dismiss: no restore,
           // no forced focus, only the flow state above is cleared.
@@ -379,6 +487,7 @@ window.__ModuleLoader__.load({
       if (flow) {
         flow.captured = null;
         flow.activeLine = '';
+        flow.activeCaret = 0;
       }
     }
 
@@ -396,20 +505,25 @@ window.__ModuleLoader__.load({
         const controller = controllerFor(session.sessionId, ctx);
         const flow = controller ? pickerFlows.get(controller) : undefined;
         const captured = flow && flow.captured ? flow.captured : null;
-        clearDraft(session.sessionId, ctx);
+        const restored = restoreSurroundingDraft(session.sessionId, captured, ctx);
         clearPickerFlow(session.sessionId, ctx);
-        // The command fired directly: leave the composer empty and put the
-        // caret in that empty composer after the native popup closes.
-        focusComposerAt(session.sessionId, captured, 0, ctx);
+        // Consume only the executed slash-command span; surrounding user text
+        // remains exactly where it was before the picker opened.
+        focusComposerAt(session.sessionId, captured, restored.caret, ctx);
         return;
       }
-      if (typeof meta.children === 'string' && meta.children.length > 0) {
+      if ((typeof meta.children === 'string' && meta.children.length > 0) || Array.isArray(meta.children)) {
         const controller = controllerFor(session.sessionId, ctx);
         if (!controller) throw new Error('命令选择器不可用，请重新打开斜杠菜单');
         const segment = capturedSegments.get(controller);
-        if (!segment) throw new Error('无法获取输入位置，请重新从斜杠菜单选择 /mv-aide');
+        if (!segment) throw new Error(`无法获取输入位置，请重新从斜杠菜单选择 /${command}`);
         const nextSpec = specForPath(command, meta.path, meta.children, ctx);
-        controller.open(command, nextSpec, session, segment);
+        authorizedChildOpens.set(nextSpec, controller);
+        try {
+          controller.open(command, nextSpec, session, segment);
+        } finally {
+          authorizedChildOpens.delete(nextSpec);
+        }
         return;
       }
       throw new Error(`无法识别的选项：${option.label}`);
@@ -429,7 +543,7 @@ window.__ModuleLoader__.load({
     // ── DSH-level hint grammar ───────────────────────────────────────────
     // A small parser for `input.hint` strings like:
     //   [status | on <pro|flash> [--text <s>] | off <pro|flash>] [--preset <id>]
-    // It expands enumerable branches into flat picker leaves. Hints that
+    // It expands enumerable branches into a shared-prefix picker tree. Hints that
     // contain unresolved free-text placeholders are intentionally left to
     // DSH's default free-form input behavior.
 
@@ -561,6 +675,52 @@ window.__ModuleLoader__.load({
       return out.slice(0, MAX_HINT_LEAVES);
     }
 
+    function flatHintFields(commandName, expansions, description) {
+      return expansions.map((text) => ({
+        key: text,
+        label: text,
+        detail: description,
+        line: `/${commandName}${text ? ` ${text}` : ''}`,
+      }));
+    }
+
+    function hasPrefixConflict(tokenRows) {
+      const rows = new Set(tokenRows.map((tokens) => tokens.join('\u0000')));
+      for (const tokens of tokenRows) {
+        for (let length = 1; length < tokens.length; length += 1) {
+          if (rows.has(tokens.slice(0, length).join('\u0000'))) return true;
+        }
+      }
+      return false;
+    }
+
+    function nestedHintFields(commandName, expansions, description) {
+      const tokenRows = expansions.map((text) => text.split(/\s+/u).filter(Boolean));
+      if (hasPrefixConflict(tokenRows)) return flatHintFields(commandName, expansions, description);
+
+      const root = new Map();
+      for (const tokens of tokenRows) {
+        let level = root;
+        for (const token of tokens) {
+          let node = level.get(token);
+          if (!node) {
+            node = { token, children: new Map() };
+            level.set(token, node);
+          }
+          level = node.children;
+        }
+      }
+
+      const render = (level, parentPath) => [...level.values()].map((node) => {
+        const path = [...parentPath, node.token];
+        const field = { key: node.token, label: node.token, detail: description };
+        if (node.children.size > 0) field.children = render(node.children, path);
+        else field.line = `/${commandName} ${path.join(' ')}`;
+        return field;
+      });
+      return render(root, []);
+    }
+
     /**
      * A hint with no grammar markers at all (no `[]`, `<>`, or `|`) is a
      * plain free-text hint (for example `text to echo`) and never yields
@@ -571,7 +731,7 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * Parse a host command's `input.hint` into flat picker leaves.
+     * Parse a host command's `input.hint` into a hierarchical picker tree.
      * Returns null when the hint has no enumerable leaf set.
      */
     function parseHintFields(commandName, hint, description) {
@@ -582,19 +742,11 @@ window.__ModuleLoader__.load({
       if (!seqs || seqs.length === 0) return null;
       const expansions = expandAll(seqs);
       if (expansions.length === 0) return null;
-      return {
-        fields: expansions.map((text) => ({
-          key: text,
-          label: text,
-          detail: description,
-          line: `/${commandName}${text ? ` ${text}` : ''}`,
-        })),
-      };
+      return { fields: nestedHintFields(commandName, expansions, description) };
     }
 
     // ── Automatic hint-driven decoration ─────────────────────────────────
-    const hintDecorated = new Set();
-    const hintDisposers = new Set();
+    const hintDecorations = new Map();
 
     function currentSessionId(ctx) {
       try {
@@ -610,8 +762,8 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * One pass over the current session's command directory. Idempotent:
-     * explicit trees and already decorated commands are never redecorated.
+     * One pass over the current session's command directory. Explicit trees
+     * always win; generated trees are refreshed when their hint changes.
      */
     async function syncHintDecorations(ctx) {
       const sessionId = currentSessionId(ctx);
@@ -625,20 +777,47 @@ window.__ModuleLoader__.load({
       }
       if (!result || result.ok === false) return;
       const commands = Array.isArray(result.value) ? result.value : [];
+      const seen = new Set();
       for (const desc of commands) {
         const name = desc && desc.name;
         const hint = desc && desc.input && desc.input.hint;
-        if (!name || !hint || trees.has(name) || hintDecorated.has(name)) continue;
+        if (!name || !hint || explicitTrees.has(name)) continue;
+        seen.add(name);
+        const signature = JSON.stringify([hint, desc.description || '']);
+        const existing = hintDecorations.get(name);
+        if (existing && existing.signature === signature) continue;
+        if (existing) {
+          try {
+            existing.dispose?.();
+          } catch {
+            // Ignore already-disposed decorations; the new hint still wins.
+          }
+          hintDecorations.delete(name);
+          trees.delete(name);
+        }
         const tree = parseHintFields(name, hint, desc.description);
         if (!tree) continue;
         try {
-          registerCommandTree(name, tree);
+          registerGeneratedCommandTree(name, tree);
           const dispose = decorateCommand(ctx, name);
-          hintDecorated.add(name);
-          if (typeof dispose === 'function') hintDisposers.add(dispose);
+          hintDecorations.set(name, {
+            signature,
+            dispose: typeof dispose === 'function' ? dispose : null,
+          });
         } catch (error) {
+          trees.delete(name);
           console.warn(`[mv-dsh-manager] could not decorate /${name}: ${error instanceof Error ? error.message : String(error)}`);
         }
+      }
+      for (const [name, entry] of [...hintDecorations.entries()]) {
+        if (seen.has(name)) continue;
+        try {
+          entry.dispose?.();
+        } catch {
+          // Ignore already-disposed decorations during directory cleanup.
+        }
+        hintDecorations.delete(name);
+        trees.delete(name);
       }
     }
 
@@ -686,15 +865,15 @@ window.__ModuleLoader__.load({
                 // Ignore already-disposed subscriptions.
               }
             }
-            for (const dispose of hintDisposers) {
+            for (const [name, entry] of hintDecorations) {
               try {
-                dispose();
+                entry.dispose?.();
               } catch {
                 // Ignore already-disposed decorations.
               }
+              trees.delete(name);
             }
-            hintDisposers.clear();
-            hintDecorated.clear();
+            hintDecorations.clear();
           };
         }, 'mv-dsh-manager: hint directory picker');
       } catch (error) {
@@ -714,17 +893,19 @@ window.__ModuleLoader__.load({
       if (!commandUi || typeof commandUi.decorate !== 'function') {
         throw new Error(`commandUi 服务不可用；无法装饰 /${name}`);
       }
+      installMenuDispatchGate(ctx, commandUi);
+      const rootSpec = specForPath(name, [], null, ctx);
       return commandUi.decorate({
         name,
         available(session) {
           try {
-            prepareSession(session && session.sessionId, ctx);
+            prepareSession(session && session.sessionId, ctx, commandUi);
           } catch (error) {
             console.warn('[mv-dsh-manager] command picker prepare failed', error);
           }
-          return true;
+          return hasMenuDispatchPermit(commandUi, session && session.sessionId, name);
         },
-        ui: specForPath(name, [], null, ctx),
+        ui: rootSpec,
       });
     }
 

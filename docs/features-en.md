@@ -183,6 +183,8 @@ mv-agent embeds DeepSeek Harness (DSH) directly into Obsidian: use the DSH web U
 - The **master switch** lives in the “Adapted agents” area of IDE Bridge (**Enable DSH IDE support**, off by default). When off, the bridge does not start and no lock file is written; the rest of the mv-agent section is preserved but inactive.
 - **View**: the command palette provides **Open mv-agent**, **Stop mv-agent**, and **Restart mv-agent**; hotkeys can be bound in Obsidian's hotkey settings. **Stop mv-agent** closes every open mv-agent view and stops its DSH backend. The view is a custom Obsidian view: an iframe on top embeds the DSH web UI (no browser toolbar), with an Obsidian-side status bar below showing the number of connected IDE bridge clients and the latest selection snapshot.
 - **Open region**: left, right, or bottom; right by default. “Restart mv-agent” restarts the plugin-managed `dsh web` process and refreshes every open view.
+- **Enhanced terminal awareness**: off by default and scoped to mv-agent / DSH only. When enabled, mv-agent does not register the basic `mv_aide__getTerminalOutput`; it registers six native mv-AIDE terminal tools for list/read/send/run/open/focus instead. When disabled, those six disappear and the original `getTerminalOutput` returns. Switching refreshes tools live without restarting DSH and never changes the public `tools/list` seen by other IDE clients. Outside-vault access continues to reuse the existing `getTerminalOutput` scope setting.
+- **Hide Obsidian native status bar**: off by default. It only toggles a dedicated `body` class that hides Obsidian's own `.status-bar` container; it does not target mv-agent's own status UI and does not reconnect the bridge, restart DSH, or refresh tools.
 - **Address and port**: the DSH web service binds only to `127.0.0.1`, default port `3080`, configurable in settings. The view auto-detects an already running dsh instance; while none is running it shows “mv-agent is not running.”
 
 ### Runtime Environment
@@ -306,7 +308,8 @@ Open the terminal from the ribbon or the “Open System Terminal” command. No 
 | Setting | Default/options |
 | --- | --- |
 | Open position | Right sidebar; left sidebar, main area, and bottom split are available |
-| Bottom split | First open uses about 75:25; later terminals become tabs in the same area |
+| New terminal open mode | Split (default) or new tab; independent from open position |
+| Layout rule | Left/right sidebar splits stack vertically; main-area splits are left/right; bottom first creates a lower pane, then later terminals become tabs or left/right splits inside that pane according to the selected mode |
 | macOS/Linux shell | `$SHELL`, falling back to `/bin/zsh` |
 | macOS/Linux arguments | `-l` |
 | Windows shell | `cmd.exe` |
@@ -372,12 +375,14 @@ Code Suite is a per-profile Latex Suite-compatible editing kernel, not merely a 
 | Lint | Per-profile command; `{file}` becomes a quoted path, otherwise the path is appended |
 | Automatic lint | Persistent mode runs about 600 ms after editing stops; manual run and clear are available |
 | Diagnostic format | `file:line:col: message`, with optional column; diagnostics can be sent through IDE Bridge |
-| `mv-run` | Reads matching comment lines at the end of the file; prefixes are semicolon-separated and commands go to the integrated terminal |
+| `mv-run` | Reads matching comment lines at the end of the file; prefixes are semicolon-separated. `mv-run: <command>` runs in the most recently active mv-AIDE integrated terminal, creating one when none exists; `mv-run -n: <command>` always creates a new integrated terminal first |
 | Current-file regex | Uses the CodeMirror search panel |
 | Multi-file regex | Current folder or full vault, with preview before apply |
 | Maximum scope | Off/current file/current folder/full vault per profile; Markdown defaults to current file |
 
 External commands run with the current user's permissions. Empty commands do nothing; mv-AIDE does not install lint or `mv-run` toolchains.
+
+Typical forms: `# mv-run: python main.py` reuses the most recently active terminal, while `# mv-run -n: pytest` forces a new one. Block-comment prefixes also work, for example `<!-- mv-run: npm run build -->`; TeX can use `% mv-run -n: latexmk -pdf main.tex` when `%` is configured as a prefix.
 
 ### Highlight Themes
 

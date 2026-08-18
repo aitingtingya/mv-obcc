@@ -1395,6 +1395,10 @@ body.mv-fti-tabs .workspace-tab-header-inner-icon svg.svg-icon[class*="mv-fti-"]
   width: 100%;
 }
 
+body.mv-aide-hide-obsidian-native-status-bar .status-bar {
+  display: none;
+}
+
 .status-bar-item.mv-aide-vim-statusbar {
   display: inline-flex;
   align-items: center;

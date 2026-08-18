@@ -325,6 +325,9 @@ export interface TerminalThemePreset {
   palette: TerminalThemePalette;
 }
 
+export type TerminalOpenPosition = "tab" | "left" | "right" | "bottom";
+export type TerminalOpenMode = "split" | "new-tab";
+
 export interface BridgeSettings {
   upstreamMode: UpstreamMode;
   /** Optional manual override. Empty means resolve from Claude settings. */
@@ -357,6 +360,8 @@ export interface BridgeSettings {
   mvRun: MvRunSettings;
   externalFileOpener: ExternalFileOpenerSettings;
   dsh: DshSettings;
+  /** Hide Obsidian's native `.status-bar` container via a body class only. */
+  hideObsidianStatusBar: boolean;
   mcpEnabled: boolean;
   mcpAuthToken: string;
   claudeExecutable: string;
@@ -371,7 +376,8 @@ export interface BridgeSettings {
   terminalFontFamily: string;
   terminalFontSize: string;
   terminalKeyPassthrough: boolean;
-  terminalOpenPosition: string;
+  terminalOpenPosition: TerminalOpenPosition;
+  terminalOpenMode: TerminalOpenMode;
   terminalThemeMode: TerminalThemeMode;
   terminalCustomThemeId: string;
   terminalCustomThemes: TerminalThemePreset[];

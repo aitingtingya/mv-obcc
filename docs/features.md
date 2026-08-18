@@ -183,6 +183,8 @@ mv-agent 把 DeepSeek Harness（DSH）内嵌进 Obsidian：直接使用 DSH Web 
 - **总开关**位于 IDE 桥接分区的「已适配 agent」区域（「启用 dsh IDE 功能」，默认关）。关闭后桥接不启动、不写 lock 文件，mv-agent 分区的其余设置保留但不生效。
 - **视图**：命令面板提供「打开 mv-agent」「停止 mv-agent」「重启 mv-agent」，快捷键可在 Obsidian 快捷键设置中绑定。「停止 mv-agent」会关闭所有已打开的 mv-agent 界面并停止对应的 DSH 后台。视图是一个自定义 Obsidian 视图：上方 iframe 直接嵌入 DSH Web 界面（无浏览器工具栏），底部是 Obsidian 侧状态栏，显示当前已连接的 IDE 桥接客户端数和最新选区快照。
 - **打开分区**：可选左/右/下，默认右侧。「重启 mv-agent」会重启插件托管的 `dsh web` 进程并刷新所有已打开视图。
+- **终端感知增强**：默认关闭，只影响 mv-agent / DSH。开启时 mv-agent 不注册基础 `mv_aide__getTerminalOutput`，改为注册 `list/read/send/run/open/focus` 六个 mv-AIDE 原生终端工具；关闭时六个增强工具撤销并恢复原来的 `getTerminalOutput`。切换立即刷新工具，不重启 DSH，也不改变其它 IDE 客户端的公共 `tools/list`。库外权限继续复用 `getTerminalOutput` 的范围设置。
+- **隐藏 Obsidian 原生状态栏**：默认关闭，只给 `body` 增减专用 class 并隐藏 Obsidian 自身 `.status-bar` 容器；不针对 mv-agent 自有状态栏写选择器，也不会触发桥接重连、DSH 重启或工具刷新。
 - **地址与端口**：DSH Web 服务只绑定 `127.0.0.1`，默认端口 `3080`，可在设置中修改。视图自动探测已运行的 dsh 实例；未运行时显示「mv-agent 未运行」。
 
 ### 运行环境
@@ -304,7 +306,8 @@ AI 建议可见时优先消费接受/取消键。Vim Insert 模式中的完整�
 | 设置 | 默认值/选项 |
 | --- | --- |
 | 打开位置 | 右侧栏；也可选左侧栏、主栏、底部分栏 |
-| 底部分栏 | 首次按约 75:25 分割；后续终端作为同一区域标签 |
+| 新终端打开方式 | 分屏（默认）或新建标签页；与打开位置独立 |
+| 布局规则 | 左/右侧栏分屏为上下；主栏分屏为左右；底部首次从主栏上下拆出底栏，后续按打开方式在底栏中新建标签页或左右分屏 |
 | macOS/Linux Shell | `$SHELL`，找不到时 `/bin/zsh` |
 | macOS/Linux 参数 | `-l` |
 | Windows Shell | `cmd.exe` |
@@ -370,12 +373,14 @@ Code Suite 是按 profile 独立开关的 Latex Suite 兼容编辑内核，不�
 | Lint | 每 profile 配置命令；`{file}` 替换为带引号文件路径，否则路径追加到命令末尾 |
 | 自动 Lint | 持续模式下编辑停止约 600 ms 后运行；可手动运行或清除 |
 | 诊断格式 | `file:line:col: message`，列号可省略；可推送给 IDE 桥接 |
-| `mv-run` | 读取文件底部匹配前缀的注释行；多个前缀以分号分隔，命令发送到集成终端 |
+| `mv-run` | 读取文件底部匹配前缀的注释行；多个前缀以分号分隔。`mv-run: <命令>` 在最近活跃的 mv-AIDE 集成终端运行，没有终端时自动新建；`mv-run -n: <命令>` 始终新建一个集成终端再运行 |
 | 当前文件正则 | 使用 CodeMirror 搜索面板 |
 | 多文件正则 | 当前目录或整个 vault，先预览再应用 |
 | 范围上限 | 每 profile 为关闭/当前文件/当前目录/整个 vault；Markdown 默认当前文件 |
 
 外部命令以当前用户权限运行。命令为空时功能不执行；插件不会自动为 Lint 或 `mv-run` 安装工具链。
+
+常见写法：`# mv-run: python main.py` 会复用最近活跃终端；`# mv-run -n: pytest` 会强制新建终端。块注释前缀同样支持，例如 `<!-- mv-run: npm run build -->`；TeX 可配置 `% mv-run -n: latexmk -pdf main.tex`。
 
 ### 高亮主题
 

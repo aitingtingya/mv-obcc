@@ -60,7 +60,7 @@ Generate dimmed ghost text while writing Markdown. It enters the document only a
 
 ### 5. Terminal
 
-Run a real system terminal in the main area, a sidebar, or a bottom split, keeping the command line and editor in one workspace.
+Run a real system terminal in the main area, a sidebar, or a bottom split, keeping the command line and editor in one workspace. Terminal settings control open position independently from the new-terminal mode (split or new tab): sidebar splits stack vertically, main-area splits are left/right, and the bottom location first creates a lower pane before later terminals become tabs or left/right splits inside it. `mv-run: <command>` targets the most recently active mv-AIDE terminal (creating one when needed), while `mv-run -n: <command>` always creates a new terminal first.
 
 ![Obsidian editor and the real mv-AIDE system terminal](media/readme/terminal.png)
 

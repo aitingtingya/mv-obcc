@@ -267,7 +267,7 @@ export function renderDshPluginManager(
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ entryId: entry.id, disabled: targetDisabled }),
               });
-              const toggleData = (await toggleRes.json()) as { ok: boolean; error?: string };
+              const toggleData = (await toggleRes.json()) as { ok: boolean; error?: string; requiresFrontendReload?: boolean };
               if (toggleData.ok) {
                 entry.enabled = !targetDisabled;
                 new Notice(
@@ -276,6 +276,9 @@ export function renderDshPluginManager(
                     : t("已启用插件 {id}", { id: entry.id }),
                 );
                 renderFilteredList();
+                if (toggleData.requiresFrontendReload) {
+                  plugin.dshFeature?.reloadOpenViewsForPluginGraphChange();
+                }
               } else {
                 new Notice(t("操作失败：{error}", { error: toggleData.error || t("未知错误") }), 6000);
                 toggle.setValue(!newValue);
@@ -323,10 +326,13 @@ export function renderDshPluginManager(
               const res = await fetch(`http://127.0.0.1:${port}/api/mv-aide/plugins/${encodeURIComponent(entry.id)}${force ? "?force=true" : ""}`, {
                 method: "DELETE",
               });
-              const data = (await res.json()) as { ok: boolean; error?: string };
+              const data = (await res.json()) as { ok: boolean; error?: string; warning?: string; requiresFrontendReload?: boolean };
               if (data.ok) {
-                new Notice(`插件 ${entry.id} 已成功卸载。请点击“插件注入”更新配置。`);
+                new Notice(data.warning || `插件 ${entry.id} 已成功卸载。请点击“插件注入”可重新注入。`);
                 await loadPlugins();
+                if (data.requiresFrontendReload) {
+                  plugin.dshFeature?.reloadOpenViewsForPluginGraphChange();
+                }
               } else {
                 new Notice(`卸载失败：${data.error || "未知错误"}`);
               }

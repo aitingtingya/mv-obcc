@@ -52,6 +52,53 @@ export const UI_SCRIPT_BODY = `
     while (container.firstChild) container.removeChild(container.firstChild);
   }
 
+  async function fetchManagerJson(url, options) {
+    const controller = new AbortController();
+    const timer = setTimeout(function() { controller.abort(); }, 8000);
+    try {
+      const request = Object.assign({}, options || {}, { signal: controller.signal });
+      const response = await fetch(url, request);
+      let data;
+      try {
+        data = await response.json();
+      } catch {
+        throw new Error('DSH manager 返回了无法解析的响应 (HTTP ' + response.status + ')');
+      }
+      if (!response.ok) {
+        throw new Error((data && data.error) || ('HTTP ' + response.status));
+      }
+      if (!data || data.ok !== true) {
+        throw new Error((data && data.error) || 'DSH manager 返回失败状态');
+      }
+      return data;
+    } catch (error) {
+      if (error && error.name === 'AbortError') throw new Error('请求超时，请确认 DSH 服务仍在运行');
+      throw error;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  function renderLoadError(countSpan, listDiv, label, error, retry) {
+    countSpan.textContent = '加载失败';
+    clearChildren(listDiv);
+    const wrap = document.createElement('div');
+    wrap.style.cssText = 'padding:16px;border:1px solid rgba(239,68,68,0.3);border-radius:10px;background:rgba(239,68,68,0.08);color:#fca5a5;font-size:13px;line-height:20px;';
+    const message = document.createElement('div');
+    message.textContent = label + '加载失败：' + String(error instanceof Error ? error.message : error);
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.textContent = '重试';
+    button.style.cssText = 'margin-top:10px;padding:4px 12px;border-radius:6px;border:1px solid rgba(255,255,255,0.18);background:rgba(255,255,255,0.08);color:inherit;cursor:pointer;font:inherit;';
+    button.onclick = function() {
+      countSpan.textContent = '正在加载...';
+      clearChildren(listDiv);
+      void retry();
+    };
+    wrap.append(message, button);
+    listDiv.appendChild(wrap);
+  }
+
   const DIALOG_CSS = {
     overlay: 'position:fixed;inset:0;z-index:2147483000;display:flex;align-items:center;justify-content:center;padding:16px;background:rgba(0,0,0,0.52);font-family:inherit;color:var(--dsw-alias-label-primary,#e4e4e7);box-sizing:border-box;',
     card: 'width:min(540px,calc(100vw - 32px));max-height:calc(100vh - 32px);overflow:auto;border-radius:14px;border:1px solid var(--dsw-alias-border-l2,rgba(255,255,255,0.14));background:var(--dsw-alias-bg-layer-2,#18181b);box-shadow:0 24px 64px rgba(0,0,0,0.45);padding:18px 20px 20px;box-sizing:border-box;',
@@ -393,24 +440,38 @@ export const UI_SCRIPT_BODY = `
         });
         const data = await res.json();
         if (data && data.ok) {
-          const nextEnabled = data.enabled;
-          toggleBtn.dataset.enabled = nextEnabled ? 'true' : 'false';
-          toggleBtn.textContent = nextEnabled ? '停用' : '启用';
-          toggleBtn.style.background = nextEnabled
-            ? 'var(--dsw-alias-bg-layer-1, rgba(255, 255, 255, 0.08))'
-            : 'var(--dsw-alias-state-success-primary, #10b981)';
-          toggleBtn.style.borderColor = nextEnabled
-            ? 'var(--dsw-alias-border-l2, rgba(255, 255, 255, 0.15))'
-            : 'var(--dsw-alias-state-success-primary, #10b981)';
-          toggleBtn.style.color = nextEnabled ? 'var(--dsw-alias-label-secondary, #a1a1aa)' : '#ffffff';
-
-          configTag.setAttribute('data-enabled', nextEnabled ? 'true' : 'false');
-          configTag.textContent = nextEnabled ? '已启用' : '已停用';
-
-          const dot = trailing.querySelector('span[class*="_statusDot"]');
-          if (dot) {
-            dot.setAttribute('data-phase', nextEnabled ? 'active' : '');
-            dot.style.display = nextEnabled ? 'inline-block' : 'none';
+          const observedRes = await fetch('/api/mv-aide/plugins');
+          const observedData = await observedRes.json();
+          const observed = observedData && observedData.ok
+            ? (observedData.entries || []).find(function(entry) {
+                return entry.runtimeEntryId === entryId || entry.configRowId === entryId || entry.id === entryId;
+              })
+            : null;
+          if (!observed) {
+            toast('DSH 已接受请求，但重新读取 Loader 时未找到该插件；请刷新页面确认最终状态。', 'error');
+            toggleBtn.textContent = originalText;
+          } else {
+            const nextEnabled = Boolean(observed.enabled);
+            toggleBtn.dataset.enabled = nextEnabled ? 'true' : 'false';
+            toggleBtn.textContent = nextEnabled ? '停用' : '启用';
+            toggleBtn.style.background = nextEnabled
+              ? 'var(--dsw-alias-bg-layer-1, rgba(255, 255, 255, 0.08))'
+              : 'var(--dsw-alias-state-success-primary, #10b981)';
+            toggleBtn.style.borderColor = nextEnabled
+              ? 'var(--dsw-alias-border-l2, rgba(255, 255, 255, 0.15))'
+              : 'var(--dsw-alias-state-success-primary, #10b981)';
+            toggleBtn.style.color = nextEnabled ? 'var(--dsw-alias-label-secondary, #a1a1aa)' : '#ffffff';
+            configTag.setAttribute('data-enabled', nextEnabled ? 'true' : 'false');
+            configTag.textContent = nextEnabled ? '已启用' : '已停用';
+            const dot = trailing.querySelector('span[class*="_statusDot"]');
+            if (dot) {
+              dot.setAttribute('data-phase', nextEnabled ? 'active' : '');
+              dot.style.display = nextEnabled ? 'inline-block' : 'none';
+            }
+            if (data.requiresFrontendReload) {
+              toast('mv-agent 已切换，正在刷新 DSH 前端以重新挂载浏览器端连接模块。', 'success');
+              setTimeout(function() { window.location.reload(); }, 250);
+            }
           }
         } else {
           toast('操作失败：' + ((data && data.error) || '未知错误'), 'error');
@@ -453,42 +514,35 @@ export const UI_SCRIPT_BODY = `
     delBtn.onmouseenter = function() { delBtn.style.background = 'rgba(239, 68, 68, 0.15)'; };
     delBtn.onmouseleave = function() { delBtn.style.background = 'transparent'; };
 
-    const isCore = entryId.startsWith('@deepseek-ai/') || entryId === 'mv-dsh-manager' || entryId === 'mv-agent' || entryId.includes('mv-dsh-manager');
+    const isRisky = entryId.startsWith('@deepseek-ai/') || entryId.startsWith('cordis:') || entryId.includes('mv-dsh-manager') || entryId.includes('mv-agent');
 
     delBtn.onclick = async function(e) {
       if (e) { e.stopPropagation(); e.preventDefault(); }
-      let force = false;
-      if (isCore) {
-        const confirmed = await confirmDialog({
-          title: '强制删除插件',
-          message: '⚠️ 高危警告：插件 "' + entryId + '" 属于系统核心/官方或管理器插件，删除可能导致会话或管理功能异常！\\n\\n确定要强制删除该插件吗？',
-          danger: true
-        });
-        if (!confirmed) return;
-        force = true;
-      } else {
-        const confirmed = await confirmDialog({
-          title: '卸载插件',
-          message: '确定要卸载/删除插件 "' + entryId + '" 吗？'
-        });
-        if (!confirmed) return;
-      }
+      const confirmed = await confirmDialog({
+        title: isRisky ? '高危卸载确认' : '卸载插件',
+        message: isRisky
+          ? '⚠️ 插件 "' + entryId + '" 属于官方/核心或 mv-AIDE 管理组件。卸载可能导致会话、管理界面或桥接能力立即失效。确定继续吗？'
+          : '确定要卸载插件 "' + entryId + '" 吗？',
+        danger: isRisky
+      });
+      if (!confirmed) return;
 
       delBtn.textContent = '...';
       try {
-        const res = await fetch('/api/mv-aide/plugins/' + encodeURIComponent(entryId) + (force ? '?force=true' : ''), {
-          method: 'DELETE'
-        });
-        const d = await res.json();
-        if (d && d.ok) {
-          toast('插件已卸载！请在 Obsidian 设置中点击“插件注入”更新配置。', 'success');
-          card.remove();
-        } else {
-          toast('卸载失败: ' + (d.error || '未知错误'), 'error');
+        const suffix = isRisky ? '?force=true' : '';
+        const d = await fetchManagerJson('/api/mv-aide/plugins/' + encodeURIComponent(entryId) + suffix, { method: 'DELETE' });
+        if (d.active || d.disabledFallback) {
+          toast(d.warning || d.message || '卸载请求已持久化，等待 DSH Loader 收敛。', 'success');
           delBtn.textContent = '卸载';
+        } else {
+          toast(d.message || '插件已卸载。', 'success');
+          card.remove();
+        }
+        if (d.requiresFrontendReload) {
+          setTimeout(function() { window.location.reload(); }, 250);
         }
       } catch (err) {
-        toast('请求失败: ' + String(err), 'error');
+        toast('卸载失败: ' + String(err instanceof Error ? err.message : err), 'error');
         delBtn.textContent = '卸载';
       }
     };
@@ -785,7 +839,7 @@ export const UI_SCRIPT_BODY = `
         '<div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:4px;">' +
           '<div>' +
             '<h2 style="margin:0; font-size:18px; font-weight:600; line-height:26px;">✨ 技能管理</h2>' +
-            '<p style="margin:4px 0 0; font-size:13px; color:var(--dsw-alias-label-tertiary, #a1a1aa); line-height:20px;">配置和查看当前部署加载的 DSH 技能（SKILL.md），支持启停、新建与删除。</p>' +
+            '<p style="margin:4px 0 0; font-size:13px; color:var(--dsw-alias-label-tertiary, #a1a1aa); line-height:20px;">展示 DSH 当前 winning skill catalog；只有官方可写 filesystem 来源支持调用策略修改、新建与删除。</p>' +
           '</div>' +
           '<div style="display:flex; gap:8px;">' +
             '<button id="mv-pm-open-skill-folder-btn" style="padding:6px 14px; border-radius:8px; border:1px solid var(--dsw-alias-border-l2, rgba(255,255,255,0.15)); background:var(--dsw-alias-bg-layer-1, rgba(255,255,255,0.08)); color:var(--dsw-alias-label-primary, #f4f4f5); cursor:pointer; font-size:13px; font-weight:500;">📂 打开目录</button>' +
@@ -881,73 +935,89 @@ export const UI_SCRIPT_BODY = `
         const idBadge = document.createElement('span');
         idBadge.style.cssText = 'font-size:11px; padding:1px 6px; border-radius:4px; background:var(--dsw-alias-bg-layer-1, rgba(255,255,255,0.08)); color:var(--dsw-alias-label-secondary, #aaa); font-family:var(--ds-font-family-code, monospace); font-weight:500;';
         idBadge.textContent = '/' + skill.id;
-        const scopeBadge = document.createElement('span');
-        scopeBadge.style.cssText = 'font-size:11px; padding:1px 6px; border-radius:4px; background:' + (skill.scope === 'project' ? 'rgba(59,130,246,0.15)' : 'rgba(16,185,129,0.15)') + '; color:' + (skill.scope === 'project' ? '#60a5fa' : '#34d399') + '; font-weight:500;';
-        scopeBadge.textContent = skill.scope === 'project' ? '项目级' : '全局';
-        nameRow.append(nameStrong, idBadge, scopeBadge);
+        const sourceBadge = document.createElement('span');
+        sourceBadge.style.cssText = 'font-size:11px; padding:1px 6px; border-radius:4px; background:rgba(59,130,246,0.15); color:#60a5fa; font-weight:500;';
+        sourceBadge.textContent = (skill.source || 'unknown') + ' · ' + (skill.provider || 'unknown');
+        const policyBadge = document.createElement('span');
+        policyBadge.style.cssText = 'font-size:11px; padding:1px 6px; border-radius:4px; background:rgba(16,185,129,0.15); color:#34d399; font-weight:500;';
+        policyBadge.textContent = '模型:' + (skill.modelInvocable ? '开' : '关') + ' / 用户:' + (skill.userInvocable ? '开' : '关');
+        nameRow.append(nameStrong, idBadge, sourceBadge, policyBadge);
         const descriptionLine = document.createElement('div');
         descriptionLine.style.cssText = 'font-size:12px; color:var(--dsw-alias-label-secondary, #888); margin-top:4px; line-height:18px;';
         descriptionLine.textContent = skill.description || '无描述';
         left.append(nameRow, descriptionLine);
+        if (skill.whenToUse) {
+          const whenLine = document.createElement('div');
+          whenLine.style.cssText = 'font-size:11px; color:var(--dsw-alias-label-tertiary, #777); margin-top:2px; line-height:17px;';
+          whenLine.textContent = 'whenToUse: ' + skill.whenToUse;
+          left.appendChild(whenLine);
+        }
 
         const right = document.createElement('div');
         right.style.cssText = 'display:flex; align-items:center; gap:8px; flex:none;';
 
-        const toggleBtn = document.createElement('button');
-        toggleBtn.type = 'button';
-        toggleBtn.textContent = skill.enabled ? '停用' : '启用';
-        toggleBtn.style.cssText = [
-          'padding: 4px 12px',
-          'font-size: 12px',
-          'font-weight: 500',
-          'border-radius: 6px',
-          'border: 1px solid ' + (skill.enabled ? 'var(--dsw-alias-border-l2, rgba(255,255,255,0.15))' : 'var(--dsw-alias-state-success-primary, #10b981)'),
-          'cursor: pointer',
-          'background: ' + (skill.enabled ? 'var(--dsw-alias-bg-layer-1, rgba(255,255,255,0.08))' : 'var(--dsw-alias-state-success-primary, #10b981)'),
-          'color: ' + (skill.enabled ? 'var(--dsw-alias-label-secondary, #aaa)' : '#fff'),
-        ].join('; ');
+        if (skill.writable) {
+          const invocationEnabled = Boolean(skill.modelInvocable || skill.userInvocable);
+          const toggleBtn = document.createElement('button');
+          toggleBtn.type = 'button';
+          toggleBtn.textContent = invocationEnabled ? '关闭调用' : '恢复调用';
+          toggleBtn.style.cssText = [
+            'padding: 4px 12px',
+            'font-size: 12px',
+            'font-weight: 500',
+            'border-radius: 6px',
+            'border: 1px solid var(--dsw-alias-border-l2, rgba(255,255,255,0.15))',
+            'cursor: pointer',
+            'background: var(--dsw-alias-bg-layer-1, rgba(255,255,255,0.08))',
+            'color: var(--dsw-alias-label-secondary, #aaa)',
+          ].join('; ');
 
-        toggleBtn.onclick = async function() {
-          toggleBtn.disabled = true;
-          toggleBtn.textContent = '...';
-          const targetDisabled = skill.enabled;
-          const res = await fetch('/api/mv-aide/skills/toggle', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ skillId: skill.id, disabled: targetDisabled })
-          });
-          const d = await res.json();
-          if (d && d.ok) {
-            skill.enabled = !targetDisabled;
-            renderSkills();
-          } else {
-            toast('操作失败: ' + (d.error || '未知错误'), 'error');
-            toggleBtn.disabled = false;
-          }
-        };
+          toggleBtn.onclick = async function() {
+            toggleBtn.disabled = true;
+            toggleBtn.textContent = '...';
+            const res = await fetch('/api/mv-aide/skills/toggle', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ skillId: skill.id, disabled: invocationEnabled })
+            });
+            const d = await res.json();
+            if (d && d.ok) {
+              await loadSkills();
+            } else {
+              toast('操作失败: ' + (d.error || '未知错误'), 'error');
+              await loadSkills();
+            }
+          };
 
-        const delBtn = document.createElement('button');
-        delBtn.type = 'button';
-        delBtn.textContent = '删除';
-        delBtn.style.cssText = 'padding:4px 10px; font-size:12px; font-weight:500; border-radius:6px; border:1px solid rgba(239, 68, 68, 0.3); background:transparent; color:#f87171; cursor:pointer;';
-        delBtn.onclick = async function() {
-          const confirmed = await confirmDialog({
-            title: '删除技能',
-            message: '确定要删除技能 "' + skill.name + '" 吗？此操作无法撤销。',
-            danger: true
-          });
-          if (!confirmed) return;
-          const res = await fetch('/api/mv-aide/skills/' + encodeURIComponent(skill.id), { method: 'DELETE' });
-          const d = await res.json();
-          if (d && d.ok) {
-            loadSkills();
-          } else {
-            toast('删除失败: ' + (d.error || '未知错误'), 'error');
-          }
-        };
+          const delBtn = document.createElement('button');
+          delBtn.type = 'button';
+          delBtn.textContent = '删除';
+          delBtn.style.cssText = 'padding:4px 10px; font-size:12px; font-weight:500; border-radius:6px; border:1px solid rgba(239, 68, 68, 0.3); background:transparent; color:#f87171; cursor:pointer;';
+          delBtn.onclick = async function() {
+            const confirmed = await confirmDialog({
+              title: '删除技能',
+              message: '确定要删除技能 "' + skill.name + '" 吗？此操作无法撤销。',
+              danger: true
+            });
+            if (!confirmed) return;
+            const res = await fetch('/api/mv-aide/skills/' + encodeURIComponent(skill.id), { method: 'DELETE' });
+            const d = await res.json();
+            if (d && d.ok) {
+              await loadSkills();
+            } else {
+              toast('删除失败: ' + (d.error || '未知错误'), 'error');
+              await loadSkills();
+            }
+          };
 
-        right.appendChild(toggleBtn);
-        right.appendChild(delBtn);
+          right.appendChild(toggleBtn);
+          right.appendChild(delBtn);
+        } else {
+          const readOnly = document.createElement('span');
+          readOnly.style.cssText = 'font-size:11px; color:var(--dsw-alias-label-tertiary, #888);';
+          readOnly.textContent = '只读来源';
+          right.appendChild(readOnly);
+        }
 
         item.appendChild(left);
         item.appendChild(right);
@@ -956,15 +1026,14 @@ export const UI_SCRIPT_BODY = `
     }
 
     async function loadSkills() {
+      countSpan.textContent = '正在加载...';
       try {
-        const res = await fetch('/api/mv-aide/skills');
-        const data = await res.json();
-        if (data && data.ok) {
-          allSkills = data.skills || [];
-          renderSkills();
-        }
+        const data = await fetchManagerJson('/api/mv-aide/skills');
+        allSkills = data.skills || [];
+        renderSkills();
       } catch (err) {
-        setStaticHtml(listDiv, '<div style="color:var(--dsw-alias-state-error-primary, #f87171); padding:16px;">加载技能失败: ' + escapeHtml(err) + '</div>');
+        allSkills = [];
+        renderLoadError(countSpan, listDiv, '技能', err, loadSkills);
       }
     }
 
@@ -979,10 +1048,9 @@ export const UI_SCRIPT_BODY = `
         '<div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:4px;">' +
           '<div>' +
             '<h2 style="margin:0; font-size:18px; font-weight:600; line-height:26px;">🤖 子智能体管理</h2>' +
-            '<p style="margin:4px 0 0; font-size:13px; color:var(--dsw-alias-label-tertiary, #a1a1aa); line-height:20px;">查看与管理 DeepSeek Harness 的 Agent 预设模板，支持启停、克隆与删除。</p>' +
+            '<p style="margin:4px 0 0; font-size:13px; color:var(--dsw-alias-label-tertiary, #a1a1aa); line-height:20px;">直接展示 DSH AgentPresets roster；克隆、删除与打开文档均通过官方 service。</p>' +
           '</div>' +
           '<div style="display:flex; gap:8px;">' +
-            '<button id="mv-pm-open-preset-folder-btn" style="padding:6px 14px; border-radius:8px; border:1px solid var(--dsw-alias-border-l2, rgba(255,255,255,0.15)); background:var(--dsw-alias-bg-layer-1, rgba(255,255,255,0.08)); color:var(--dsw-alias-label-primary, #f4f4f5); cursor:pointer; font-size:13px; font-weight:500;">📂 打开目录</button>' +
             '<button id="mv-pm-new-preset-btn" style="padding:6px 14px; border-radius:8px; border:1px solid var(--dsw-alias-border-l2, rgba(255,255,255,0.15)); background:var(--dsw-alias-state-success-primary, #10b981); color:#fff; cursor:pointer; font-size:13px; font-weight:500;">+ 克隆预设</button>' +
           '</div>' +
         '</div>' +
@@ -997,11 +1065,6 @@ export const UI_SCRIPT_BODY = `
     const countSpan = document.getElementById('mv-pm-preset-count');
     const listDiv = document.getElementById('mv-pm-presets-list');
     const newBtn = document.getElementById('mv-pm-new-preset-btn');
-    const openFolderBtn = document.getElementById('mv-pm-open-preset-folder-btn');
-
-    openFolderBtn.onclick = function() {
-      openFolder('/api/mv-aide/presets/open-folder');
-    };
 
     let allPresets = [];
 
@@ -1070,7 +1133,6 @@ export const UI_SCRIPT_BODY = `
         item.style.cssText = 'display:flex; justify-content:space-between; align-items:center; padding:12px 16px; border-radius:10px; background:var(--dsw-alias-bg-layer-3, rgba(255, 255, 255, 0.04)); border:1px solid var(--dsw-alias-border-l2, rgba(255, 255, 255, 0.08));';
 
         const isSys = preset.trust === 'system';
-        const isEn = preset.enabled !== false;
 
         const left = document.createElement('div');
         left.style.cssText = 'flex: 1; min-width: 0; padding-right: 14px;';
@@ -1095,52 +1157,39 @@ export const UI_SCRIPT_BODY = `
         const right = document.createElement('div');
         right.style.cssText = 'display:flex; align-items:center; gap:8px; flex:none;';
 
-        // 启停
+        // 用户预设通过 <id>.disabled 目录真实隐藏/恢复；系统预设保持不可停用。
         const toggleBtn = document.createElement('button');
         toggleBtn.type = 'button';
-        toggleBtn.textContent = isEn ? '停用' : '启用';
-        toggleBtn.style.cssText = [
-          'padding: 4px 12px',
-          'font-size: 12px',
-          'font-weight: 500',
-          'border-radius: 6px',
-          'border: 1px solid ' + (isEn ? 'var(--dsw-alias-border-l2, rgba(255,255,255,0.15))' : 'var(--dsw-alias-state-success-primary, #10b981)'),
-          'cursor: pointer',
-          'background: ' + (isEn ? 'var(--dsw-alias-bg-layer-1, rgba(255,255,255,0.08))' : 'var(--dsw-alias-state-success-primary, #10b981)'),
-          'color: ' + (isEn ? 'var(--dsw-alias-label-secondary, #aaa)' : '#fff'),
-        ].join('; ');
-        if (isSys) {
-          toggleBtn.disabled = true;
-          toggleBtn.title = '系统内置预设不支持停用；可先克隆再停用副本';
-          toggleBtn.style.cursor = 'not-allowed';
-          toggleBtn.style.opacity = '0.5';
+        toggleBtn.textContent = isSys ? '系统启用' : (preset.enabled === false ? '启用' : '停用');
+        toggleBtn.disabled = isSys;
+        toggleBtn.style.cssText = 'padding:4px 10px; font-size:12px; font-weight:500; border-radius:6px; border:1px solid var(--dsw-alias-border-l2, rgba(255,255,255,0.15)); background:var(--dsw-alias-bg-layer-1, rgba(255,255,255,0.08)); color:' + (isSys ? '#777' : '#fff') + '; cursor:' + (isSys ? 'not-allowed' : 'pointer') + ';';
+        if (!isSys) {
+          toggleBtn.onclick = async function() {
+            toggleBtn.disabled = true;
+            toggleBtn.textContent = '...';
+            try {
+              await fetchManagerJson('/api/mv-aide/presets/toggle', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ presetId: preset.id, disabled: preset.enabled !== false })
+              });
+              await loadPresets();
+            } catch (err) {
+              toast('预设启停失败: ' + String(err instanceof Error ? err.message : err), 'error');
+              await loadPresets();
+            }
+          };
         }
-
-        toggleBtn.onclick = async function() {
-          toggleBtn.disabled = true;
-          toggleBtn.textContent = '...';
-          const targetDisabled = isEn;
-          const res = await fetch('/api/mv-aide/presets/toggle', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ presetId: preset.id, disabled: targetDisabled })
-          });
-          const d = await res.json();
-          if (d && d.ok) {
-            preset.enabled = !targetDisabled;
-            renderPresets();
-          } else {
-            toast('操作失败: ' + (d.error || '未知错误'), 'error');
-            toggleBtn.disabled = false;
-          }
-        };
+        right.appendChild(toggleBtn);
 
         // 克隆
         const cloneBtn = document.createElement('button');
         cloneBtn.type = 'button';
         cloneBtn.textContent = '以此克隆';
-        cloneBtn.style.cssText = 'padding:4px 10px; font-size:12px; font-weight:500; border-radius:6px; border:1px solid var(--dsw-alias-border-l2, rgba(255,255,255,0.15)); background:var(--dsw-alias-bg-layer-1, rgba(255,255,255,0.08)); color:#fff; cursor:pointer;';
+        cloneBtn.disabled = preset.enabled === false;
+        cloneBtn.style.cssText = 'padding:4px 10px; font-size:12px; font-weight:500; border-radius:6px; border:1px solid var(--dsw-alias-border-l2, rgba(255,255,255,0.15)); background:var(--dsw-alias-bg-layer-1, rgba(255,255,255,0.08)); color:#fff; cursor:' + (preset.enabled === false ? 'not-allowed' : 'pointer') + '; opacity:' + (preset.enabled === false ? '0.55' : '1') + ';';
         cloneBtn.onclick = async function() {
+          if (preset.enabled === false) return;
           const values = await openForm({
             title: '基于 ' + preset.id + ' 创建新预设',
             submitText: '克隆',
@@ -1165,58 +1214,63 @@ export const UI_SCRIPT_BODY = `
             toast('新预设 ID 只能包含小写字母、数字和连字符，且不能以连字符开头', 'error');
             return;
           }
-          fetch('/api/mv-aide/presets/copy', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ sourceId: preset.id, newId: values.newId, name: values.name || values.newId })
-          }).then(function(r) { return r.json(); }).then(function(res) {
-            if (res.ok) {
-              toast('克隆创建成功！', 'success');
-              loadPresets();
-            } else {
-              toast('克隆失败: ' + (res.error || '未知错误'), 'error');
-            }
-          });
+          try {
+            await fetchManagerJson('/api/mv-aide/presets/copy', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ sourceId: preset.id, newId: values.newId, name: values.name || values.newId })
+            });
+            toast('克隆创建成功！', 'success');
+            await loadPresets();
+          } catch (err) {
+            toast('克隆失败: ' + String(err instanceof Error ? err.message : err), 'error');
+          }
         };
+        right.appendChild(cloneBtn);
 
-        // 删除 (带官方预设强提醒)
+        if (!isSys && preset.enabled !== false) {
+          const openBtn = document.createElement('button');
+          openBtn.type = 'button';
+          openBtn.textContent = '打开';
+          openBtn.style.cssText = 'padding:4px 10px; font-size:12px; font-weight:500; border-radius:6px; border:1px solid var(--dsw-alias-border-l2, rgba(255,255,255,0.15)); background:transparent; color:#fff; cursor:pointer;';
+          openBtn.onclick = async function() {
+            try {
+              await fetchManagerJson('/api/mv-aide/presets/open-document', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ presetId: preset.id })
+              });
+            } catch (err) {
+              toast('打开失败: ' + String(err instanceof Error ? err.message : err), 'error');
+            }
+          };
+          right.appendChild(openBtn);
+        }
+
         const delBtn = document.createElement('button');
         delBtn.type = 'button';
         delBtn.textContent = '删除';
         delBtn.style.cssText = 'padding:4px 10px; font-size:12px; font-weight:500; border-radius:6px; border:1px solid rgba(239, 68, 68, 0.3); background:transparent; color:#f87171; cursor:pointer;';
-
         delBtn.onclick = async function() {
-          let force = false;
-          if (isSys) {
-            const confirmed = await confirmDialog({
-              title: '强制删除官方预设',
-              message: '⚠️ 高危警告：预设 "' + preset.id + '" 是 DeepSeek 官方系统内置预设，删除可能影响默认会话！\\n\\n确定要强制删除该官方预设吗？',
-              danger: true
-            });
-            if (!confirmed) return;
-            force = true;
-          } else {
-            const confirmed = await confirmDialog({
-              title: '删除子智能体预设',
-              message: '确定要删除子智能体预设 "' + preset.name + '" 吗？此操作无法撤销。',
-              danger: true
-            });
-            if (!confirmed) return;
-          }
-
+          const confirmed = await confirmDialog({
+            title: isSys ? '高危删除系统预设' : '删除子智能体预设',
+            message: isSys
+              ? '⚠️ 预设 "' + preset.name + '" 是 DeepSeek 官方系统内置预设。删除会直接移除其实际目录，并可能破坏默认会话能力。确定继续吗？'
+              : '确定要删除子智能体预设 "' + preset.name + '" 吗？此操作无法撤销。',
+            danger: true
+          });
+          if (!confirmed) return;
+          delBtn.disabled = true;
           delBtn.textContent = '...';
-          const res = await fetch('/api/mv-aide/presets/' + encodeURIComponent(preset.id) + (force ? '?force=true' : ''), { method: 'DELETE' });
-          const d = await res.json();
-          if (d && d.ok) {
-            loadPresets();
-          } else {
-            toast('删除失败: ' + (d.error || '未知错误'), 'error');
-            delBtn.textContent = '删除';
+          try {
+            const suffix = isSys ? '?force=true' : '';
+            await fetchManagerJson('/api/mv-aide/presets/' + encodeURIComponent(preset.id) + suffix, { method: 'DELETE' });
+            await loadPresets();
+          } catch (err) {
+            toast('删除失败: ' + String(err instanceof Error ? err.message : err), 'error');
+            await loadPresets();
           }
         };
-
-        right.appendChild(toggleBtn);
-        right.appendChild(cloneBtn);
         right.appendChild(delBtn);
 
         item.appendChild(left);
@@ -1226,15 +1280,14 @@ export const UI_SCRIPT_BODY = `
     }
 
     async function loadPresets() {
+      countSpan.textContent = '正在加载...';
       try {
-        const res = await fetch('/api/mv-aide/presets');
-        const data = await res.json();
-        if (data && data.ok) {
-          allPresets = data.presets || [];
-          renderPresets();
-        }
+        const data = await fetchManagerJson('/api/mv-aide/presets');
+        allPresets = data.presets || [];
+        renderPresets();
       } catch (err) {
-        setStaticHtml(listDiv, '<div style="color:var(--dsw-alias-state-error-primary, #f87171); padding:16px;">加载预设失败: ' + escapeHtml(err) + '</div>');
+        allPresets = [];
+        renderLoadError(countSpan, listDiv, '子智能体预设', err, loadPresets);
       }
     }
 

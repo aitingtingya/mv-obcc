@@ -505,6 +505,8 @@ export class BridgeClient {
     this.reviewOutsideVault = false;
     /** Server-side passive-delivery mode: 'live' | 'on-send'. */
     this.passiveDelivery = 'live';
+    /** Whether mv-agent should replace getTerminalOutput with native terminal tools. */
+    this.terminalAwarenessEnhanced = true;
     /** 状态栏「打开」勾选框：是否推送位置信息。 */
     this.pushLocation = true;
     /** 状态栏「选中」勾选框：是否推送选中文本。 */
@@ -623,6 +625,7 @@ export class BridgeClient {
     // builds omit them, leaving the defaults.
     this.reviewOutsideVault = result?.reviewOutsideVault === true;
     this.passiveDelivery = result?.passiveDelivery === 'on-send' ? 'on-send' : 'live';
+    this.terminalAwarenessEnhanced = result?.terminalAwarenessEnhanced !== false;
     this.pushLocation = result?.pushLocation !== false;
     this.pushSelection = result?.pushSelection !== false;
     this.outsideToolPolicy = normalizeOutsideToolPolicy(result?.outsideToolPolicy);
@@ -643,6 +646,30 @@ export class BridgeClient {
   async callTool(name, args, signal) {
     const result = await this.rpc('tools/call', { name, arguments: args ?? {} }, signal);
     return result;
+  }
+
+  async listTerminals(signal) {
+    return this.rpc('dsh/terminal/list', {}, signal);
+  }
+
+  async readTerminal(args, signal) {
+    return this.rpc('dsh/terminal/read', args ?? {}, signal);
+  }
+
+  async sendTerminal(args, signal) {
+    return this.rpc('dsh/terminal/send', args ?? {}, signal);
+  }
+
+  async runTerminal(args, signal) {
+    return this.rpc('dsh/terminal/run', args ?? {}, signal);
+  }
+
+  async openTerminal(signal) {
+    return this.rpc('dsh/terminal/open', {}, signal);
+  }
+
+  async focusTerminal(args, signal) {
+    return this.rpc('dsh/terminal/focus', args ?? {}, signal);
   }
 
   close(reason = 'bridge closed') {
@@ -700,6 +727,8 @@ export class BridgeSupervisor {
     this.reviewOutsideVault = false;
     /** Mirrors the mv-agent setting `passiveDelivery` ('live' | 'on-send'). */
     this.passiveDelivery = 'live';
+    /** Mirrors the mv-agent setting `terminalAwarenessEnhanced`. */
+    this.terminalAwarenessEnhanced = true;
     /** Mirrors the mv-agent status-bar checkbox `pushLocation`. */
     this.pushLocation = true;
     /** Mirrors the mv-agent status-bar checkbox `pushSelection`. */
@@ -803,6 +832,10 @@ export class BridgeSupervisor {
           if (typeof next === 'boolean') this.reviewOutsideVault = next;
           const mode = notification?.params?.passiveDelivery;
           if (mode === 'live' || mode === 'on-send') this.passiveDelivery = mode;
+          const terminalAwarenessEnhanced = notification?.params?.terminalAwarenessEnhanced;
+          if (typeof terminalAwarenessEnhanced === 'boolean') {
+            this.terminalAwarenessEnhanced = terminalAwarenessEnhanced;
+          }
           const pushLocation = notification?.params?.pushLocation;
           if (typeof pushLocation === 'boolean') this.pushLocation = pushLocation;
           const pushSelection = notification?.params?.pushSelection;
@@ -821,6 +854,7 @@ export class BridgeSupervisor {
       await client.initialize();
       this.reviewOutsideVault = client.reviewOutsideVault === true;
       this.passiveDelivery = client.passiveDelivery === 'on-send' ? 'on-send' : 'live';
+      this.terminalAwarenessEnhanced = client.terminalAwarenessEnhanced !== false;
       this.pushLocation = client.pushLocation !== false;
       this.pushSelection = client.pushSelection !== false;
       this.outsideToolPolicy = client.outsideToolPolicy;

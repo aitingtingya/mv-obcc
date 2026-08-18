@@ -15,6 +15,12 @@ mv-AIDE bridge plugin for [DeepSeek Harness](https://github.com/deepseek-ai/deep
 - **Diff-as-permission hook** (see below): `write` / `edit` / `str_replace_editor` writes that need permission confirmation are reviewed as an Obsidian diff instead of the web approval card.
 - **Vault workspace auto-enter**: on bridge connect the vault is made a DSH workspace, and (only when it has no session yet) a session is created with its cwd set to the vault root.
 
+## Enhanced terminal awareness
+
+The mv-agent setting **「终端感知增强」** is disabled by default and affects mv-agent / DSH only. When enabled, the normal IDE `getTerminalOutput` tool is removed from mv-agent's registered tool set and replaced by six native mv-AIDE terminal tools: `mv_aide__listTerminals`, `mv_aide__readTerminal`, `mv_aide__sendTerminalInput`, `mv_aide__runInTerminal`, `mv_aide__openTerminal`, and `mv_aide__focusTerminal`. They operate only on mv-AIDE's own integrated terminal views and can address the most recently active terminal by runtime id.
+
+When the setting is disabled, all six enhanced terminal tools disappear and mv-agent returns to the bridge's original `mv_aide__getTerminalOutput` tool. Switching the setting refreshes tools live; it does not restart DSH, reconnect the bridge, or alter the public IDE `tools/list` seen by other clients. For outside-vault sessions, the enhanced terminal tools reuse the existing `getTerminalOutput` outside-tool policy toggle.
+
 ## Diff-as-permission hook
 
 A `tools/execute` wrapper intercepts the file-writing tools at the moment DSH would demand permission:

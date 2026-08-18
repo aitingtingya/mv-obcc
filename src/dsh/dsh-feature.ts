@@ -54,6 +54,7 @@ import {
   openDshWebviewInNewLeaf,
   stopOpenMvAgentViews,
 } from "./dsh-webview";
+import { isDshConnectedToBridge } from "./dsh-bridge-status";
 
 const COMMAND_ID = "open-mv-agent-for-obsidian";
 
@@ -142,6 +143,9 @@ export class DshFeature {
   private environment: DshEnvironmentStatus = structuredClone(UNKNOWN_DSH_ENVIRONMENT);
   private environmentBusy = false;
   private mvAgentOperationGeneration = 0;
+  private dshBridgeConnected = false;
+  private dshBridgeProbeBusy = false;
+  private dshBridgeProbeGeneration = 0;
   /**
    * Collapsible-subsection open state inside the mv-agent settings section.
    * All subsections default collapsed (开发规范七); user toggles are kept
@@ -215,6 +219,8 @@ export class DshFeature {
 
   dispose(): void {
     this.mvAgentOperationGeneration += 1;
+    this.dshBridgeProbeGeneration += 1;
+    this.dshBridgeConnected = false;
     if (this.commandRegistered) {
       this.plugin.removeCommand(COMMAND_ID);
       this.plugin.removeCommand("close-mv-agent");
@@ -504,6 +510,47 @@ export class DshFeature {
     return this.processManager.currentUrl();
   }
 
+  /** Cached truth for the status dot; refreshed asynchronously by the view. */
+  isDshBridgeConnected(): boolean {
+    return this.dshBridgeConnected;
+  }
+
+  /**
+   * Refresh the status dot from OS process/TCP facts only. This deliberately
+   * does not inspect IDE Bridge clients or change the bridge protocol.
+   */
+  async refreshDshBridgeConnection(): Promise<boolean> {
+    const bridgePort = Number((this.plugin as unknown as { port?: number }).port ?? 0);
+    const dshPort = this.processManager.currentPort();
+    const dshUrl = this.processManager.currentUrl();
+    if (!bridgePort || !dshPort || !dshUrl) {
+      this.dshBridgeProbeGeneration += 1;
+      this.dshBridgeConnected = false;
+      return false;
+    }
+    if (this.dshBridgeProbeBusy) return this.dshBridgeConnected;
+
+    const generation = ++this.dshBridgeProbeGeneration;
+    this.dshBridgeProbeBusy = true;
+    try {
+      const connected = await isDshConnectedToBridge(
+        { dshPort, bridgePort, dshUrl },
+        { probe: probeDshWebViaRequestUrl },
+      );
+      if (generation === this.dshBridgeProbeGeneration) {
+        this.dshBridgeConnected = connected;
+      }
+      return this.dshBridgeConnected;
+    } catch {
+      if (generation === this.dshBridgeProbeGeneration) {
+        this.dshBridgeConnected = false;
+      }
+      return false;
+    } finally {
+      this.dshBridgeProbeBusy = false;
+    }
+  }
+
   /** Confirm that one exact URL serves DSH and synchronize shared state. */
   async confirmDshViewUrl(url: string): Promise<string | null> {
     return this.processManager.confirmDshUrl(url);
@@ -551,6 +598,25 @@ export class DshFeature {
     for (const leaf of leaves) {
       try {
         (leaf.view as DshWebView | null)?.navigateTo?.(url);
+      } catch {
+        /* per-view containment */
+      }
+    }
+  }
+
+  /**
+   * Reboot each currently open DSH iframe against its own endpoint after a host
+   * plugin changed the browser client-module graph. DSH rc.7 client-hmr does
+   * not dynamically materialize graph additions/removals, so a full document
+   * boot is required for mv-agent enable/disable to converge on the browser.
+   */
+  reloadOpenViewsForPluginGraphChange(): void {
+    const leaves = this.plugin.app.workspace.getLeavesOfType(DSH_WEB_VIEW_TYPE);
+    for (const leaf of leaves) {
+      try {
+        const view = leaf.view as DshWebView | null;
+        const url = view?.currentViewUrl?.();
+        if (url) view?.navigateTo?.(url);
       } catch {
         /* per-view containment */
       }

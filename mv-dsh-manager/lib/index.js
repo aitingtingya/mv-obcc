@@ -3,7 +3,7 @@
 
 import { listPlugins, togglePlugin, deletePlugin, importPlugin, openPluginFolder } from './plugins-service.js';
 import { listSkills, toggleSkill, importSkill, deleteSkill, openSkillFolder } from './skills-service.js';
-import { listPresets, copyPreset, deletePreset, togglePreset, openPresetFolder } from './presets-service.js';
+import { listPresets, togglePreset, copyPreset, deletePreset, openPresetDocument } from './presets-service.js';
 import { discoverBridges, listTools } from './bridge-service.js';
 import { installPlanReviewControl } from './plan-review-control.js';
 import { UI_SCRIPT_TAG } from './ui-script.js';
@@ -103,7 +103,7 @@ export function apply(ctx) {
 
         // ── Skills API ──
         if (pathname === '/api/mv-aide/skills' && method === 'GET') {
-          const data = await listSkills();
+          const data = await listSkills(ctx);
           return sendJson(200, data);
         }
 
@@ -111,26 +111,26 @@ export function apply(ctx) {
           const payload = await readJsonBody();
           const { skillId, disabled } = payload;
           if (!skillId) return sendJson(400, { ok: false, error: 'skillId is required' });
-          const result = await toggleSkill(skillId, disabled);
+          const result = await toggleSkill(ctx, skillId, disabled);
           return sendJson(200, result);
         }
 
         if (pathname === '/api/mv-aide/skills/import' && method === 'POST') {
           const payload = await readJsonBody();
           const { name: skillName, description, content } = payload;
-          const result = await importSkill(skillName, description, content);
+          const result = await importSkill(ctx, skillName, description, content);
           return sendJson(200, result);
         }
 
         if (pathname.startsWith('/api/mv-aide/skills/') && method === 'DELETE') {
           const skillId = decodeURIComponent(pathname.replace('/api/mv-aide/skills/', '').split('?')[0]);
-          const result = await deleteSkill(skillId);
+          const result = await deleteSkill(ctx, skillId);
           return sendJson(200, result);
         }
 
         if (pathname === '/api/mv-aide/skills/open-folder' && method === 'POST') {
           const payload = await readJsonBody();
-          const result = await openSkillFolder(payload.skillId);
+          const result = await openSkillFolder(ctx, payload.skillId);
           return sendJson(200, result);
         }
 
@@ -144,7 +144,7 @@ export function apply(ctx) {
           const payload = await readJsonBody();
           const { presetId, disabled } = payload;
           if (!presetId) return sendJson(400, { ok: false, error: 'presetId is required' });
-          const result = await togglePreset(presetId, disabled);
+          const result = await togglePreset(ctx, presetId, disabled);
           return sendJson(200, result);
         }
 
@@ -158,13 +158,13 @@ export function apply(ctx) {
         if (pathname.startsWith('/api/mv-aide/presets/') && method === 'DELETE') {
           const presetId = decodeURIComponent(pathname.replace('/api/mv-aide/presets/', '').split('?')[0]);
           const force = url.searchParams.get('force') === 'true';
-          const result = await deletePreset(presetId, force);
+          const result = await deletePreset(ctx, presetId, force);
           return sendJson(200, result);
         }
 
-        if (pathname === '/api/mv-aide/presets/open-folder' && method === 'POST') {
+        if (pathname === '/api/mv-aide/presets/open-document' && method === 'POST') {
           const payload = await readJsonBody();
-          const result = await openPresetFolder(payload.presetId);
+          const result = await openPresetDocument(ctx, payload.presetId);
           return sendJson(200, result);
         }
 

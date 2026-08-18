@@ -236,6 +236,7 @@ export class DshWebView extends ItemView {
   private expanded = false;
   private loadFailed = false;
   private loadWatchdog: number | null = null;
+  private statusRefreshTimer: number | null = null;
   private navigationGeneration = 0;
   private stateGeneration = 0;
   private closed = false;
@@ -338,6 +339,10 @@ export class DshWebView extends ItemView {
     this.navigationGeneration += 1;
     this.stateGeneration += 1;
     this.clearLoadWatchdog();
+    if (this.statusRefreshTimer !== null) {
+      this.viewWindow().clearInterval(this.statusRefreshTimer);
+      this.statusRefreshTimer = null;
+    }
     this.frameEl?.remove();
     this.frameEl = null;
     this.statusPortEl = null;
@@ -626,9 +631,12 @@ export class DshWebView extends ItemView {
     bindCheck(this.statusSelectionCheckEl, "pushSelection");
 
     this.renderStatus();
-    this.registerInterval(
-      this.viewWindow().setInterval(() => this.renderStatus(), 1000),
-    );
+    void this.refreshDshBridgeStatus();
+    this.statusRefreshTimer = this.viewWindow().setInterval(() => {
+      this.renderStatus();
+      void this.refreshDshBridgeStatus();
+    }, 1000);
+    this.registerInterval(this.statusRefreshTimer);
   }
 
   private openDshManagerSettings(subsectionId: "plugins" | "skills" | "presets" = "plugins"): void {
@@ -751,13 +759,20 @@ export class DshWebView extends ItemView {
     this.renderStatus();
   }
 
+  private async refreshDshBridgeStatus(): Promise<void> {
+    const feature = this.plugin.dshFeature;
+    if (!feature || this.closed) return;
+    await feature.refreshDshBridgeConnection();
+    if (!this.closed) this.renderStatus();
+  }
+
   private renderStatus(): void {
     const plugin = this.plugin;
     const settings = plugin.settings;
     const dshFeature = plugin.dshFeature;
     const actualPort = dshFeature?.currentDshPort() ?? null;
     const actualUrl = dshFeature?.currentDshUrl() ?? null;
-    const connected = plugin.ideBridgeClientCount() > 0;
+    const connected = dshFeature?.isDshBridgeConnected() ?? false;
     const tracking = settings.activityTracking.supportAllActivePages;
     const snapshot = plugin.latestSelectionSnapshot();
     const parts = buildDshStatusParts(snapshot);

@@ -3,7 +3,15 @@ import os from "node:os";
 import path from "node:path";
 import { processOutput, runProcess } from "../process-runner";
 import { MV_AGENT_PLUGIN_FILES, MV_DSH_MANAGER_PLUGIN_FILES } from "./dsh-plugin-bundle";
+import {
+  dshPluginBundleFingerprint,
+  installedDshPluginBundleMatches,
+  writeDshPluginBundleMarker,
+} from "./dsh-plugin-integrity";
 import type { DshCommand } from "./dsh-process";
+
+export const DSH_AGENT_BUNDLE_FINGERPRINT = dshPluginBundleFingerprint(MV_AGENT_PLUGIN_FILES);
+export const DSH_MANAGER_BUNDLE_FINGERPRINT = dshPluginBundleFingerprint(MV_DSH_MANAGER_PLUGIN_FILES);
 
 export const DSH_AGENT_PLUGIN_NAME = "@mv-aide/mv-agent";
 export const DSH_PM_PLUGIN_NAME = "@mv-aide/mv-dsh-manager";
@@ -165,6 +173,7 @@ async function cleanupBundles(profileDir: string): Promise<void> {
 async function writePackage(
   installedDir: string,
   files: Readonly<Record<string, string>>,
+  fingerprint: string,
 ): Promise<void> {
   await fs.rm(installedDir, { recursive: true, force: true });
   for (const [relativePath, content] of Object.entries(files)) {
@@ -172,6 +181,7 @@ async function writePackage(
     await fs.mkdir(path.dirname(output), { recursive: true });
     await fs.writeFile(output, content, "utf8");
   }
+  await writeDshPluginBundleMarker(installedDir, fingerprint);
 }
 
 /** DSH plugins are written straight into the web profile; no vault staging. */
@@ -181,10 +191,12 @@ async function materializePlugin(): Promise<void> {
   await writePackage(
     path.join(profileDir, "node_modules", "@mv-aide", "mv-agent"),
     MV_AGENT_PLUGIN_FILES,
+    DSH_AGENT_BUNDLE_FINGERPRINT,
   );
   await writePackage(
     path.join(profileDir, "node_modules", "@mv-aide", "mv-dsh-manager"),
     MV_DSH_MANAGER_PLUGIN_FILES,
+    DSH_MANAGER_BUNDLE_FINGERPRINT,
   );
 }
 
@@ -203,7 +215,8 @@ async function legacyVaultPluginExists(vaultRoot: string): Promise<boolean> {
 async function legacyProfileArtifactsExist(profileDir: string): Promise<boolean> {
   const manifest = await readProfileManifest(profileDir);
   const deps = manifest?.dependencies ?? {};
-  if (deps[DSH_AGENT_PLUGIN_NAME] || deps["@mv-aide/mv-plugin-manager"] || deps["@mv-aide/dsh-plugin"]) {
+  if (deps[DSH_AGENT_PLUGIN_NAME] || deps[DSH_PM_PLUGIN_NAME]
+    || deps["@mv-aide/mv-plugin-manager"] || deps["@mv-aide/dsh-plugin"]) {
     return true;
   }
   for (const name of LEGACY_PROFILE_PACKAGES) {
@@ -241,6 +254,7 @@ async function cleanupLegacyInjection(vaultRoot: string): Promise<void> {
   const manifest = await readProfileManifest(profileDir);
   if (manifest?.dependencies) {
     delete manifest.dependencies[DSH_AGENT_PLUGIN_NAME];
+    delete manifest.dependencies[DSH_PM_PLUGIN_NAME];
     delete manifest.dependencies["@mv-aide/mv-plugin-manager"];
     delete manifest.dependencies["@mv-aide/dsh-plugin"];
     if (Object.keys(manifest.dependencies).length === 0) delete manifest.dependencies;
@@ -256,23 +270,41 @@ export async function inspectDshInjection(vaultRoot: string): Promise<DshInjecti
     .readFile(path.join(profileDir, "cordis.patch.yml"), "utf8")
     .catch(() => "");
 
-  const agentInstalled = await pathExists(
-    path.join(profileDir, "node_modules", "@mv-aide", "mv-agent", "package.json"),
-  );
-  const pmInstalled = await pathExists(
-    path.join(profileDir, "node_modules", "@mv-aide", "mv-dsh-manager", "package.json"),
-  );
+  const agentDir = path.join(profileDir, "node_modules", "@mv-aide", "mv-agent");
+  const pmDir = path.join(profileDir, "node_modules", "@mv-aide", "mv-dsh-manager");
+  const agentInstalled = await pathExists(path.join(agentDir, "package.json"));
+  const pmInstalled = await pathExists(path.join(pmDir, "package.json"));
+  const [agentCurrent, pmCurrent] = await Promise.all([
+    agentInstalled
+      ? installedDshPluginBundleMatches(agentDir, MV_AGENT_PLUGIN_FILES, DSH_AGENT_BUNDLE_FINGERPRINT)
+      : Promise.resolve(false),
+    pmInstalled
+      ? installedDshPluginBundleMatches(pmDir, MV_DSH_MANAGER_PLUGIN_FILES, DSH_MANAGER_BUNDLE_FINGERPRINT)
+      : Promise.resolve(false),
+  ]);
 
   const legacyVaultPlugin = await legacyVaultPluginExists(vaultRoot);
   const legacyProfileArtifact = await legacyProfileArtifactsExist(profileDir);
   const legacyBundle = bundlesContainPlugin(manifest ?? {});
   const patchReady = isHealthyPatchFile(patch);
 
-  if (agentInstalled && pmInstalled && patchReady && !legacyBundle && !legacyVaultPlugin && !legacyProfileArtifact) {
-    return { state: "ready", detail: "DSH web profile 中的 mv-agent 与 mv-dsh-manager 插件包及热加载配置均有效。" };
+  if (
+    agentInstalled && pmInstalled && agentCurrent && pmCurrent && patchReady
+    && !legacyBundle && !legacyVaultPlugin && !legacyProfileArtifact
+  ) {
+    return { state: "ready", detail: "DSH web profile 中的 mv-agent 与 mv-dsh-manager 插件包内容及热加载配置均与当前 mv-AIDE 一致。" };
   }
   if (agentInstalled || pmInstalled || legacyVaultPlugin || legacyProfileArtifact || hasMvAideRows(patch) || legacyBundle) {
-    return { state: "partial", detail: "检测到不完整或旧版注入，需要更新修复。" };
+    const stale = [
+      agentInstalled && !agentCurrent ? "mv-agent" : null,
+      pmInstalled && !pmCurrent ? "mv-dsh-manager" : null,
+    ].filter(Boolean).join("、");
+    return {
+      state: "partial",
+      detail: stale
+        ? `检测到过期的 DSH 插件包（${stale}），需要更新修复。`
+        : "检测到不完整或旧版注入，需要更新修复。",
+    };
   }
   return { state: "missing", detail: "尚未向 DSH web profile 注入插件。" };
 }

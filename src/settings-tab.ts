@@ -20,6 +20,8 @@ import type {
   InlineCompletionKeymap,
   SourceAssistProfile,
   SourceHighlightCustomTheme,
+  TerminalOpenMode,
+  TerminalOpenPosition,
   TerminalThemePalette,
   TerminalThemePreset,
   ToolToggles,
@@ -1098,9 +1100,23 @@ export class MvAideIdeSettingTab extends PluginSettingTab {
           .addOption("left", t("左侧边栏 (Left Sidebar)"))
           .addOption("right", t("右侧边栏 (Right Sidebar)"))
           .addOption("bottom", t("底部拆分栏 (Bottom Split Pane)"))
-          .setValue(this.plugin.settings.terminalOpenPosition || "right")
+          .setValue(this.plugin.settings.terminalOpenPosition)
           .onChange(async (value) => {
-            this.plugin.settings.terminalOpenPosition = value as any;
+            this.plugin.settings.terminalOpenPosition = value as TerminalOpenPosition;
+            await this.plugin.saveData(this.plugin.settings);
+          })
+      );
+
+    new Setting(containerEl)
+      .setName(t("新终端打开方式"))
+      .setDesc(t("决定新建终端在所选打开位置中使用分屏还是新标签页；不改变已经打开的终端。"))
+      .addDropdown((dropdown) =>
+        dropdown
+          .addOption("split", t("分屏"))
+          .addOption("new-tab", t("新建标签页"))
+          .setValue(this.plugin.settings.terminalOpenMode)
+          .onChange(async (value) => {
+            this.plugin.settings.terminalOpenMode = value as TerminalOpenMode;
             await this.plugin.saveData(this.plugin.settings);
           })
       );

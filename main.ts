@@ -84,8 +84,19 @@ import {
   extensionOfFileName,
 } from "./src/file-explorer-path-bar";
 import { parseTexSections } from "./src/source-assist/tex-outline";
-import { runFileBottomCommand } from "./src/terminal/file-bottom-command";
 import { normalizeMvRunSettings } from "./src/terminal/mv-run-types";
+import { TerminalRegistry } from "./src/terminal-control/terminal-registry";
+import { DshTerminalRpc } from "./src/terminal-control/dsh-terminal-rpc";
+import { runFileBottomCommandWithTerminalRegistry } from "./src/terminal-control/mv-run-command";
+import {
+  normalizeTerminalOpenMode,
+  normalizeTerminalOpenPosition,
+  resolveTerminalLeaf,
+} from "./src/terminal-control/terminal-layout";
+import {
+  applyObsidianStatusBarVisibility as applyNativeStatusBarVisibility,
+  clearObsidianStatusBarVisibility,
+} from "./src/obsidian-status-bar-visibility";
 import {
   anyVimSourceEnabled,
   normalizeVimSettings,
@@ -148,7 +159,6 @@ import {
 import {
   applyBottomTerminalSplitRatio,
   activeWorkspaceLeaf,
-  createMainBottomLeaf,
   currentWorkspaceContext,
   getOpenWorkspaceTabs,
 } from "./src/workspace-context";
@@ -452,6 +462,8 @@ export default class MvAideIdePlugin extends Plugin {
   private broadcastQueued = false;
   private toolRegistry: ToolRegistry | null = null;
   private terminalTracker: TerminalSessionTracker | null = null;
+  terminalRegistry: TerminalRegistry | null = null;
+  private dshTerminalRpc: DshTerminalRpc | null = null;
   private selectionHighlighter: SelectionHighlightController | null = null;
   private llmFeature: LlmFeature | null = null;
   private inlineCompletion: InlineCompletionFeature | null = null;
@@ -510,13 +522,22 @@ export default class MvAideIdePlugin extends Plugin {
       | (Partial<BridgeSettings> & { codex?: unknown })
       | null;
     const { codex: _legacyCodex, ...loaded } = rawLoaded ?? {};
+    const terminalOpenPosition = normalizeTerminalOpenPosition(
+      loaded.terminalOpenPosition ?? DEFAULT_SETTINGS.terminalOpenPosition,
+    );
+    const terminalOpenMode = normalizeTerminalOpenMode(
+      loaded.terminalOpenMode ?? DEFAULT_SETTINGS.terminalOpenMode,
+    );
     this.settings = normalizeTerminalThemeSettings({
       ...DEFAULT_SETTINGS,
       ...loaded,
+      terminalOpenPosition,
+      terminalOpenMode,
       // 旧版曾用该字段启用 UA/WebAuthn 登录补丁。该方案会制造矛盾的
       // 浏览器指纹，现仅保留数据结构兼容；无论旧 data.json 为何值，
       // 当前运行时都必须保持原生 Web Viewer 身份。
       webviewStripElectronUa: false,
+      hideObsidianStatusBar: loaded.hideObsidianStatusBar === true,
       activityTracking: {
         ...DEFAULT_SETTINGS.activityTracking,
         ...(loaded.activityTracking ?? {}),
@@ -596,6 +617,12 @@ export default class MvAideIdePlugin extends Plugin {
     this.registerView(DIFF_VIEW_TYPE, (leaf) => new ObsidianDiffView(leaf));
     this.registerView(TERMINAL_VIEW_TYPE, (leaf) => new TerminalView(leaf, this));
     this.register(() => this.unregisterCustomMarkdownExtensions());
+    this.terminalRegistry = new TerminalRegistry(
+      this.app,
+      () => this.createTerminalView(),
+    );
+    this.dshTerminalRpc = new DshTerminalRpc(this.terminalRegistry);
+    this.applyObsidianStatusBarVisibility();
     this.syncCustomMarkdownExtensions();
     this.addSettingTab(new MvAideIdeSettingTab(this.app, this));
     this.terminalTracker = new TerminalSessionTracker(this.app);
@@ -652,8 +679,10 @@ export default class MvAideIdePlugin extends Plugin {
     });
 
     this.registerEvent(
-      this.app.workspace.on("active-leaf-change", () => {
+      this.app.workspace.on("active-leaf-change", (leaf) => {
         this.terminalTracker?.scan();
+        this.terminalRegistry?.refresh();
+        this.terminalRegistry?.markActiveLeaf(leaf);
         this.fileTypeIconView?.refreshTabIcons();
         this.selectionHighlighter?.sync(true);
         this.trackWebSelectionReporters();
@@ -666,6 +695,7 @@ export default class MvAideIdePlugin extends Plugin {
     this.registerEvent(
       this.app.workspace.on("layout-change", () => {
         this.terminalTracker?.scan();
+        this.terminalRegistry?.refresh();
         this.fileTypeIconView?.refreshTabIcons();
         this.selectionHighlighter?.sync();
         this.trackWebSelectionReporters();
@@ -774,6 +804,8 @@ export default class MvAideIdePlugin extends Plugin {
 
     this.schedulePostLayoutStartup();
     this.terminalTracker.scan();
+    this.terminalRegistry?.refresh();
+    this.terminalRegistry?.markActiveLeaf(activeWorkspaceLeaf(this.app));
     this.selectionHighlighter.sync(true);
     this.scheduleBroadcast();
     } finally {
@@ -786,6 +818,11 @@ export default class MvAideIdePlugin extends Plugin {
       activeWindow.clearTimeout(this.broadcastTimer);
       this.broadcastTimer = null;
     }
+    clearObsidianStatusBarVisibility(document);
+    this.dshTerminalRpc?.dispose();
+    this.dshTerminalRpc = null;
+    this.terminalRegistry?.dispose();
+    this.terminalRegistry = null;
     this.unloaded = true;
     this.cancelUniversalMcpIdleStart();
     this.postLayoutStartup?.cancel();
@@ -825,50 +862,39 @@ export default class MvAideIdePlugin extends Plugin {
     void this.finishUnload();
   }
 
-  async activateTerminalView(): Promise<WorkspaceLeaf | null> {
+  private async openTerminalView(): Promise<WorkspaceLeaf | null> {
     const { workspace } = this.app;
-    const position = this.settings.terminalOpenPosition || "right";
-    let leaf: any;
-    let createdBottomSplit = false;
+    const { leaf, createdBottomSplit } = resolveTerminalLeaf(workspace, {
+      position: this.settings.terminalOpenPosition,
+      mode: this.settings.terminalOpenMode,
+    });
+    if (!leaf) return null;
 
-    if (position === "left") {
-      const hasExisting = workspace.getLeavesOfType(TERMINAL_VIEW_TYPE).length > 0;
-      leaf = workspace.getLeftLeaf(hasExisting);
-    } else if (position === "right") {
-      const hasExisting = workspace.getLeavesOfType(TERMINAL_VIEW_TYPE).length > 0;
-      leaf = workspace.getRightLeaf(hasExisting);
-    } else if (position === "bottom") {
-      const mainAreaLeaves = workspace.getLeavesOfType(TERMINAL_VIEW_TYPE).filter(l => l.getRoot() === workspace.rootSplit);
-      const targetLeaf = mainAreaLeaves[0];
-      if (targetLeaf) {
-        workspace.setActiveLeaf(targetLeaf, { focus: true });
-        leaf = workspace.getLeaf("tab");
-      } else {
-        leaf = createMainBottomLeaf(workspace);
-        createdBottomSplit = true;
+    await leaf.setViewState({
+      type: TERMINAL_VIEW_TYPE,
+      active: true,
+    });
+    await workspace.revealLeaf(leaf);
+    if (createdBottomSplit) applyBottomTerminalSplitRatio(leaf, workspace);
+    setTimeout(() => {
+      if (leaf.view instanceof TerminalView) {
+        leaf.view.focusTerminal();
       }
-    } else {
-      leaf = workspace.getLeaf(true);
-    }
+    }, 100);
+    return leaf;
+  }
 
-    if (leaf) {
-      await leaf.setViewState({
-        type: TERMINAL_VIEW_TYPE,
-        active: true,
-      });
-      await workspace.revealLeaf(leaf);
-      if (createdBottomSplit) {
-        applyBottomTerminalSplitRatio(leaf, workspace);
-      }
-      setTimeout(() => {
-        const view = leaf.view;
-        if (view instanceof TerminalView) {
-          view.focusTerminal();
-        }
-      }, 100);
-      return leaf;
-    }
-    return null;
+  async activateTerminalView(): Promise<WorkspaceLeaf | null> {
+    return this.openTerminalView();
+  }
+
+  /** Create a brand-new integrated terminal without changing the existing open command. */
+  async createTerminalView(): Promise<WorkspaceLeaf | null> {
+    return this.openTerminalView();
+  }
+
+  applyObsidianStatusBarVisibility(): void {
+    applyNativeStatusBarVisibility(document, this.settings.hideObsidianStatusBar);
   }
 
   refreshTerminalThemes(): void {
@@ -897,6 +923,7 @@ export default class MvAideIdePlugin extends Plugin {
       params: {
         reviewOutsideVault: this.settings.dsh.reviewOutsideVault,
         passiveDelivery: this.settings.dsh.passiveDelivery,
+        terminalAwarenessEnhanced: this.settings.dsh.terminalAwarenessEnhanced,
         pushLocation: this.settings.dsh.pushLocation,
         pushSelection: this.settings.dsh.pushSelection,
         outsideToolPolicy: this.settings.dsh.outsideToolPolicy,
@@ -1226,11 +1253,15 @@ export default class MvAideIdePlugin extends Plugin {
     this.addCommand({
       id: "run-file-bottom-command",
       name: t("运行 mv-run 指令"),
-      editorCallback: (_editor, view) =>
-        void runFileBottomCommand(
+      editorCallback: (_editor, view) => {
+        const registry = this.terminalRegistry;
+        if (!registry) return;
+        void runFileBottomCommandWithTerminalRegistry(
           this,
+          registry,
           view instanceof MarkdownView ? view : undefined,
-        ),
+        );
+      },
     });
     this.registeredStaticCommandIds.add("run-file-bottom-command");
 
@@ -2257,6 +2288,12 @@ export default class MvAideIdePlugin extends Plugin {
     context?: BridgeClientContext,
   ): Promise<JsonRpcResponse | null> {
     const id = request.id ?? null;
+    if (channel === "ide") {
+      this.dshTerminalRpc?.observeInitialize(request, context);
+      const terminalResponse = await this.dshTerminalRpc?.handle(request, context);
+      if (terminalResponse) return terminalResponse;
+    }
+
     switch (request.method) {
       case "initialize":
         if (context) this.previousBroadcasts.delete(context.clientId);
@@ -2274,6 +2311,7 @@ export default class MvAideIdePlugin extends Plugin {
             },
             reviewOutsideVault: this.settings.dsh.reviewOutsideVault,
             passiveDelivery: this.settings.dsh.passiveDelivery,
+            terminalAwarenessEnhanced: this.settings.dsh.terminalAwarenessEnhanced,
             pushLocation: this.settings.dsh.pushLocation,
             pushSelection: this.settings.dsh.pushSelection,
             outsideToolPolicy: this.settings.dsh.outsideToolPolicy,

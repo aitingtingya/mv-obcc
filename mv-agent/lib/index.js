@@ -46,6 +46,11 @@ import {
   shouldDeliverSelection,
 } from './passive-state.js';
 import { mountHoverSidebar } from './hover-sidebar.js';
+import {
+  callEnhancedTerminalTool,
+  isEnhancedTerminalTool,
+  terminalAwareToolDefinitions,
+} from './terminal-tools.js';
 import { createUserMessage } from '@deepseek-ai/dsh-llm/message';
 
 export const name = 'mv-agent';
@@ -364,12 +369,18 @@ export function apply(ctx, config = {}) {
 
   function collectTools() {
     const byName = new Map();
-    for (const sv of supervisors.values()) {
+    const connected = [...supervisors.values()].filter((sv) => sv.client?.isOpen());
+    // Tool registration is global in DSH, so a mixed multi-vault session cannot
+    // expose per-agent schemas. Enhanced mode wins globally to preserve the
+    // strict invariant that getTerminalOutput and native terminal tools never
+    // coexist in one registered tool set.
+    const enhancedMode = connected.some((sv) => sv.terminalAwarenessEnhanced !== false);
+    for (const sv of connected) {
       for (const tool of sv.client?.tools ?? []) {
         if (tool?.name) byName.set(tool.name, tool);
       }
     }
-    return [...byName.values()];
+    return terminalAwareToolDefinitions([...byName.values()], enhancedMode);
   }
 
   function refreshTools() {
@@ -409,22 +420,32 @@ export function apply(ctx, config = {}) {
             // Per-channel gate: agents running OUTSIDE the vault may only
             // call tools explicitly enabled in the mv-agent settings
             // ("库外项目工具策略"); in-vault agents are always allowed.
+            const policyChannel = isEnhancedTerminalTool(rawName)
+              ? 'getTerminalOutput'
+              : rawName;
             const allowed = allowedForAgent(
               exec?.agent?.session?.header?.cwd,
               sv.workspaceFolders,
               sv.outsideToolPolicy,
-              rawName,
+              policyChannel,
             );
             if (!allowed) {
               throw new Error(
-                `mv-AIDE 工具 ${rawName} 未对库外项目开放（可在 mv-agent 设置 → IDE 工具 中开启）`,
+                `mv-AIDE 工具 ${rawName} 未对库外项目开放（可在 mv-agent 设置 → IDE 工具 → ${policyChannel} 中开启）`,
               );
             }
-            const result = await sv.callTool(
-              rawName,
-              normalizeArgs(args),
-              exec?.signal,
-            );
+            const normalizedArgs = normalizeArgs(args);
+            if (isEnhancedTerminalTool(rawName) && sv.terminalAwarenessEnhanced === false) {
+              throw new Error('mv-AIDE enhanced terminal awareness is disabled for this session.');
+            }
+            const result = isEnhancedTerminalTool(rawName)
+              ? await callEnhancedTerminalTool(
+                  sv.client,
+                  rawName,
+                  normalizedArgs,
+                  exec?.signal,
+                )
+              : await sv.callTool(rawName, normalizedArgs, exec?.signal);
             const content = Array.isArray(result?.content)
               ? result.content
               : [
@@ -662,6 +683,12 @@ export function apply(ctx, config = {}) {
   function handleNotification(supervisor, notification) {
     const state = passiveStateFor(supervisor);
     const method = notification?.method;
+    if (method === 'mv_aide_settings_changed') {
+      if (typeof notification?.params?.terminalAwarenessEnhanced === 'boolean') {
+        refreshTools();
+      }
+      return;
+    }
     if (method === 'selection_changed') {
       const channels = selectionChannels(
         supervisor.pushLocation,
