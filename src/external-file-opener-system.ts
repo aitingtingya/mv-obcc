@@ -32,12 +32,17 @@ import {
   type WindowsFileAssociationRegistrationOptions,
 } from "./windows-file-associations";
 import { escapeXml, labelForExtension } from "./file-type-icons";
+import { mvAideTempDirectory } from "./storage/temp-paths";
 import {
   renderFileTypeIcns,
   renderFileTypeIco,
 } from "./file-type-icons-raster";
 import { officialLogoPngDataUrl } from "./official-logo";
-import { EXTERNAL_FILE_MIRROR_FOLDER } from "./vault-storage-paths";
+import { EXTERNAL_FILE_MIRROR_FOLDER } from "./storage/vault-paths";
+import {
+  fileOpenerDirectory,
+  legacyFileOpenerRoot,
+} from "./storage/system-paths";
 
 const execFile = promisify(childProcess.execFile);
 
@@ -120,6 +125,20 @@ export interface WindowsFileOpenerMigrationResult {
   error?: string;
 }
 
+interface FileOpenerLayoutMigrationResult {
+  attempted: boolean;
+  migrated: boolean;
+  message: string;
+  error?: string;
+}
+
+type FileOpenerCleanupLayout = "canonical" | "legacy" | "both";
+
+interface FileOpenerMigrationRuntime {
+  prepareMacOpener?: (owner: ExternalFileOpenerOwner) => Promise<void>;
+  activateMacOpener?: (owner: ExternalFileOpenerOwner) => Promise<void>;
+}
+
 export type DefaultOpenerFailureKind =
   | "existing-owner"
   | "other-vault-confirmation-required"
@@ -170,7 +189,45 @@ interface WindowsLauncherPreflightRuntime {
 }
 
 export function externalFileOpenerStateDirectory(): string {
-  return path.join(os.homedir(), ".mv-aide");
+  return fileOpenerDirectory();
+}
+
+function legacyExternalFileOpenerStateDirectory(): string {
+  return legacyFileOpenerRoot();
+}
+
+function legacyExternalFileOpenerPath(fileName: string): string {
+  return path.join(legacyExternalFileOpenerStateDirectory(), fileName);
+}
+
+function plainDirectoryOrMissing(directory: string): boolean {
+  try {
+    const stat = fs.lstatSync(directory);
+    return stat.isDirectory() && !stat.isSymbolicLink();
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "ENOENT";
+  }
+}
+
+function legacyFileOpenerRootIsSafe(): boolean {
+  return plainDirectoryOrMissing(legacyExternalFileOpenerStateDirectory());
+}
+
+function canonicalFileOpenerRootIsSafe(): boolean {
+  return legacyFileOpenerRootIsSafe() &&
+    plainDirectoryOrMissing(externalFileOpenerStateDirectory());
+}
+
+function assertCanonicalFileOpenerRootIsSafe(): void {
+  if (!canonicalFileOpenerRootIsSafe()) {
+    throw new Error(t("打开器状态目录或其 ~/.mv-aide 父目录不是受管普通目录。"));
+  }
+}
+
+function assertLegacyFileOpenerRootIsSafe(): void {
+  if (!legacyFileOpenerRootIsSafe()) {
+    throw new Error(t("legacy 打开器根目录不是受管普通目录。"));
+  }
 }
 
 export function externalFileOpenerOwnerPath(): string {
@@ -363,11 +420,104 @@ function readJson<T>(filePath: string): T | null {
 
 function writeJson(filePath: string, value: unknown): void {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  const temporary = `${filePath}.${process.pid}.tmp`;
-  fs.writeFileSync(temporary, `${JSON.stringify(value, null, 2)}\n`, {
-    mode: 0o600,
-  });
-  fs.renameSync(temporary, filePath);
+  const temporary =
+    `${filePath}.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`;
+  try {
+    fs.writeFileSync(temporary, `${JSON.stringify(value, null, 2)}\n`, {
+      mode: 0o600,
+      flag: "wx",
+    });
+    fs.renameSync(temporary, filePath);
+  } finally {
+    fs.rmSync(temporary, { force: true });
+  }
+}
+
+function filesHaveSameContents(left: string, right: string): boolean {
+  const leftStat = fs.lstatSync(left);
+  const rightStat = fs.lstatSync(right);
+  return leftStat.isFile() &&
+    rightStat.isFile() &&
+    !leftStat.isSymbolicLink() &&
+    !rightStat.isSymbolicLink() &&
+    leftStat.size === rightStat.size &&
+    fs.readFileSync(left).equals(fs.readFileSync(right));
+}
+
+function copyLegacyFileAtomically(source: string, target: string): boolean {
+  if (!fs.existsSync(source)) return false;
+  const sourceStat = fs.lstatSync(source);
+  if (!sourceStat.isFile() || sourceStat.isSymbolicLink()) {
+    throw new Error(t("拒绝迁移非普通文件：{v0}", { v0: source }));
+  }
+  if (fs.existsSync(target)) {
+    if (!filesHaveSameContents(source, target)) {
+      throw new Error(t("新旧打开器文件内容冲突：{v0}", { v0: target }));
+    }
+    return false;
+  }
+  fs.mkdirSync(path.dirname(target), { recursive: true, mode: 0o700 });
+  const temporary = `${target}.${process.pid}.${Date.now()}.migration.tmp`;
+  try {
+    fs.copyFileSync(source, temporary, fs.constants.COPYFILE_EXCL);
+    fs.chmodSync(temporary, sourceStat.mode);
+    if (!filesHaveSameContents(source, temporary)) {
+      throw new Error(t("打开器文件迁移校验失败：{v0}", { v0: source }));
+    }
+    fs.renameSync(temporary, target);
+    if (!filesHaveSameContents(source, target)) {
+      throw new Error(t("打开器文件迁移落盘校验失败：{v0}", { v0: target }));
+    }
+    return true;
+  } finally {
+    fs.rmSync(temporary, { force: true });
+  }
+}
+
+function writeTextAtomically(
+  filePath: string,
+  contents: string,
+  mode?: number,
+): void {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  const temporary = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+  try {
+    fs.writeFileSync(temporary, contents, {
+      encoding: "utf8",
+      flag: "wx",
+      ...(mode === undefined ? {} : { mode }),
+    });
+    if (fs.readFileSync(temporary, "utf8") !== contents) {
+      throw new Error(t("打开器文件写入校验失败：{v0}", { v0: filePath }));
+    }
+    fs.renameSync(temporary, filePath);
+    if (fs.readFileSync(filePath, "utf8") !== contents) {
+      throw new Error(t("打开器文件落盘校验失败：{v0}", { v0: filePath }));
+    }
+  } finally {
+    fs.rmSync(temporary, { force: true });
+  }
+}
+
+function cleanupManagedTempParents(
+  startDirectory: string,
+  stateRootExisted: boolean,
+): void {
+  const stateRoot = path.resolve(externalFileOpenerStateDirectory());
+  let current = path.resolve(startDirectory);
+  while (
+    current === stateRoot ||
+    current.startsWith(`${stateRoot}${path.sep}`)
+  ) {
+    if (current === stateRoot && stateRootExisted) break;
+    try {
+      fs.rmdirSync(current);
+    } catch {
+      break;
+    }
+    if (current === stateRoot) break;
+    current = path.dirname(current);
+  }
 }
 
 async function removeTemporaryPathBestEffort(
@@ -452,8 +602,9 @@ export function preflightWindowsSymlink(
 
   const randomId = runtime.randomId?.() ??
     `${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-  const temporaryDirectory = runtime.temporaryDirectory?.() ?? os.tmpdir();
-  const sourceDir = path.join(temporaryDirectory, `mv-aide-symlink-probe-${randomId}`);
+  const temporaryDirectory =
+    runtime.temporaryDirectory?.() ?? mvAideTempDirectory("file-opener/symlink-probe");
+  const sourceDir = path.join(temporaryDirectory, `operation-${randomId}`);
   const sourcePath = path.join(sourceDir, "probe.md");
   const normalizedMirrorFolder = mirrorFolder.trim().replace(/^[/\\]+/, "") ||
     EXTERNAL_FILE_MIRROR_FOLDER;
@@ -528,11 +679,13 @@ export async function preflightWindowsLauncher(
     };
   }
 
+  const usesManagedTemporaryRoot = runtime.temporaryDirectory === undefined;
+  const stateRootExisted = fs.existsSync(externalFileOpenerStateDirectory());
+  const temporaryRoot =
+    runtime.temporaryDirectory?.() ?? mvAideTempDirectory("file-opener/wsh-probe");
+  fs.mkdirSync(temporaryRoot, { recursive: true, mode: 0o700 });
   const temporaryDirectory = fs.mkdtempSync(
-    path.join(
-      runtime.temporaryDirectory?.() ?? os.tmpdir(),
-      "mv-aide-wsh-probe-",
-    ),
+    path.join(temporaryRoot, "operation-"),
   );
   const scriptPath = path.join(temporaryDirectory, "probe.ps1");
   const launcherPath = path.join(temporaryDirectory, "probe.vbs");
@@ -589,6 +742,9 @@ exit 0
     };
   } finally {
     fs.rmSync(temporaryDirectory, { recursive: true, force: true });
+    if (usesManagedTemporaryRoot) {
+      cleanupManagedTempParents(temporaryRoot, stateRootExisted);
+    }
   }
 }
 
@@ -605,9 +761,14 @@ function ownerAppBundleIsUsable(owner: ExternalFileOpenerOwner): boolean {
 }
 
 type ExternalFileOpenerOwnerRecord =
-  | { state: "missing"; owner: null }
-  | { state: "invalid"; owner: null }
-  | { state: "valid"; owner: ExternalFileOpenerOwner };
+  | { state: "missing"; owner: null; filePath: null; legacy: false }
+  | { state: "invalid"; owner: null; filePath: string; legacy: boolean }
+  | {
+      state: "valid";
+      owner: ExternalFileOpenerOwner;
+      filePath: string;
+      legacy: boolean;
+    };
 
 function isValidExternalFileOpenerOwner(
   owner: Partial<ExternalFileOpenerOwner> | null,
@@ -637,14 +798,47 @@ function isConcreteManagedCopyEligibleSymlinkFailure(
   );
 }
 
-function readExternalFileOpenerOwnerRecord(): ExternalFileOpenerOwnerRecord {
-  const ownerPath = externalFileOpenerOwnerPath();
-  if (!fs.existsSync(ownerPath)) return { state: "missing", owner: null };
+function readOwnerRecordAt(
+  ownerPath: string,
+  legacy: boolean,
+): ExternalFileOpenerOwnerRecord {
+  const safeRoot = legacy
+    ? legacyFileOpenerRootIsSafe()
+    : canonicalFileOpenerRootIsSafe();
+  if (!safeRoot && fs.existsSync(ownerPath)) {
+    return { state: "invalid", owner: null, filePath: ownerPath, legacy };
+  }
+  if (!fs.existsSync(ownerPath)) {
+    return { state: "missing", owner: null, filePath: null, legacy: false };
+  }
+  try {
+    const stat = fs.lstatSync(ownerPath);
+    if (!stat.isFile() || stat.isSymbolicLink()) {
+      return { state: "invalid", owner: null, filePath: ownerPath, legacy };
+    }
+  } catch {
+    return { state: "invalid", owner: null, filePath: ownerPath, legacy };
+  }
   const owner = readJson<Partial<ExternalFileOpenerOwner>>(ownerPath);
   if (!isValidExternalFileOpenerOwner(owner)) {
-    return { state: "invalid", owner: null };
+    return { state: "invalid", owner: null, filePath: ownerPath, legacy };
   }
-  return { state: "valid", owner };
+  return { state: "valid", owner, filePath: ownerPath, legacy };
+}
+
+function readLegacyExternalFileOpenerOwnerRecord(): ExternalFileOpenerOwnerRecord {
+  return readOwnerRecordAt(
+    legacyExternalFileOpenerPath("file-opener-owner.json"),
+    true,
+  );
+}
+
+function readExternalFileOpenerOwnerRecord(): ExternalFileOpenerOwnerRecord {
+  const canonical = readOwnerRecordAt(externalFileOpenerOwnerPath(), false);
+  if (canonical.state === "valid") return canonical;
+  const legacy = readLegacyExternalFileOpenerOwnerRecord();
+  if (legacy.state === "valid") return legacy;
+  return canonical.state === "invalid" ? canonical : legacy;
 }
 
 /**
@@ -659,8 +853,10 @@ export function authorizeManagedCopyFallbackAfterFailure(
     return false;
   }
 
-  const ownerPath = externalFileOpenerOwnerPath();
-  if (!windowsStateOwnedPath(ownerPath)) return false;
+  const record = readExternalFileOpenerOwnerRecord();
+  if (record.state !== "valid") return false;
+  const ownerPath = record.filePath;
+  if (!activeWindowsStateOwnedPath(record, ownerPath)) return false;
 
   let originalText: string;
   try {
@@ -715,14 +911,28 @@ function isManagedRuntime(
     typeof runtime.token === "string";
 }
 
-function removeManagedRuntime(vaultRoot?: string): boolean {
-  const runtime = readJson<Partial<ExternalFileOpenerRuntime>>(
-    externalFileOpenerRuntimePath(),
-  );
+function legacyExternalFileOpenerRuntimePath(): string {
+  return legacyExternalFileOpenerPath("file-opener-runtime.json");
+}
+
+function removeManagedRuntimeAt(filePath: string, vaultRoot?: string): boolean {
+  const runtime = readJson<Partial<ExternalFileOpenerRuntime>>(filePath);
   if (!isManagedRuntime(runtime)) return false;
   if (vaultRoot && !sameVaultRoot(runtime.vaultRoot, vaultRoot)) return false;
-  fs.rmSync(externalFileOpenerRuntimePath(), { force: true });
+  fs.rmSync(filePath, { force: true });
   return true;
+}
+
+function removeManagedRuntime(vaultRoot?: string): boolean {
+  const canonicalRemoved = removeManagedRuntimeAt(
+    externalFileOpenerRuntimePath(),
+    vaultRoot,
+  );
+  const legacyRemoved = removeManagedRuntimeAt(
+    legacyExternalFileOpenerRuntimePath(),
+    vaultRoot,
+  );
+  return canonicalRemoved || legacyRemoved;
 }
 
 export function readExternalFileOpenerOwner(): ExternalFileOpenerOwner | null {
@@ -802,8 +1012,11 @@ function windowsFileAssociations(): WindowsFileAssociations {
 async function withTemporaryWindowsAssociationHelper<T>(
   operation: (helperPath: string) => Promise<T>,
 ): Promise<T> {
+  const stateRootExisted = fs.existsSync(externalFileOpenerStateDirectory());
+  const temporaryRoot = mvAideTempDirectory("file-opener/association");
+  fs.mkdirSync(temporaryRoot, { recursive: true, mode: 0o700 });
   const temporaryDirectory = fs.mkdtempSync(
-    path.join(os.tmpdir(), "mv-aide-association-"),
+    path.join(temporaryRoot, "operation-"),
   );
   const helperPath = path.join(temporaryDirectory, "association.ps1");
   fs.writeFileSync(
@@ -815,15 +1028,35 @@ async function withTemporaryWindowsAssociationHelper<T>(
     return await operation(helperPath);
   } finally {
     await removeTemporaryPathBestEffort(temporaryDirectory, true);
+    cleanupManagedTempParents(temporaryRoot, stateRootExisted);
   }
 }
 
-function windowsStateOwnedPath(filePath: string | undefined): string | null {
+function stateOwnedPath(
+  stateRoot: string,
+  filePath: string | undefined,
+): string | null {
   if (!filePath) return null;
-  const stateDirectory = path.resolve(externalFileOpenerStateDirectory());
+  const stateDirectory = path.resolve(stateRoot);
+  const canonicalStateDirectory = path.resolve(externalFileOpenerStateDirectory());
+  const legacyStateDirectory = path.resolve(
+    legacyExternalFileOpenerStateDirectory(),
+  );
+  if (
+    (stateDirectory === canonicalStateDirectory &&
+      !canonicalFileOpenerRootIsSafe()) ||
+    (stateDirectory === legacyStateDirectory && !legacyFileOpenerRootIsSafe())
+  ) {
+    return null;
+  }
   const resolved = path.resolve(filePath);
   const relative = path.relative(stateDirectory, resolved);
-  if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) {
+  if (
+    !relative ||
+    relative === ".." ||
+    relative.startsWith(`..${path.sep}`) ||
+    path.isAbsolute(relative)
+  ) {
     return null;
   }
 
@@ -844,6 +1077,23 @@ function windowsStateOwnedPath(filePath: string | undefined): string | null {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") return null;
   }
   return resolved;
+}
+
+function windowsStateOwnedPath(filePath: string | undefined): string | null {
+  return stateOwnedPath(externalFileOpenerStateDirectory(), filePath);
+}
+
+function legacyWindowsStateOwnedPath(filePath: string | undefined): string | null {
+  return stateOwnedPath(legacyExternalFileOpenerStateDirectory(), filePath);
+}
+
+function activeWindowsStateOwnedPath(
+  record: ExternalFileOpenerOwnerRecord,
+  filePath: string | undefined,
+): string | null {
+  return record.legacy
+    ? legacyWindowsStateOwnedPath(filePath)
+    : windowsStateOwnedPath(filePath);
 }
 
 function linuxCommandPath(): string {
@@ -916,7 +1166,7 @@ function postFile(filePath, runtime) {
 }
 
 function run(argv) {
-  const stateDir = ObjC.unwrap($.NSHomeDirectory()) + "/.mv-aide";
+  const stateDir = ObjC.unwrap($.NSHomeDirectory()) + "/.mv-aide/file-opener";
   const owner = readJson(stateDir + "/file-opener-owner.json");
   if (!owner) return 2;
   for (const filePath of argv) {
@@ -1028,7 +1278,7 @@ function postFile(filePath, runtime) {
 }
 
 function handlePaths(paths) {
-  const stateDir = ObjC.unwrap($.NSHomeDirectory()) + "/.mv-aide";
+  const stateDir = ObjC.unwrap($.NSHomeDirectory()) + "/.mv-aide/file-opener";
   const owner = readJson(stateDir + "/file-opener-owner.json");
   if (!owner) return 2;
   for (const filePath of paths) {
@@ -1062,7 +1312,8 @@ function openDocuments(docs) {
 `;
 }
 
-async function installMacOpener(owner: ExternalFileOpenerOwner): Promise<void> {
+async function prepareMacOpener(owner: ExternalFileOpenerOwner): Promise<void> {
+  assertCanonicalFileOpenerRootIsSafe();
   const appPath = macAppPath();
   fs.rmSync(appPath, { recursive: true, force: true });
   fs.mkdirSync(externalFileOpenerStateDirectory(), { recursive: true });
@@ -1070,7 +1321,7 @@ async function installMacOpener(owner: ExternalFileOpenerOwner): Promise<void> {
     externalFileOpenerStateDirectory(),
     "mv-aide-file-opener.jxa",
   );
-  fs.writeFileSync(sourcePath, macAppletScript(), "utf8");
+  writeTextAtomically(sourcePath, macAppletScript());
   await execFile("/usr/bin/osacompile", ["-l", "JavaScript", "-o", appPath, sourcePath]);
   fs.rmSync(sourcePath, { force: true });
 
@@ -1097,7 +1348,10 @@ async function installMacOpener(owner: ExternalFileOpenerOwner): Promise<void> {
     "utf8",
   );
   owner.appPath = appPath;
+}
 
+async function activateMacOpener(owner: ExternalFileOpenerOwner): Promise<void> {
+  const appPath = owner.appPath || macAppPath();
   const lsregister =
     "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister";
   await execFile(lsregister, ["-f", appPath]);
@@ -1111,9 +1365,37 @@ for (const ext of extensions) {
   await execFile("/usr/bin/osascript", ["-l", "JavaScript", "-e", script]);
 }
 
-async function cleanupMacOpener(owner: ExternalFileOpenerOwner | null): Promise<void> {
-  const appPath = owner?.appPath || macAppPath();
-  fs.rmSync(appPath, { recursive: true, force: true });
+async function installMacOpener(owner: ExternalFileOpenerOwner): Promise<void> {
+  await prepareMacOpener(owner);
+  await activateMacOpener(owner);
+}
+
+async function cleanupMacOpener(
+  owner: ExternalFileOpenerOwner | null,
+  layout: FileOpenerCleanupLayout,
+): Promise<void> {
+  if (layout !== "legacy") assertCanonicalFileOpenerRootIsSafe();
+  if (layout !== "canonical") assertLegacyFileOpenerRootIsSafe();
+  const canonicalAppPath = macAppPath();
+  const legacyAppPath = legacyExternalFileOpenerPath("MV AIDE File Opener.app");
+  if (
+    owner?.appPath &&
+    !pathsAreEqual(owner.appPath, canonicalAppPath, "darwin") &&
+    !pathsAreEqual(owner.appPath, legacyAppPath, "darwin")
+  ) {
+    throw new Error(t("macOS 打开器 app 路径不是受管默认路径，拒绝自动删除。"));
+  }
+  const appPaths = layout === "both"
+    ? [canonicalAppPath, legacyAppPath]
+    : [layout === "canonical" ? canonicalAppPath : legacyAppPath];
+  for (const appPath of appPaths) {
+    fs.rmSync(appPath, { recursive: true, force: true });
+  }
+  if (layout !== "canonical") {
+    fs.rmSync(legacyExternalFileOpenerPath("mv-aide-file-opener.jxa"), {
+      force: true,
+    });
+  }
 }
 
 export function windowsVbsLauncher(): string {
@@ -1415,6 +1697,7 @@ async function windowsRegistrationOptions(
 }
 
 async function installWindowsOpener(owner: ExternalFileOpenerOwner): Promise<void> {
+  assertCanonicalFileOpenerRootIsSafe();
   const stateDir = externalFileOpenerStateDirectory();
   fs.mkdirSync(stateDir, { recursive: true });
   const ps1Path = windowsV4PowerShellPath();
@@ -1465,25 +1748,57 @@ async function installWindowsOpener(owner: ExternalFileOpenerOwner): Promise<voi
   }
 }
 
-async function cleanupWindowsOpener(): Promise<{
+async function cleanupWindowsOpener(
+  layout: FileOpenerCleanupLayout,
+): Promise<{
   removed: number;
   warnings: string[];
 }> {
-  const knownLauncherPath = windowsStateOwnedPath(windowsV4LauncherPath());
+  if (layout !== "legacy") assertCanonicalFileOpenerRootIsSafe();
+  if (layout !== "canonical") assertLegacyFileOpenerRootIsSafe();
+  const knownLauncherPath = layout === "legacy"
+    ? legacyWindowsStateOwnedPath(
+        legacyExternalFileOpenerPath("mv-aide-file-opener-v4.vbs"),
+      )
+    : windowsStateOwnedPath(windowsV4LauncherPath());
   if (!knownLauncherPath) {
     throw new Error(t("Windows 打开器状态目录越界或包含符号链接，拒绝清理。"));
   }
   const registryCleanup = await withTemporaryWindowsAssociationHelper((helperPath) =>
     windowsFileAssociations().cleanup(helperPath),
   );
-  for (const filePath of new Set([
+  const canonicalPaths = [
     windowsStateOwnedPath(legacyWindowsPowerShellPath()),
     windowsStateOwnedPath(windowsV4PowerShellPath()),
     knownLauncherPath,
     windowsStateOwnedPath(windowsAssociationHelperPath()),
     windowsStateOwnedPath(legacyWindowsCommandPath()),
     windowsStateOwnedPath(windowsLastErrorPath()),
-  ])) {
+  ];
+  const legacyPaths = [
+    legacyWindowsStateOwnedPath(
+      legacyExternalFileOpenerPath("mv-aide-file-opener.ps1"),
+    ),
+    legacyWindowsStateOwnedPath(
+      legacyExternalFileOpenerPath("mv-aide-file-opener-v4.ps1"),
+    ),
+    legacyWindowsStateOwnedPath(
+      legacyExternalFileOpenerPath("mv-aide-file-opener-v4.vbs"),
+    ),
+    legacyWindowsStateOwnedPath(
+      legacyExternalFileOpenerPath("mv-aide-file-association.ps1"),
+    ),
+    legacyWindowsStateOwnedPath(
+      legacyExternalFileOpenerPath("mv-aide-file-opener.cmd"),
+    ),
+    legacyWindowsStateOwnedPath(
+      legacyExternalFileOpenerPath("file-opener-last-error.json"),
+    ),
+  ];
+  const cleanupPaths = layout === "both"
+    ? [...canonicalPaths, ...legacyPaths]
+    : layout === "canonical" ? canonicalPaths : legacyPaths;
+  for (const filePath of new Set(cleanupPaths)) {
     if (!filePath) continue;
     const removalError = await removeTemporaryPathBestEffort(filePath, false);
     if (removalError) {
@@ -1493,25 +1808,32 @@ async function cleanupWindowsOpener(): Promise<{
     }
   }
   const iconsDirectory = windowsStateOwnedPath(fileTypeIconsDirectory());
-  if (iconsDirectory) {
+  const legacyIconsDirectory = legacyWindowsStateOwnedPath(
+    legacyExternalFileOpenerPath("icons"),
+  );
+  const iconDirectories = layout === "both"
+    ? [iconsDirectory, legacyIconsDirectory]
+    : [layout === "canonical" ? iconsDirectory : legacyIconsDirectory];
+  for (const managedIconsDirectory of iconDirectories) {
+    if (!managedIconsDirectory) continue;
     const iconRemovalError = await removeTemporaryPathBestEffort(
-      iconsDirectory,
+      managedIconsDirectory,
       true,
     );
     if (iconRemovalError) {
       registryCleanup.warnings.push(
-        t("Windows 文件类型图标将在下次清理时重试：{v0}（{v1}）", { v0: iconsDirectory, v1: iconRemovalError }),
+        t("Windows 文件类型图标将在下次清理时重试：{v0}（{v1}）", { v0: managedIconsDirectory, v1: iconRemovalError }),
       );
     }
   }
   return registryCleanup;
 }
 
-function linuxShellWrapper(): string {
+export function linuxShellWrapper(): string {
   return `#!/bin/sh
 python3 - "$1" <<'PY'
 import json, os, subprocess, sys, time, urllib.parse, urllib.request
-state_dir = os.path.join(os.path.expanduser("~"), ".mv-aide")
+state_dir = os.path.join(os.path.expanduser("~"), ".mv-aide", "file-opener")
 owner_path = os.path.join(state_dir, "file-opener-owner.json")
 runtime_path = os.path.join(state_dir, "file-opener-runtime.json")
 with open(owner_path, "r", encoding="utf-8") as fh:
@@ -1540,24 +1862,27 @@ PY
 `;
 }
 
-async function installLinuxOpener(owner: ExternalFileOpenerOwner): Promise<void> {
-  const commandPath = linuxCommandPath();
-  fs.writeFileSync(commandPath, linuxShellWrapper(), { mode: 0o755 });
-  owner.commandPath = commandPath;
-  const desktopPath = linuxDesktopPath();
-  fs.mkdirSync(path.dirname(desktopPath), { recursive: true });
-  fs.writeFileSync(
-    desktopPath,
-    `[Desktop Entry]
+function linuxDesktopContents(commandPath: string): string {
+  return `[Desktop Entry]
 Name=MV AIDE File Opener
 Exec=${commandPath} %f
 Type=Application
 Terminal=false
 MimeType=text/markdown;text/x-markdown;
 NoDisplay=true
-`,
-    "utf8",
-  );
+`;
+}
+
+async function installLinuxOpener(owner: ExternalFileOpenerOwner): Promise<void> {
+  assertCanonicalFileOpenerRootIsSafe();
+  const commandPath = linuxCommandPath();
+  fs.mkdirSync(path.dirname(commandPath), { recursive: true, mode: 0o700 });
+  writeTextAtomically(commandPath, linuxShellWrapper(), 0o755);
+  fs.chmodSync(commandPath, 0o755);
+  owner.commandPath = commandPath;
+  const desktopPath = linuxDesktopPath();
+  fs.mkdirSync(path.dirname(desktopPath), { recursive: true });
+  writeTextAtomically(desktopPath, linuxDesktopContents(commandPath));
   await execFile("xdg-mime", [
     "default",
     path.basename(desktopPath),
@@ -1570,8 +1895,27 @@ NoDisplay=true
   ]).catch(() => undefined);
 }
 
-async function cleanupLinuxOpener(owner: ExternalFileOpenerOwner | null): Promise<void> {
-  fs.rmSync(owner?.commandPath || linuxCommandPath(), { force: true });
+async function cleanupLinuxOpener(
+  owner: ExternalFileOpenerOwner | null,
+  layout: FileOpenerCleanupLayout,
+): Promise<void> {
+  if (layout !== "legacy") assertCanonicalFileOpenerRootIsSafe();
+  if (layout !== "canonical") assertLegacyFileOpenerRootIsSafe();
+  const canonicalCommandPath = linuxCommandPath();
+  const legacyCommandPath = legacyExternalFileOpenerPath("mv-aide-file-opener");
+  if (
+    owner?.commandPath &&
+    !pathsAreEqual(owner.commandPath, canonicalCommandPath, "linux") &&
+    !pathsAreEqual(owner.commandPath, legacyCommandPath, "linux")
+  ) {
+    throw new Error(t("Linux 打开器命令路径不是受管默认路径，拒绝自动删除。"));
+  }
+  const commandPaths = layout === "both"
+    ? [canonicalCommandPath, legacyCommandPath]
+    : [layout === "canonical" ? canonicalCommandPath : legacyCommandPath];
+  for (const commandPath of commandPaths) {
+    fs.rmSync(commandPath, { force: true });
+  }
   fs.rmSync(linuxDesktopPath(), { force: true });
 }
 
@@ -1589,14 +1933,15 @@ async function installPlatformOpener(owner: ExternalFileOpenerOwner): Promise<vo
 
 async function cleanupPlatformOpener(
   owner: ExternalFileOpenerOwner | null,
+  layout: FileOpenerCleanupLayout,
 ): Promise<{ removed: number; warnings: string[] }> {
   if (process.platform === "darwin") {
-    await cleanupMacOpener(owner);
+    await cleanupMacOpener(owner, layout);
     return { removed: 0, warnings: [] };
   } else if (process.platform === "win32") {
-    return await cleanupWindowsOpener();
+    return await cleanupWindowsOpener(layout);
   } else if (process.platform === "linux") {
-    await cleanupLinuxOpener(owner);
+    await cleanupLinuxOpener(owner, layout);
     return { removed: 0, warnings: [] };
   }
   return { removed: 0, warnings: [] };
@@ -1657,6 +2002,664 @@ function windowsQueryErrorMessage(result: WindowsCurrentDefaultsResult): string 
   return errors.length === 0
     ? null
     : errors.map(([extension, message]) => `.${extension}：${message}`).join("；");
+}
+
+function legacyOwnerPath(): string {
+  return legacyExternalFileOpenerPath("file-opener-owner.json");
+}
+
+function processIsAlive(pid: number): boolean {
+  if (!Number.isSafeInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
+function acquireLegacyFileOpenerStateLock(): (() => void) | null {
+  const lockRoot = mvAideTempDirectory("file-opener");
+  const lockPath = path.join(lockRoot, "legacy-state.lock");
+  const lockOwnerPath = path.join(lockPath, "owner.json");
+  fs.mkdirSync(lockRoot, { recursive: true, mode: 0o700 });
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      fs.mkdirSync(lockPath, { mode: 0o700 });
+      const token = `${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+      try {
+        fs.writeFileSync(
+          lockOwnerPath,
+          JSON.stringify({ pid: process.pid, createdAt: Date.now(), token }),
+          { encoding: "utf8", mode: 0o600, flag: "wx" },
+        );
+      } catch (error) {
+        fs.rmSync(lockPath, { recursive: true, force: true });
+        throw error;
+      }
+      return () => {
+        const current = readJson<{ token?: string }>(lockOwnerPath);
+        if (current?.token === token) {
+          fs.rmSync(lockPath, { recursive: true, force: true });
+        }
+      };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      let stale = false;
+      try {
+        const ownerText = fs.readFileSync(lockOwnerPath, "utf8");
+        const owner = JSON.parse(ownerText) as { pid?: number };
+        stale = !processIsAlive(owner.pid ?? 0);
+        if (stale && fs.readFileSync(lockOwnerPath, "utf8") !== ownerText) {
+          stale = false;
+        }
+      } catch {
+        try {
+          stale = Date.now() - fs.lstatSync(lockPath).mtimeMs > 30_000;
+        } catch {
+          stale = true;
+        }
+      }
+      if (!stale || attempt > 0) return null;
+      fs.rmSync(lockPath, { recursive: true, force: true });
+    }
+  }
+  return null;
+}
+
+function pathsAreEqual(left: string, right: string, platform = process.platform): boolean {
+  const normalizedLeft = path.resolve(left);
+  const normalizedRight = path.resolve(right);
+  return platform === "win32"
+    ? normalizedLeft.toLowerCase() === normalizedRight.toLowerCase()
+    : normalizedLeft === normalizedRight;
+}
+
+function copyValidLegacyRuntime(): void {
+  const source = legacyExternalFileOpenerRuntimePath();
+  if (!fs.existsSync(source)) return;
+  const sourceStat = fs.lstatSync(source);
+  if (!sourceStat.isFile() || sourceStat.isSymbolicLink()) {
+    throw new Error(t("拒绝迁移非普通文件：{v0}", { v0: source }));
+  }
+  const legacyRuntime = readJson<Partial<ExternalFileOpenerRuntime>>(source);
+  if (!isManagedRuntime(legacyRuntime)) return;
+  const target = externalFileOpenerRuntimePath();
+  if (!fs.existsSync(target)) {
+    copyLegacyFileAtomically(source, target);
+    return;
+  }
+  const canonicalRuntime = readJson<Partial<ExternalFileOpenerRuntime>>(target);
+  if (
+    !isManagedRuntime(canonicalRuntime) ||
+    !sameVaultRoot(canonicalRuntime.vaultRoot, legacyRuntime.vaultRoot)
+  ) {
+    throw new Error(t("新旧打开器文件内容冲突：{v0}", { v0: target }));
+  }
+  if (canonicalRuntime.updatedAt >= legacyRuntime.updatedAt) return;
+  writeJson(target, legacyRuntime);
+}
+
+function writeCanonicalOwnerForMigration(owner: ExternalFileOpenerOwner): boolean {
+  const existing = readOwnerRecordAt(externalFileOpenerOwnerPath(), false);
+  if (existing.state === "invalid") {
+    throw new Error(t("新打开器 owner 文件无效，未覆盖。"));
+  }
+  if (existing.state === "valid") {
+    if (
+      existing.owner.marker !== owner.marker ||
+      existing.owner.installedAt !== owner.installedAt ||
+      !sameVaultRoot(existing.owner.vaultRoot, owner.vaultRoot)
+    ) {
+      throw new Error(t("新打开器 owner 与待迁移 owner 不一致，未覆盖。"));
+    }
+    return false;
+  }
+  writeJson(externalFileOpenerOwnerPath(), owner);
+  const verified = readOwnerRecordAt(externalFileOpenerOwnerPath(), false);
+  if (
+    verified.state !== "valid" ||
+    verified.owner.installedAt !== owner.installedAt ||
+    !sameVaultRoot(verified.owner.vaultRoot, owner.vaultRoot)
+  ) {
+    throw new Error(t("新打开器 owner 写入校验失败。"));
+  }
+  return true;
+}
+
+function removeCanonicalOwnerForFailedMigration(
+  owner: ExternalFileOpenerOwner,
+  createdByMigration: boolean,
+): void {
+  if (!createdByMigration) return;
+  const record = readOwnerRecordAt(externalFileOpenerOwnerPath(), false);
+  if (
+    record.state === "valid" &&
+    record.owner.installedAt === owner.installedAt &&
+    sameVaultRoot(record.owner.vaultRoot, owner.vaultRoot)
+  ) {
+    fs.rmSync(externalFileOpenerOwnerPath(), { force: true });
+  }
+}
+
+function cleanupMigratedLegacyState(owner: ExternalFileOpenerOwner): void {
+  const release = acquireLegacyFileOpenerStateLock();
+  if (!release) {
+    throw new Error(t("其它 mv-AIDE 实例正在更新 legacy 打开器状态，已保留旧文件以便重试。"));
+  }
+  try {
+    const canonical = readOwnerRecordAt(externalFileOpenerOwnerPath(), false);
+    const legacy = readLegacyExternalFileOpenerOwnerRecord();
+    if (
+      canonical.state !== "valid" ||
+      canonical.owner.installedAt !== owner.installedAt ||
+      !sameVaultRoot(canonical.owner.vaultRoot, owner.vaultRoot) ||
+      legacy.state !== "valid" ||
+      legacy.owner.installedAt !== owner.installedAt ||
+      !sameVaultRoot(legacy.owner.vaultRoot, owner.vaultRoot)
+    ) {
+      throw new Error(t("打开器 legacy 清理前 owner 校验失败。"));
+    }
+    if (fs.existsSync(legacyExternalFileOpenerRuntimePath())) {
+      const legacyRuntime = readJson<Partial<ExternalFileOpenerRuntime>>(
+        legacyExternalFileOpenerRuntimePath(),
+      );
+      if (isManagedRuntime(legacyRuntime)) {
+        const canonicalRuntime = readJson<Partial<ExternalFileOpenerRuntime>>(
+          externalFileOpenerRuntimePath(),
+        );
+        if (
+          !isManagedRuntime(canonicalRuntime) ||
+          !sameVaultRoot(canonicalRuntime.vaultRoot, legacyRuntime.vaultRoot) ||
+          canonicalRuntime.updatedAt < legacyRuntime.updatedAt
+        ) {
+          throw new Error(t("打开器 legacy runtime 清理前校验失败。"));
+        }
+      }
+    }
+
+    // Removing the owner is the stop-the-world gate for compatibility
+    // writers. All current instances take the same lock and re-read this
+    // owner before writing the legacy runtime, so no writer can recreate the
+    // runtime after the following atomic rename.
+    const retiredOwnerPath = path.join(
+      mvAideTempDirectory("file-opener"),
+      `legacy-owner-${process.pid}-${Date.now()}.json`,
+    );
+    fs.renameSync(legacyOwnerPath(), retiredOwnerPath);
+    try {
+      fs.rmSync(legacyExternalFileOpenerRuntimePath(), { force: true });
+    } catch (error) {
+      console.warn(
+        "[mv-aide] Failed to remove retired legacy file-opener runtime.",
+        error,
+      );
+    }
+    try {
+      fs.rmSync(retiredOwnerPath, { force: true });
+    } catch (error) {
+      console.warn(
+        "[mv-aide] Failed to remove retired legacy file-opener owner.",
+        error,
+      );
+    }
+  } finally {
+    release();
+  }
+}
+
+function removeKnownLegacyArtifactBestEffort(
+  filePath: string,
+  recursive = false,
+): void {
+  try {
+    fs.rmSync(filePath, { recursive, force: true });
+  } catch (error) {
+    console.warn(
+      `[mv-aide] Failed to remove retired legacy file-opener artifact: ${filePath}`,
+      error,
+    );
+  }
+}
+
+async function migrateLegacyMacFileOpener(
+  legacyOwner: ExternalFileOpenerOwner,
+  runtime: FileOpenerMigrationRuntime,
+): Promise<void> {
+  const oldAppPath = legacyOwner.appPath ||
+    legacyExternalFileOpenerPath("MV AIDE File Opener.app");
+  const expectedOldAppPath = legacyExternalFileOpenerPath("MV AIDE File Opener.app");
+  if (!pathsAreEqual(oldAppPath, expectedOldAppPath, "darwin")) {
+    throw new Error(t("macOS 打开器使用自定义 app 路径，未自动迁移。"));
+  }
+  const migratedOwner: ExternalFileOpenerOwner = {
+    ...legacyOwner,
+    appPath: macAppPath(),
+  };
+  if (fs.existsSync(oldAppPath)) {
+    const oldAppStat = fs.lstatSync(oldAppPath);
+    if (!oldAppStat.isDirectory() || oldAppStat.isSymbolicLink()) {
+      throw new Error(t("macOS 旧打开器 app 不是受管普通目录。"));
+    }
+  } else {
+    const canonicalOwner = readOwnerRecordAt(externalFileOpenerOwnerPath(), false);
+    if (
+      canonicalOwner.state !== "valid" ||
+      canonicalOwner.owner.installedAt !== legacyOwner.installedAt ||
+      !ownerAppBundleIsUsable(migratedOwner)
+    ) {
+      throw new Error(t("macOS 旧打开器 app 缺失，且新入口未完成。"));
+    }
+  }
+  if (!ownerAppBundleIsUsable(migratedOwner)) {
+    await (runtime.prepareMacOpener ?? prepareMacOpener)(migratedOwner);
+  }
+  if (!ownerAppBundleIsUsable(migratedOwner)) {
+    throw new Error(t("macOS 新打开器 app 生成后无法执行。"));
+  }
+  copyValidLegacyRuntime();
+  const canonicalOwnerCreated = writeCanonicalOwnerForMigration(migratedOwner);
+  try {
+    await (runtime.activateMacOpener ?? activateMacOpener)(migratedOwner);
+  } catch (error) {
+    removeCanonicalOwnerForFailedMigration(
+      migratedOwner,
+      canonicalOwnerCreated,
+    );
+    throw error;
+  }
+
+  cleanupMigratedLegacyState(migratedOwner);
+  removeKnownLegacyArtifactBestEffort(oldAppPath, true);
+  removeKnownLegacyArtifactBestEffort(
+    legacyExternalFileOpenerPath("mv-aide-file-opener.jxa"),
+  );
+}
+
+async function migrateLegacyLinuxFileOpener(
+  legacyOwner: ExternalFileOpenerOwner,
+): Promise<void> {
+  const oldCommandPath = legacyOwner.commandPath ||
+    legacyExternalFileOpenerPath("mv-aide-file-opener");
+  const expectedOldCommandPath = legacyExternalFileOpenerPath(
+    "mv-aide-file-opener",
+  );
+  if (!pathsAreEqual(oldCommandPath, expectedOldCommandPath, "linux")) {
+    throw new Error(t("Linux 打开器使用自定义命令路径，未自动迁移。"));
+  }
+  const desktopPath = linuxDesktopPath();
+  const desktopStat = fs.lstatSync(desktopPath);
+  if (!desktopStat.isFile() || desktopStat.isSymbolicLink()) {
+    throw new Error(t("Linux desktop 入口不是受管普通文件。"));
+  }
+  const oldDesktop = fs.readFileSync(desktopPath, "utf8");
+  const commandPath = linuxCommandPath();
+  const expectedDesktop = linuxDesktopContents(commandPath);
+  const desktopAlreadyMigrated = oldDesktop === expectedDesktop;
+  if (!desktopAlreadyMigrated &&
+      !oldDesktop.includes(`Exec=${oldCommandPath} %f`)) {
+    throw new Error(t("Linux desktop 入口已被修改，未自动迁移。"));
+  }
+  if (!desktopAlreadyMigrated) {
+    const oldCommandStat = fs.lstatSync(oldCommandPath);
+    if (!oldCommandStat.isFile() || oldCommandStat.isSymbolicLink()) {
+      throw new Error(t("Linux 旧打开器命令不是受管普通文件。"));
+    }
+  }
+
+  const wrapper = linuxShellWrapper();
+  if (fs.existsSync(commandPath)) {
+    const commandStat = fs.lstatSync(commandPath);
+    if (
+      !commandStat.isFile() ||
+      commandStat.isSymbolicLink() ||
+      fs.readFileSync(commandPath, "utf8") !== wrapper
+    ) {
+      throw new Error(t("Linux 新打开器命令与 legacy 迁移内容冲突。"));
+    }
+  } else {
+    writeTextAtomically(commandPath, wrapper, 0o755);
+  }
+  fs.chmodSync(commandPath, 0o755);
+  if (fs.readFileSync(commandPath, "utf8") !== wrapper) {
+    throw new Error(t("Linux 新打开器命令校验失败。"));
+  }
+  const migratedOwner: ExternalFileOpenerOwner = {
+    ...legacyOwner,
+    commandPath,
+  };
+  copyValidLegacyRuntime();
+  const canonicalOwnerCreated = writeCanonicalOwnerForMigration(migratedOwner);
+  try {
+    if (!desktopAlreadyMigrated) {
+      writeTextAtomically(desktopPath, expectedDesktop);
+    }
+    if (fs.readFileSync(desktopPath, "utf8") !== expectedDesktop) {
+      throw new Error(t("Linux desktop 入口迁移校验失败。"));
+    }
+  } catch (error) {
+    removeCanonicalOwnerForFailedMigration(
+      migratedOwner,
+      canonicalOwnerCreated,
+    );
+    throw error;
+  }
+
+  cleanupMigratedLegacyState(migratedOwner);
+  removeKnownLegacyArtifactBestEffort(oldCommandPath);
+}
+
+function legacyWindowsIconsOptions(
+  owner: ExternalFileOpenerOwner,
+  openCommand: string,
+): WindowsFileAssociationRegistrationOptions[] {
+  const base: WindowsFileAssociationRegistrationOptions = {
+    extensions: owner.extensions,
+    openCommand,
+    iconPath: process.execPath,
+  };
+  const legacyIcons = legacyExternalFileOpenerPath("icons");
+  const extensionIcons: Record<string, string> = {};
+  for (const extension of normalizedExtensionSet(owner.extensions)) {
+    extensionIcons[extension] = path.join(legacyIcons, `${extension}.ico`);
+  }
+  const genericIconPath = path.join(legacyIcons, "generic.ico");
+  return [{ ...base, extensionIcons, genericIconPath }, base];
+}
+
+function copyKnownLegacyWindowsIcons(extensions: string[]): void {
+  const legacyIcons = legacyExternalFileOpenerPath("icons");
+  if (!fs.existsSync(legacyIcons)) return;
+  const root = fs.lstatSync(legacyIcons);
+  if (!root.isDirectory() || root.isSymbolicLink()) {
+    throw new Error(t("拒绝迁移非普通目录：{v0}", { v0: legacyIcons }));
+  }
+  const canonicalIcons = fileTypeIconsDirectory();
+  for (const fileName of [
+    ...normalizedExtensionSet(extensions).map((extension) => `${extension}.ico`),
+    "generic.ico",
+  ]) {
+    const source = path.join(legacyIcons, fileName);
+    if (!fs.existsSync(source)) continue;
+    const sourceStat = fs.lstatSync(source);
+    if (!sourceStat.isFile() || sourceStat.isSymbolicLink()) {
+      throw new Error(t("拒绝迁移非普通文件：{v0}", { v0: source }));
+    }
+    const target = path.join(canonicalIcons, fileName);
+    if (!fs.existsSync(target)) copyLegacyFileAtomically(source, target);
+  }
+}
+
+async function migrateLegacyWindowsFileOpener(
+  legacyOwner: ExternalFileOpenerOwner,
+): Promise<void> {
+  const isV3 = legacyOwner.wrapperVersion === LEGACY_WINDOWS_FILE_OPENER_WRAPPER_VERSION;
+  const oldCommandPath = legacyOwner.commandPath || (isV3
+    ? legacyExternalFileOpenerPath("mv-aide-file-opener.ps1")
+    : legacyExternalFileOpenerPath("mv-aide-file-opener-v4.vbs"));
+  const expectedOldCommandPath = legacyExternalFileOpenerPath(
+    isV3 ? "mv-aide-file-opener.ps1" : "mv-aide-file-opener-v4.vbs",
+  );
+  if (!pathsAreEqual(oldCommandPath, expectedOldCommandPath, "win32")) {
+    throw new Error(t("Windows 打开器使用自定义命令路径，未自动迁移。"));
+  }
+  let oldCommandUsable = false;
+  if (fs.existsSync(oldCommandPath)) {
+    const oldCommandStat = fs.lstatSync(oldCommandPath);
+    oldCommandUsable = oldCommandStat.isFile() &&
+      !oldCommandStat.isSymbolicLink();
+  }
+
+  fs.mkdirSync(externalFileOpenerStateDirectory(), { recursive: true });
+  let nextCommandPath: string;
+  let nextOpenCommand: string;
+  if (isV3) {
+    nextCommandPath = legacyWindowsPowerShellPath();
+    if (oldCommandUsable) {
+      copyLegacyFileAtomically(oldCommandPath, nextCommandPath);
+    } else {
+      const nextCommandStat = fs.lstatSync(nextCommandPath);
+      if (!nextCommandStat.isFile() || nextCommandStat.isSymbolicLink()) {
+        throw new Error(t("Windows 旧打开器命令不是受管普通文件。"));
+      }
+    }
+    nextOpenCommand = legacyWindowsOpenCommand(nextCommandPath);
+  } else {
+    nextCommandPath = windowsV4LauncherPath();
+    writeManagedFileAtomically(
+      windowsV4PowerShellPath(),
+      Buffer.from(`\uFEFF${windowsPowerShellWrapper()}`, "utf8"),
+    );
+    writeManagedFileAtomically(
+      nextCommandPath,
+      Buffer.from(windowsVbsLauncher(), "ascii"),
+    );
+    nextOpenCommand = windowsOpenCommand(nextCommandPath);
+  }
+
+  copyKnownLegacyWindowsIcons(legacyOwner.extensions);
+  copyValidLegacyRuntime();
+
+  const oldOpenCommand = isV3
+    ? legacyWindowsOpenCommand(oldCommandPath)
+    : windowsOpenCommand(oldCommandPath);
+  const associations = windowsFileAssociations();
+  await withTemporaryWindowsAssociationHelper(async (helperPath) => {
+    const nextOptions = await windowsRegistrationOptions(
+      legacyOwner.extensions,
+      nextOpenCommand,
+      false,
+    );
+    let currentOptions: WindowsFileAssociationRegistrationOptions | null = null;
+    if (oldCommandUsable) {
+      for (const candidate of legacyWindowsIconsOptions(legacyOwner, oldOpenCommand)) {
+        const inspection = await associations.inspect(candidate, helperPath);
+        if (inspection.state === "complete") {
+          currentOptions = candidate;
+          break;
+        }
+      }
+    }
+    const nextInspection = currentOptions
+      ? null
+      : await associations.inspect(nextOptions, helperPath);
+    const registrationAlreadyMigrated = nextInspection?.state === "complete";
+    if (!currentOptions && !registrationAlreadyMigrated) {
+      throw new Error(t("Windows 旧打开器注册已发生变化，未自动迁移。"));
+    }
+
+    const before = await associations.queryCurrentDefaults(helperPath, legacyOwner.extensions);
+    const beforeError = windowsQueryErrorMessage(before);
+    if (beforeError) {
+      throw new Error(t("Windows 路径迁移前无法验证有效默认项：{v0}", { v0: beforeError }));
+    }
+    const migratedOwner: ExternalFileOpenerOwner = {
+      ...legacyOwner,
+      commandPath: nextCommandPath,
+      ...(legacyOwner.associationHelperPath &&
+          pathsAreEqual(
+            legacyOwner.associationHelperPath,
+            legacyExternalFileOpenerPath("mv-aide-file-association.ps1"),
+            "win32",
+          )
+        ? { associationHelperPath: windowsAssociationHelperPath() }
+        : {}),
+    };
+    const canonicalOwnerCreated = writeCanonicalOwnerForMigration(migratedOwner);
+    try {
+      if (!registrationAlreadyMigrated) {
+        await associations.replaceOwnedRegistration(
+          currentOptions!,
+          nextOptions,
+          helperPath,
+        );
+      }
+      const after = await associations.queryCurrentDefaults(
+        helperPath,
+        legacyOwner.extensions,
+      );
+      const afterError = windowsQueryErrorMessage(after);
+      if (afterError ||
+          !windowsDefaultsAreEqual(legacyOwner.extensions, before, after)) {
+        if (!registrationAlreadyMigrated) {
+          await associations.replaceOwnedRegistration(
+            nextOptions,
+            currentOptions!,
+            helperPath,
+          );
+        }
+        removeCanonicalOwnerForFailedMigration(
+          migratedOwner,
+          canonicalOwnerCreated,
+        );
+        throw new Error(
+          afterError
+            ? t("Windows 路径迁移后无法验证有效默认项：{v0}", { v0: afterError })
+            : t("Windows 有效默认打开方式在路径迁移期间发生变化。"),
+        );
+      }
+    } catch (error) {
+      if (!(error instanceof AggregateError)) {
+        removeCanonicalOwnerForFailedMigration(
+          migratedOwner,
+          canonicalOwnerCreated,
+        );
+      }
+      throw error;
+    }
+
+    cleanupMigratedLegacyState(migratedOwner);
+    for (const fileName of [
+      "mv-aide-file-opener.ps1",
+      "mv-aide-file-opener-v4.ps1",
+      "mv-aide-file-opener-v4.vbs",
+      "mv-aide-file-association.ps1",
+      "mv-aide-file-opener.cmd",
+      "file-opener-last-error.json",
+    ]) {
+      removeKnownLegacyArtifactBestEffort(
+        legacyExternalFileOpenerPath(fileName),
+      );
+    }
+    const legacyIconsDirectory = legacyExternalFileOpenerPath("icons");
+    for (const fileName of [
+      ...normalizedExtensionSet(legacyOwner.extensions).map(
+        (extension) => `${extension}.ico`,
+      ),
+      "generic.ico",
+    ]) {
+      removeKnownLegacyArtifactBestEffort(
+        path.join(legacyIconsDirectory, fileName),
+      );
+    }
+    try {
+      fs.rmdirSync(legacyIconsDirectory);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== "ENOENT" && code !== "ENOTEMPTY") {
+        console.warn(
+          `[mv-aide] Failed to remove empty retired legacy icon directory: ${legacyIconsDirectory}`,
+          error,
+        );
+      }
+    }
+  });
+}
+
+async function migrateLegacyFileOpenerLayout(
+  runtime: FileOpenerMigrationRuntime,
+): Promise<FileOpenerLayoutMigrationResult> {
+  const legacyRecord = readLegacyExternalFileOpenerOwnerRecord();
+  const canonicalRecord = readOwnerRecordAt(externalFileOpenerOwnerPath(), false);
+  if (legacyRecord.state === "missing") {
+    if (canonicalRecord.state === "invalid") {
+      return {
+        attempted: false,
+        migrated: false,
+        message: t("默认打开器 owner 路径或内容无效，未执行迁移。"),
+        error: t("无法安全继续默认打开器迁移。"),
+      };
+    }
+    return {
+      attempted: false,
+      migrated: false,
+      message: t("没有需要迁移的旧打开器路径。"),
+    };
+  }
+  if (legacyRecord.state === "invalid") {
+    if (canonicalRecord.state === "valid") {
+      return {
+        attempted: false,
+        migrated: false,
+        message: t("已使用新打开器 owner；legacy 无效文件已原样保留。"),
+      };
+    }
+    return {
+      attempted: true,
+      migrated: false,
+      message: t("旧打开器 owner 内容无效，已保留原文件。"),
+      error: t("无法安全识别 legacy owner。"),
+    };
+  }
+  const owner = legacyRecord.owner;
+  if (canonicalRecord.state === "invalid") {
+    return {
+      attempted: true,
+      migrated: false,
+      message: t("新打开器 owner 文件无效，已保留新旧文件。"),
+      error: t("无法安全继续 legacy 路径迁移。"),
+    };
+  }
+  if (
+    canonicalRecord.state === "valid" &&
+    (
+      canonicalRecord.owner.installedAt !== owner.installedAt ||
+      !sameVaultRoot(canonicalRecord.owner.vaultRoot, owner.vaultRoot)
+    )
+  ) {
+    return {
+      attempted: true,
+      migrated: false,
+      message: t("新旧打开器 owner 不属于同一次安装，已保留全部文件。"),
+      error: t("拒绝用 legacy 状态覆盖现有打开器。"),
+    };
+  }
+  if (owner.platform !== process.platform) {
+    return {
+      attempted: false,
+      migrated: false,
+      message: t("旧打开器属于其它操作系统，未自动迁移。"),
+    };
+  }
+  try {
+    assertLegacyFileOpenerRootIsSafe();
+    assertCanonicalFileOpenerRootIsSafe();
+    if (process.platform === "darwin") {
+      await migrateLegacyMacFileOpener(owner, runtime);
+    } else if (process.platform === "win32") {
+      await migrateLegacyWindowsFileOpener(owner);
+    } else if (process.platform === "linux") {
+      await migrateLegacyLinuxFileOpener(owner);
+    } else {
+      return {
+        attempted: false,
+        migrated: false,
+        message: t("当前系统不支持默认打开器路径迁移。"),
+      };
+    }
+    return {
+      attempted: true,
+      migrated: true,
+      message: t("已将默认打开器迁移到 ~/.mv-aide/file-opener。"),
+    };
+  } catch (error) {
+    return {
+      attempted: true,
+      migrated: false,
+      message: t("默认打开器路径迁移失败；已保留 legacy 文件以继续使用和重试。"),
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
 }
 
 async function performWindowsFileOpenerMigration(
@@ -1936,6 +2939,7 @@ export class ExternalFileOpenerSystem {
       vaultRoot: string,
       mirrorFolder: string,
     ) => Promise<ExternalFileSymlinkPreflightResult> = preflightExternalFileSymlink,
+    private readonly migrationRuntime: FileOpenerMigrationRuntime = {},
   ) {}
 
   async migrateWindowsFileOpener(
@@ -1943,11 +2947,17 @@ export class ExternalFileOpenerSystem {
     configuredExtensions: string[],
   ): Promise<WindowsFileOpenerMigrationResult> {
     if (this.windowsMigrationInFlight) return await this.windowsMigrationInFlight;
-    const migration = performWindowsFileOpenerMigration(
-      currentVaultRoot,
-      configuredExtensions,
-      this.windowsLauncherPreflight,
-    ).catch((error): WindowsFileOpenerMigrationResult => ({
+    const migration = (async (): Promise<WindowsFileOpenerMigrationResult> => {
+      const layout = await migrateLegacyFileOpenerLayout(this.migrationRuntime);
+      if (layout.error) return layout;
+      const version = await performWindowsFileOpenerMigration(
+        currentVaultRoot,
+        configuredExtensions,
+        this.windowsLauncherPreflight,
+      );
+      if (version.attempted || version.migrated || version.error) return version;
+      return layout.migrated ? layout : version;
+    })().catch((error): WindowsFileOpenerMigrationResult => ({
       attempted: true,
       migrated: false,
       message: t("Windows 打开器自动迁移失败，现有注册保持不变。"),
@@ -2199,7 +3209,7 @@ export class ExternalFileOpenerSystem {
         };
       }
       if (process.platform !== "win32") {
-        await cleanupPlatformOpener(owner).catch(() => undefined);
+        await cleanupPlatformOpener(owner, "canonical").catch(() => undefined);
         fs.rmSync(externalFileOpenerOwnerPath(), { force: true });
       }
       const status = defaultOpenerStatusFromOwner(null, options.vaultRoot);
@@ -2233,15 +3243,51 @@ export class ExternalFileOpenerSystem {
     currentVaultRoot: string,
     options: CleanupExternalFileOpenerOptions = {},
   ): Promise<DefaultOpenerOperationResult> {
-    const ownerRecord = readExternalFileOpenerOwnerRecord();
+    const canonicalRecord = readOwnerRecordAt(externalFileOpenerOwnerPath(), false);
+    const legacyRecord = readLegacyExternalFileOpenerOwnerRecord();
+    let ownerRecord: ExternalFileOpenerOwnerRecord;
+    let cleanupLayout: FileOpenerCleanupLayout;
+    if (canonicalRecord.state === "invalid") {
+      ownerRecord = canonicalRecord;
+      cleanupLayout = "canonical";
+    } else if (canonicalRecord.state === "valid") {
+      if (
+        legacyRecord.state === "valid" &&
+        (
+          legacyRecord.owner.installedAt !== canonicalRecord.owner.installedAt ||
+          !sameVaultRoot(legacyRecord.owner.vaultRoot, canonicalRecord.owner.vaultRoot)
+        )
+      ) {
+        const status = defaultOpenerStatusFromOwner(
+          canonicalRecord.owner,
+          currentVaultRoot,
+        );
+        return {
+          ok: false,
+          status,
+          message: t("新旧打开器 owner 不属于同一次安装，拒绝合并清理。"),
+          failureKind: "platform-cleanup-failed",
+        };
+      }
+      ownerRecord = canonicalRecord;
+      cleanupLayout = legacyRecord.state === "valid" ? "both" : "canonical";
+    } else if (legacyRecord.state !== "missing") {
+      ownerRecord = legacyRecord;
+      cleanupLayout = "legacy";
+    } else {
+      ownerRecord = canonicalRecord;
+      cleanupLayout = "both";
+    }
     const owner = ownerRecord.owner;
-    if (process.platform === "win32" && ownerRecord.state === "invalid") {
+    if (ownerRecord.state === "invalid") {
       const status = defaultOpenerStatusFromOwner(null, currentVaultRoot);
       return {
         ok: false,
         status,
         message:
-          t("Windows 默认打开器 owner 文件存在但内容无效；为避免误删其它配置，本次未做任何修改。"),
+          process.platform === "win32"
+            ? t("Windows 默认打开器 owner 文件存在但内容无效；为避免误删其它配置，本次未做任何修改。")
+            : t("默认打开器 owner 文件存在但内容无效；为避免误删，本次未做任何修改。"),
         failureKind: "platform-cleanup-failed",
       };
     }
@@ -2271,15 +3317,20 @@ export class ExternalFileOpenerSystem {
     }
 
     try {
-      const platformCleanup = await cleanupPlatformOpener(owner);
-      if (owner) {
-        removeManagedRuntime(owner.vaultRoot);
-      } else if (process.platform === "win32") {
-        removeManagedRuntime();
-      } else {
-        removeManagedRuntime(currentVaultRoot);
+      const platformCleanup = await cleanupPlatformOpener(owner, cleanupLayout);
+      const runtimeVaultRoot = owner?.vaultRoot ??
+        (process.platform === "win32" ? undefined : currentVaultRoot);
+      if (cleanupLayout !== "legacy") {
+        removeManagedRuntimeAt(externalFileOpenerRuntimePath(), runtimeVaultRoot);
+        fs.rmSync(externalFileOpenerOwnerPath(), { force: true });
       }
-      fs.rmSync(externalFileOpenerOwnerPath(), { force: true });
+      if (cleanupLayout !== "canonical") {
+        removeManagedRuntimeAt(
+          legacyExternalFileOpenerRuntimePath(),
+          runtimeVaultRoot,
+        );
+        fs.rmSync(legacyOwnerPath(), { force: true });
+      }
       const status = defaultOpenerStatusFromOwner(null, currentVaultRoot);
       const warnings = platformCleanup.warnings;
       const cleaned = Boolean(owner) || platformCleanup.removed > 0;
@@ -2357,7 +3408,50 @@ export class ExternalFileOpenerSystem {
       pid: process.pid,
       updatedAt: Date.now(),
     };
-    writeJson(externalFileOpenerRuntimePath(), runtime);
+    let canonicalWriteError: unknown;
+    try {
+      assertCanonicalFileOpenerRootIsSafe();
+      writeJson(externalFileOpenerRuntimePath(), runtime);
+    } catch (error) {
+      canonicalWriteError = error;
+    }
+    // A legacy launcher can remain the active OS entry while an automatic
+    // path migration is pending or has failed. Keep that exact runtime file
+    // live only for the duration of that verified legacy owner; successful
+    // migration removes the owner and therefore ends all legacy writes.
+    let releaseLegacyLock: (() => void) | null = null;
+    let legacyRuntimeWritten = false;
+    try {
+      assertLegacyFileOpenerRootIsSafe();
+      releaseLegacyLock = acquireLegacyFileOpenerStateLock();
+      if (releaseLegacyLock) {
+        const legacyOwner = readLegacyExternalFileOpenerOwnerRecord();
+        if (
+          legacyOwner.state === "valid" &&
+          sameVaultRoot(legacyOwner.owner.vaultRoot, options.vaultRoot)
+        ) {
+          writeJson(legacyExternalFileOpenerRuntimePath(), runtime);
+          legacyRuntimeWritten = true;
+        }
+      }
+    } catch (error) {
+      console.warn(
+        "[mv-aide] Failed to refresh the legacy file-opener runtime during migration.",
+        error,
+      );
+    } finally {
+      releaseLegacyLock?.();
+    }
+    if (canonicalWriteError) {
+      if (legacyRuntimeWritten) {
+        console.warn(
+          "[mv-aide] Canonical file-opener runtime write failed; the active legacy launcher was kept live.",
+          canonicalWriteError,
+        );
+      } else {
+        throw canonicalWriteError;
+      }
+    }
   }
 
   removeRuntime(vaultRoot: string): void {

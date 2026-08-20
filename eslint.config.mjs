@@ -1,10 +1,19 @@
 import tsParser from "@typescript-eslint/parser";
+import { defineConfig, globalIgnores } from "eslint/config";
 import obsidianmd from "eslint-plugin-obsidianmd";
 
-export default [
-  {
-    ignores: ["dist/**", "node_modules/**", "release/**", "src/vendor/**"],
-  },
+export default defineConfig([
+  globalIgnores([
+    "node_modules/**",
+    "dist/**",
+    "release/**",
+    "src/vendor/**",
+    "tests/**",
+    "scripts/**",
+  ]),
+
+  ...obsidianmd.configs.recommended,
+
   {
     files: ["main.ts", "src/**/*.ts"],
     languageOptions: {
@@ -14,15 +23,5 @@ export default [
         tsconfigRootDir: import.meta.dirname,
       },
     },
-    plugins: {
-      obsidianmd,
-    },
-    rules: {
-      "obsidianmd/no-static-styles-assignment": "error",
-      "obsidianmd/no-unsupported-api": "error",
-      "obsidianmd/settings-tab/no-manual-html-headings": "error",
-      "obsidianmd/validate-license": "error",
-      "obsidianmd/validate-manifest": "error",
-    },
   },
-];
+]);

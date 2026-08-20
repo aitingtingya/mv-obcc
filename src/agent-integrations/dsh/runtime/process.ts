@@ -5,8 +5,8 @@ import {
   isObsidianChildProcess,
   type DshProcessDiscoveryAdapter,
   type DshProcessInfo,
-} from "./dsh-process-discovery";
-import { runProcess, spawnProcess } from "../process-runner";
+} from "./process-discovery";
+import { runProcess, spawnProcess } from "../../../process-runner";
 
 /** dsh web prints a line like `dsh web: http://127.0.0.1:3080`. */
 const DSH_WEB_URL_RE = /dsh\s+web:\s*(https?:\/\/\S+)/iu;
@@ -120,6 +120,11 @@ export interface DshStopSummary {
   failedPids: number[];
   stoppedPorts: number[];
   notRunning: boolean;
+}
+
+export interface DshWindowsPackageMutationDrainResult {
+  stoppedPids: number[];
+  remainingPids: number[];
 }
 
 export type DshStopResult =
@@ -375,7 +380,7 @@ export class DshProcessManager {
       throw new Error("DSH 尚未安装，请先在 mv-agent 设置中点击“安装”。");
     }
     return new Promise((resolve, reject) => {
-      const rawArgs = [...command.argsPrefix, "web", "--port", String(port)];
+      const rawArgs = [...command.argsPrefix, "web", "--no-open", "--port", String(port)];
       let executable = command.executable;
       let args = rawArgs;
       if (process.platform !== "win32") {
@@ -589,6 +594,89 @@ export class DshProcessManager {
       }
     } catch {
       /* ignore */
+    }
+  }
+
+  /**
+   * Windows package-mutation barrier: stop every machine-visible DSH runtime,
+   * not only the instances owned or adopted by mv-AIDE. Re-enumerate until the
+   * machine is clear so multiple instances and short-lived respawns are also
+   * drained before npm mutates the installed package.
+   */
+  async stopAllDshForWindowsPackageMutation(options: {
+    platform?: NodeJS.Platform;
+    timeoutMs?: number;
+    pollMs?: number;
+  } = {}): Promise<DshWindowsPackageMutationDrainResult> {
+    const platform = options.platform ?? process.platform;
+    if (platform !== "win32") return { stoppedPids: [], remainingPids: [] };
+
+    this.invalidatePendingStart();
+    const timeoutMs = options.timeoutMs ?? 5_000;
+    const pollMs = options.pollMs ?? 100;
+    const deadline = Date.now() + timeoutMs;
+    const stopped = new Set<number>();
+    const enumerate = (): Promise<DshProcessInfo[]> =>
+      this.discovery.listDshProcessesStrict
+        ? this.discovery.listDshProcessesStrict()
+        : this.discovery.listDshProcesses();
+
+    while (true) {
+      const discovered = await enumerate();
+      const targets = new Map<number, DshProcessInfo>();
+      for (const process of discovered) targets.set(process.pid, process);
+
+      const managedChild = this.child;
+      if (managedChild?.pid && managedChild.exitCode === null && !managedChild.killed) {
+        targets.set(managedChild.pid, {
+          pid: managedChild.pid,
+          ppid: 0,
+          port: this.launchedPort,
+          command: "<mv-aide-managed-dsh>",
+        });
+      }
+
+      if (targets.size === 0) {
+        this.child = null;
+        this.announcedUrl = null;
+        this.launchedPort = null;
+        return { stoppedPids: [...stopped].sort((a, b) => a - b), remainingPids: [] };
+      }
+
+      for (const target of targets.values()) {
+        let killed = false;
+        try {
+          killed = await this.discovery.killProcessTree(target.pid);
+        } catch {
+          killed = false;
+        }
+        if (!killed && managedChild?.pid === target.pid) {
+          try {
+            killed = managedChild.kill("SIGKILL");
+          } catch {
+            killed = false;
+          }
+        }
+        if (killed) stopped.add(target.pid);
+        if (managedChild?.pid === target.pid && killed) this.child = null;
+      }
+      this.announcedUrl = null;
+      this.launchedPort = null;
+
+      if (Date.now() >= deadline) {
+        const remaining = await enumerate();
+        const remainingPids = new Set(remaining.map((process) => process.pid));
+        const liveChild = this.child;
+        if (liveChild?.pid && liveChild.exitCode === null && !liveChild.killed) {
+          remainingPids.add(liveChild.pid);
+        }
+        return {
+          stoppedPids: [...stopped].sort((a, b) => a - b),
+          remainingPids: [...remainingPids].sort((a, b) => a - b),
+        };
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, pollMs));
     }
   }
 

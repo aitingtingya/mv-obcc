@@ -1,8 +1,8 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
+import { mvAideTempDirectory } from "./storage/temp-paths";
 
 export type WindowsDeveloperModePolicyState =
   | "not-configured"
@@ -771,8 +771,9 @@ export async function repairWindowsDeveloperMode(
   }
 
   const executable = options.powerShellExecutable ?? defaultPowerShellExecutable();
-  const tempRoot = options.tempDirectory ?? os.tmpdir();
-  const tempPrefix = path.win32.join(tempRoot, "mv-obcc-developer-mode-");
+  const tempRoot = options.tempDirectory ?? mvAideTempDirectory("windows/developer-mode");
+  await fs.mkdir(tempRoot, { recursive: true });
+  const tempPrefix = path.win32.join(tempRoot, "operation-");
   let tempDirectory: string | undefined;
   let pending: RepairResultWithoutCleanup;
 

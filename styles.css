@@ -934,14 +934,16 @@
 	padding: 0 12px 12px;
 }
 
-.mv-aide-ide-subsection {
+.mv-aide-ide-subsection,
+.mv-aide-settings-subsection {
 	margin: 8px 0;
 	border: 1px solid var(--background-modifier-border);
 	border-radius: 8px;
 }
 
 /* 同上：子选择器限定本折叠区自己的 summary，避免主分区展开时误配。 */
-.mv-aide-ide-subsection[open] > .mv-aide-settings-section-summary::before {
+.mv-aide-ide-subsection[open] > .mv-aide-settings-section-summary::before,
+.mv-aide-settings-subsection[open] > .mv-aide-settings-section-summary::before {
 	transform: rotate(90deg);
 }
 

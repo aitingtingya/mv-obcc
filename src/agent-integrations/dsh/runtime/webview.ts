@@ -10,12 +10,12 @@ import {
 import {
   applyBottomTerminalSplitRatio,
   createMainBottomLeaf,
-} from "../workspace-context";
-import type MvAideIdePlugin from "../../main";
-import { t } from "../i18n";
-import type { DshAutoOpenRegion } from "./dsh-settings";
-import type { SelectionState } from "../types";
-import { normalizeDshWebUrl, sameDshWebUrl } from "./dsh-process";
+} from "../../../workspace-context";
+import type MvAideIdePlugin from "../../../../main";
+import { t } from "../../../i18n";
+import type { DshAutoOpenRegion } from "../settings";
+import type { SelectionState } from "../../../types";
+import { normalizeDshWebUrl, sameDshWebUrl } from "./process";
 
 export const DSH_VIEW_TITLE = "mv-agent";
 /**
@@ -204,16 +204,14 @@ function setTextIfChanged(element: HTMLElement | null, text: string): void {
 
 /**
  * mv-agent 视图：iframe（无任何浏览器工具栏）+ 底部 Obsidian 侧状态栏。
- * 折叠行五段、段间竖线分隔：●（连接小球）│ [☑]打开：xxx │ [☑]选中：… │
- * 轨迹跟踪 开 │ 端口 3080（打开/选中前有方形勾选框：轨迹跟踪开时锁定勾选，
- * 关时默认勾选、可取消勾选以停止推送该信息）；点击整栏展开明细。
+ * 折叠行四段、段间竖线分隔：●（连接小球）│ [☑]打开：xxx │ [☑]选中：… │
+ * 端口 3080。打开/选中前的方形勾选框可独立控制对应被动推送；点击整栏展开明细。
  */
 export class DshWebView extends ItemView {
   private frameEl: HTMLIFrameElement | null = null;
   private currentUrl = "";
   private statusPortEl: HTMLSpanElement | null = null;
   private statusDotEl: HTMLSpanElement | null = null;
-  private statusTrackingEl: HTMLSpanElement | null = null;
   private statusOpenEl: HTMLSpanElement | null = null;
   private statusLocationCheckEl: HTMLSpanElement | null = null;
   private statusOpenLabelEl: HTMLSpanElement | null = null;
@@ -228,7 +226,6 @@ export class DshWebView extends ItemView {
   private detailPortEl: HTMLDivElement | null = null;
   private detailUrlEl: HTMLDivElement | null = null;
   private detailConnectionEl: HTMLDivElement | null = null;
-  private detailTrackingEl: HTMLDivElement | null = null;
   private detailOpenEl: HTMLDivElement | null = null;
   private detailSelectionEl: HTMLDivElement | null = null;
   private detailSelectionTextEl: HTMLDivElement | null = null;
@@ -347,7 +344,6 @@ export class DshWebView extends ItemView {
     this.frameEl = null;
     this.statusPortEl = null;
     this.statusDotEl = null;
-    this.statusTrackingEl = null;
     this.statusOpenEl = null;
     this.statusLocationCheckEl = null;
     this.statusOpenLabelEl = null;
@@ -362,7 +358,6 @@ export class DshWebView extends ItemView {
     this.detailPortEl = null;
     this.detailUrlEl = null;
     this.detailConnectionEl = null;
-    this.detailTrackingEl = null;
     this.detailOpenEl = null;
     this.detailSelectionEl = null;
     this.detailSelectionTextEl = null;
@@ -519,7 +514,7 @@ export class DshWebView extends ItemView {
     bar.addEventListener("click", () => this.toggleExpanded());
     const addDivider = (): HTMLSpanElement =>
       bar.createSpan({ cls: "mv-aide-dsh-status-divider" });
-    // 顺序：小球 │ 打开 │ 选中 │ 轨迹跟踪 │ 端口
+    // 顺序：小球 │ 打开 │ 选中 │ 端口
     this.statusDotEl = bar.createSpan({
       cls: "mv-aide-dsh-dot is-disconnected",
     });
@@ -541,8 +536,6 @@ export class DshWebView extends ItemView {
     this.statusSelectionLabelEl = this.statusSelectionEl.createSpan({
       cls: "mv-aide-dsh-status-label",
     });
-    addDivider();
-    this.statusTrackingEl = bar.createSpan({ cls: "mv-aide-dsh-status-segment" });
     addDivider();
     this.statusCopyEl = bar.createEl("button", {
       cls: "clickable-icon mv-aide-dsh-copy-address",
@@ -569,7 +562,6 @@ export class DshWebView extends ItemView {
     this.detailPortEl = this.statusDetailEl.createDiv();
     this.detailUrlEl = this.statusDetailEl.createDiv();
     this.detailConnectionEl = this.statusDetailEl.createDiv();
-    this.detailTrackingEl = this.statusDetailEl.createDiv();
     this.detailOpenEl = this.statusDetailEl.createDiv();
     this.detailSelectionEl = this.statusDetailEl.createDiv();
     this.detailSelectionTextEl = this.statusDetailEl.createDiv();
@@ -620,8 +612,6 @@ export class DshWebView extends ItemView {
     ): void => {
       el?.addEventListener("click", (event) => {
         event.stopPropagation();
-        // 轨迹跟踪开时锁定，不可操作。
-        if (this.plugin.settings.activityTracking.supportAllActivePages) return;
         this.plugin.settings.dsh[key] = !this.plugin.settings.dsh[key];
         void this.plugin.saveAndApplySettings();
         this.renderStatus();
@@ -773,7 +763,6 @@ export class DshWebView extends ItemView {
     const actualPort = dshFeature?.currentDshPort() ?? null;
     const actualUrl = dshFeature?.currentDshUrl() ?? null;
     const connected = dshFeature?.isDshBridgeConnected() ?? false;
-    const tracking = settings.activityTracking.supportAllActivePages;
     const snapshot = plugin.latestSelectionSnapshot();
     const parts = buildDshStatusParts(snapshot);
     const port = actualPort ?? settings.dsh.port;
@@ -806,32 +795,17 @@ export class DshWebView extends ItemView {
       this.statusDotEl.toggleClass("is-disconnected", !connected);
       this.statusDotEl.setAttr("title", connected ? t("已连接") : t("未连接"));
     }
-    if (this.statusTrackingEl) {
-      setTextIfChanged(
-        this.statusTrackingEl,
-        `${t("轨迹跟踪")} ${tracking ? t("开") : t("关")}`,
-      );
-    }
     const applyCheck = (
       el: HTMLSpanElement | null,
       checked: boolean,
-      locked: boolean,
     ): void => {
       if (!el) return;
       setTextIfChanged(el, checked ? "✓" : "");
       el.toggleClass("is-checked", checked);
-      el.toggleClass("is-locked", locked);
+      el.classList.remove("is-locked");
     };
-    applyCheck(
-      this.statusLocationCheckEl,
-      tracking || settings.dsh.pushLocation,
-      tracking,
-    );
-    applyCheck(
-      this.statusSelectionCheckEl,
-      tracking || settings.dsh.pushSelection,
-      tracking,
-    );
+    applyCheck(this.statusLocationCheckEl, settings.dsh.pushLocation);
+    applyCheck(this.statusSelectionCheckEl, settings.dsh.pushSelection);
     setTextIfChanged(this.statusOpenLabelEl, parts.open);
     setTextIfChanged(this.statusSelectionLabelEl, parts.selection);
     if (this.statusFailEl) {
@@ -862,10 +836,6 @@ export class DshWebView extends ItemView {
     setTextIfChanged(
       this.detailConnectionEl,
       `mv-aide ${connected ? t("已连接") : t("未连接")}`,
-    );
-    setTextIfChanged(
-      this.detailTrackingEl,
-      `${t("轨迹跟踪")} ${tracking ? t("开") : t("关")}`,
     );
     setTextIfChanged(this.detailOpenEl, parts.openFull);
     setTextIfChanged(this.detailSelectionEl, parts.selection);

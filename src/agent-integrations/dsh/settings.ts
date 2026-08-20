@@ -1,17 +1,7 @@
-import { DSH_POLICY_KEYS } from "./dsh-outside-policy";
+import { DSH_POLICY_KEYS } from "./ide/outside-policy";
 
 export type DshAutoOpenRegion = "left" | "right" | "bottom";
 export type DshInstallTarget = "vault" | "global";
-
-/**
- * Passive context delivery mode:
- *  - "live": every stable selection state is pushed as it happens (activity
- *    trail), deduplicated/replaced in place by the dsh plugin.
- *  - "on-send": the selection is buffered and pushed exactly once, at the
- *    moment the user sends a message in dsh; nothing is pushed while the
- *    agent works. Explicit @mentions still steer in both modes.
- */
-export type DshPassiveDelivery = "live" | "on-send";
 
 export interface DshSettings {
   /** Master switch rendered in the "已适配 agent" section (top entry). */
@@ -30,19 +20,11 @@ export interface DshSettings {
    * are always reviewable. Default off.
    */
   reviewOutsideVault: boolean;
-  /** Passive delivery mode; default "live". */
-  passiveDelivery: DshPassiveDelivery;
   /** Use mv-agent's private native terminal control tools instead of getTerminalOutput. */
   terminalAwarenessEnhanced: boolean;
-  /**
-   * 状态栏「打开」勾选框：推送位置信息（文件/页面地址）。轨迹跟踪开时
-   * 强制生效；关时按此开关决定（默认 true，可取消勾选不再推送）。
-   */
+  /** 状态栏「打开」勾选框：独立控制文件/页面位置信息的被动推送。 */
   pushLocation: boolean;
-  /**
-   * 状态栏「选中」勾选框：推送选中文本。轨迹跟踪开时强制生效；关时按
-   * 此开关决定（默认 true，可取消勾选不再推送）。
-   */
+  /** 状态栏「选中」勾选框：独立控制选中文本的被动推送。 */
   pushSelection: boolean;
   /**
    * Per-channel opt-in for dsh sessions running OUTSIDE this vault:
@@ -59,7 +41,6 @@ export const DEFAULT_DSH_SETTINGS: DshSettings = {
   port: 3080,
   injected: false,
   reviewOutsideVault: false,
-  passiveDelivery: "live",
   terminalAwarenessEnhanced: false,
   pushLocation: true,
   pushSelection: true,
@@ -67,18 +48,11 @@ export const DEFAULT_DSH_SETTINGS: DshSettings = {
 };
 
 const REGIONS: readonly DshAutoOpenRegion[] = ["left", "right", "bottom"];
-const PASSIVE_DELIVERY_MODES: readonly DshPassiveDelivery[] = ["live", "on-send"];
 
 function normalizeRegion(value: unknown): DshAutoOpenRegion {
   return REGIONS.includes(value as DshAutoOpenRegion)
     ? (value as DshAutoOpenRegion)
     : "right";
-}
-
-function normalizePassiveDelivery(value: unknown): DshPassiveDelivery {
-  return PASSIVE_DELIVERY_MODES.includes(value as DshPassiveDelivery)
-    ? (value as DshPassiveDelivery)
-    : DEFAULT_DSH_SETTINGS.passiveDelivery;
 }
 
 /** Keep only known channels, boolean-coerced; everything else is dropped. */
@@ -113,7 +87,6 @@ export function normalizeDshSettings(raw: unknown): DshSettings {
     port: normalizePort(value.port),
     injected: value.injected === true,
     reviewOutsideVault: value.reviewOutsideVault === true,
-    passiveDelivery: normalizePassiveDelivery(value.passiveDelivery),
     terminalAwarenessEnhanced: value.terminalAwarenessEnhanced === true,
     pushLocation: value.pushLocation !== false,
     pushSelection: value.pushSelection !== false,

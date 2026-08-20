@@ -9,7 +9,7 @@ When a DSH user selects a slash command that has secondary fields (for example `
 It is implemented through DSH's official client extension point (`ctx.commandUi.decorate` + `popupSelect`), entirely inside this package:
 
 - Host half: `lib/bridge-service.js` + `lib/index.js` serve
-  - `GET /api/mv-aide/bridges` — display-safe bridge list from `~/.mv-aide/ide` (with `~/.claude/ide` compatibility fallback);
+  - `GET /api/mv-aide/bridges` — display-safe bridge list from the canonical `~/.mv-aide/ide` registry;
   - `GET /api/mv-aide/tools` — public mv-AIDE IDE tools for the `call` submenu.
 - Browser half: `lib/client.js` is a self-contained DSH client bundle (prebuilt `window.__ModuleLoader__` format) that:
   - registers a declarative command tree via `registerCommandTree(name, root)`;

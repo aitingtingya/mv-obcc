@@ -1,5 +1,5 @@
-import { EXTERNAL_FILE_MIRROR_FOLDER } from "./vault-storage-paths";
-import { DEFAULT_DSH_SETTINGS } from "./dsh/dsh-settings";
+import { EXTERNAL_FILE_MIRROR_FOLDER } from "./storage/vault-paths";
+import { DEFAULT_DSH_SETTINGS } from "./agent-integrations/dsh/settings";
 
 export const DIFF_VIEW_TYPE = "mv-aide-ide-diff";
 export const TERMINAL_VIEW_TYPE = "mv-aide-terminal-view";
@@ -10,8 +10,6 @@ export const PORT_SPAN = 1500;
 export const UNIVERSAL_MCP_PORT_BASE = 48500;
 export const UNIVERSAL_MCP_PORT_SPAN = 1500;
 export const MCP_SERVER_NAME = "mv-aide";
-export const TERMINAL_MARKER_PREFIX = "mv-aide:";
-export const MANAGED_HOOK_MARKER = "mv-aide-ide-terminal-marker-v1";
 export const WINDOWS_MCP_REGISTRATION_VERSION = 1;
 
 /**
@@ -53,11 +51,6 @@ export const DEFAULT_INLINE_SYSTEM_PROMPT =
 
 export const DEFAULT_SETTINGS = {
   language: "zh" as const,
-  upstreamMode: "native" as const,
-  upstreamBaseUrl: "",
-  autoManageClaudeSettings: true,
-  previousLocalBaseUrl: null,
-  managedLocalBaseUrl: null,
   activityTracking: {
     supportAllActivePages: false,
     trackMarkdown: true,

@@ -1,19 +1,22 @@
 import { Notice, requestUrl } from "obsidian";
-import { t } from "../i18n";
-import type MvAideIdePlugin from "../../main";
-import { getVaultRoot } from "../selection";
+import { t } from "../../i18n";
+import { prependExecutableDirectory, resolveUserCommandEnvironment } from "../../process-environment";
+import { runProcess } from "../../process-runner";
+import type MvAideIdePlugin from "../../../main";
+import { getVaultRoot } from "../../selection";
 import {
-  injectDshPlugin,
+  ensureDshAgentInjection,
+  ensureDshFullInjection,
   inspectDshInjection,
   type InjectResult,
-} from "./dsh-inject";
+} from "./ide/injection";
 import {
   classifyProbe,
   DshStartCancelledError,
   DshProcessManager,
   isDshStartCancelled,
   type DshWebProbe,
-} from "./dsh-process";
+} from "./runtime/process";
 import {
   combinedToolStatus,
   describeDshInstallFailure,
@@ -21,46 +24,65 @@ import {
   inspectNodeRuntimes,
   installDshPackages,
   preferredNodeLocation,
+  preferredRepairTarget,
   preferredToolLocation,
   selectedNodeStatus,
   toolIsInstalled,
   toolIsReady,
   UNKNOWN_DSH_ENVIRONMENT,
   type DshEnvironmentStatus,
+  type DshEnvironmentUpdates,
   type DshInstallLayer,
   type DshNodeLocations,
+  type DshPackageInstallSpec,
   type DshPackageName,
   type DshRuntimeInspection,
-} from "./dsh-environment";
+  type RuntimeUpdateStatus,
+} from "./runtime/environment";
+import { installOrUpgradeNodeRuntime } from "./runtime/node-runtime";
 import {
-  DSH_NODE_RUNTIME_VERSION,
-  installOrUpgradeNodeRuntime,
-  isDshNodeRuntimeTarget,
-} from "./dsh-node-runtime";
+  normalizeRuntimeVersion,
+  resolveDshTargetVersion,
+  resolveNodeTargetVersion,
+  resolvePnpmTargetVersion,
+  runtimeUpdateRelation,
+} from "./runtime/package-update";
 import {
   cleanupLegacyDshInstallArtifacts,
   cleanupStaleDshInstallWorkspaces,
   type DshCleanupFailure,
-} from "./dsh-install-workspace";
-import type { DshInstallTarget } from "./dsh-settings";
+} from "./runtime/install-workspace";
+import type { DshInstallTarget } from "./settings";
 import {
   renderDshAgentEntry,
   renderDshSection,
   type Rerender,
-} from "./dsh-settings-ui";
+} from "./ui/settings-ui";
 import {
   DSH_WEB_VIEW_TYPE,
   DshWebView,
   openDshWebviewInNewLeaf,
   stopOpenMvAgentViews,
-} from "./dsh-webview";
-import { isDshConnectedToBridge } from "./dsh-bridge-status";
+} from "./runtime/webview";
+import { isDshConnectedToBridge } from "./ide/bridge-status";
 
 const COMMAND_ID = "open-mv-agent-for-obsidian";
 
 export interface ActionResult {
   ok: boolean;
   message: string;
+}
+
+export type DshIdePluginRuntimeState =
+  | { state: "disabled" }
+  | { state: "checking" }
+  | { state: "blocked"; detail: string }
+  | { state: "injecting" }
+  | { state: "ready" }
+  | { state: "error"; detail: string };
+
+export interface DshIdeReconcileResult extends ActionResult {
+  changed: boolean;
 }
 
 export type DshInstallTargetChooser = (
@@ -70,14 +92,61 @@ export type DshInstallTargetChooser = (
 function environmentFrom(
   node: DshNodeLocations,
   runtime: DshRuntimeInspection,
-  plugin: DshEnvironmentStatus["plugin"],
+  plugins: DshEnvironmentStatus["plugins"],
+  updates: DshEnvironmentUpdates = UNKNOWN_DSH_ENVIRONMENT.updates,
 ): DshEnvironmentStatus {
   return {
     node,
     dsh: runtime.dsh,
     pnpm: runtime.pnpm,
-    plugin,
+    plugins,
+    updates: structuredClone(updates),
     checkedAt: Date.now(),
+  };
+}
+
+function updateStatusFor(
+  currentVersion: string | undefined,
+  targetVersion: string,
+): RuntimeUpdateStatus {
+  if (!currentVersion) return { checked: true, targetVersion, updateAvailable: true, relation: "older" };
+  try {
+    const relation = runtimeUpdateRelation(currentVersion, targetVersion);
+    return {
+      checked: true,
+      targetVersion,
+      relation,
+      updateAvailable: relation === "older",
+    };
+  } catch (error) {
+    return {
+      checked: true,
+      targetVersion,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+function updateError(error: unknown): RuntimeUpdateStatus {
+  return {
+    checked: true,
+    error: error instanceof Error ? error.message : String(error),
+  };
+}
+
+function toolVersionAtPreferredLocation(
+  runtime: DshRuntimeInspection,
+  name: DshPackageName,
+): { target: DshInstallTarget; version?: string } | null {
+  const target = preferredToolLocation(runtime[name]);
+  return target ? { target, version: runtime[name][target].version } : null;
+}
+
+function blockedPluginStatuses(detail: string): DshEnvironmentStatus["plugins"] {
+  return {
+    agent: { state: "blocked", detail },
+    manager: { state: "blocked", detail },
+    full: { state: "blocked", detail },
   };
 }
 
@@ -142,6 +211,7 @@ export class DshFeature {
   private commandRegistered = false;
   private environment: DshEnvironmentStatus = structuredClone(UNKNOWN_DSH_ENVIRONMENT);
   private environmentBusy = false;
+  private idePluginRuntimeState: DshIdePluginRuntimeState = { state: "disabled" };
   private mvAgentOperationGeneration = 0;
   private dshBridgeConnected = false;
   private dshBridgeProbeBusy = false;
@@ -154,6 +224,9 @@ export class DshFeature {
   private readonly openSubsectionIds = new Set<string>();
 
   constructor(private readonly plugin: MvAideIdePlugin) {
+    if (this.plugin.settings.dsh.enabled) {
+      this.idePluginRuntimeState = { state: "checking" };
+    }
     this.processManager = new DshProcessManager(
       () => getVaultRoot(this.plugin.app),
       () => this.plugin.settings.dsh.port,
@@ -183,7 +256,11 @@ export class DshFeature {
 
   /** Whether the mv-AIDE IDE bridge must run for this feature (lock file + tools). */
   requiresBridge(): boolean {
-    return this.plugin.settings.dsh.enabled;
+    return this.plugin.settings.dsh.enabled && this.idePluginRuntimeState.state === "ready";
+  }
+
+  ideIntegrationState(): DshIdePluginRuntimeState {
+    return this.idePluginRuntimeState;
   }
 
   private registerCommand(): void {
@@ -275,25 +352,48 @@ export class DshFeature {
     try {
       const vaultRoot = getVaultRoot(this.plugin.app);
       await this.cleanupInstallArtifactsStrict(vaultRoot);
-      const nodes = await inspectNodeRuntimes(vaultRoot);
+      const commandEnv = await resolveUserCommandEnvironment();
+      const nodes = await inspectNodeRuntimes(vaultRoot, runProcess, commandEnv);
       const node = selectedNodeStatus(nodes);
-      const runtime = await inspectDshRuntime(vaultRoot, nodes);
-      let plugin: DshEnvironmentStatus["plugin"];
-      if (!toolIsReady(runtime.dsh) || !toolIsReady(runtime.pnpm)) {
-        plugin = { state: "blocked", detail: t("等待 DSH 与 pnpm。") };
-      } else {
-        const injection = await inspectDshInjection(vaultRoot);
-        plugin = { state: injection.state, detail: injection.detail };
-      }
-      this.environment = environmentFrom(nodes, runtime, plugin);
-      await this.updatePersistedInjectionState(plugin.state === "ready");
+      const runtime = await inspectDshRuntime(vaultRoot, nodes, runProcess, commandEnv);
+      const plugins = !toolIsReady(runtime.dsh) || !toolIsReady(runtime.pnpm)
+        ? blockedPluginStatuses(t("等待 DSH 与 pnpm。"))
+        : await inspectDshInjection(vaultRoot);
+
+      const npmExecutable = node.npmExecutable;
+      const npmEnvironment = prependExecutableDirectory(commandEnv, node.executable);
+      const npmMissing = (): Promise<string> => Promise.reject(new Error(t("未检测到可用于更新检查的 npm。")));
+      const [nodeTarget, dshTarget, pnpmTarget] = await Promise.allSettled([
+        resolveNodeTargetVersion(),
+        npmExecutable ? resolveDshTargetVersion(npmExecutable, runProcess, npmEnvironment) : npmMissing(),
+        npmExecutable ? resolvePnpmTargetVersion(npmExecutable, runProcess, npmEnvironment) : npmMissing(),
+      ]);
+      const dshCurrent = toolVersionAtPreferredLocation(runtime, "dsh")?.version;
+      const pnpmCurrent = toolVersionAtPreferredLocation(runtime, "pnpm")?.version;
+      const updates: DshEnvironmentUpdates = {
+        node: nodeTarget.status === "fulfilled"
+          ? updateStatusFor(node.version, nodeTarget.value)
+          : updateError(nodeTarget.reason),
+        dsh: dshTarget.status === "fulfilled"
+          ? updateStatusFor(dshCurrent, dshTarget.value)
+          : updateError(dshTarget.reason),
+        pnpm: pnpmTarget.status === "fulfilled"
+          ? updateStatusFor(pnpmCurrent, pnpmTarget.value)
+          : updateError(pnpmTarget.reason),
+      };
+
+      this.environment = environmentFrom(nodes, runtime, plugins, updates);
+      await this.updatePersistedInjectionState(plugins.full.state === "ready");
       const ok = node.state === "ready"
         && toolIsReady(runtime.dsh)
         && toolIsReady(runtime.pnpm);
+      const updateFailed = Object.values(updates).some((status) => Boolean(status.error));
       return {
         ok,
         message: ok
-          ? t("检测完成：Node.js、DSH 与 pnpm 均可用。")
+          ? updateFailed
+            ? t("检测完成：运行环境可用，但部分最新版本检查失败。")
+            : t("检测完成：Node.js、DSH 与 pnpm 均可用，并已检查最新版本。")
           : node.state !== "ready"
             ? node.detail || t("未检测到 Node.js。")
             : !toolIsReady(runtime.dsh)
@@ -308,47 +408,57 @@ export class DshFeature {
   private async inspectActualEnvironment(vaultRoot: string): Promise<{
     nodes: DshNodeLocations;
     runtime: DshRuntimeInspection;
+    commandEnv: NodeJS.ProcessEnv;
   }> {
-    const nodes = await inspectNodeRuntimes(vaultRoot);
-    const runtime = await inspectDshRuntime(vaultRoot, nodes);
-    const injection = toolIsReady(runtime.dsh) && toolIsReady(runtime.pnpm)
+    const commandEnv = await resolveUserCommandEnvironment();
+    const nodes = await inspectNodeRuntimes(vaultRoot, runProcess, commandEnv);
+    const runtime = await inspectDshRuntime(vaultRoot, nodes, runProcess, commandEnv);
+    const plugins = toolIsReady(runtime.dsh) && toolIsReady(runtime.pnpm)
       ? await inspectDshInjection(vaultRoot)
-      : { state: "blocked" as const, detail: t("等待 DSH 与 pnpm。") };
-    this.environment = environmentFrom(nodes, runtime, injection);
-    await this.updatePersistedInjectionState(injection.state === "ready");
-    return { nodes, runtime };
+      : blockedPluginStatuses(t("等待 DSH 与 pnpm。"));
+    this.environment = environmentFrom(nodes, runtime, plugins, this.environment.updates);
+    await this.updatePersistedInjectionState(plugins.full.state === "ready");
+    return { nodes, runtime, commandEnv };
   }
 
   private async ensureNodeForTarget(
     vaultRoot: string,
     target: DshInstallTarget,
-    requireTargetVersion = false,
+    targetVersion: string,
+    force = false,
   ): Promise<DshNodeLocations> {
-    let nodes = await inspectNodeRuntimes(vaultRoot);
+    let commandEnv = await resolveUserCommandEnvironment();
+    let nodes = await inspectNodeRuntimes(vaultRoot, runProcess, commandEnv);
     const status = nodes[target];
     if (
-      status.state === "ready"
+      !force
+      && status.state === "ready"
       && status.executable
       && status.npmExecutable
-      && (!requireTargetVersion || isDshNodeRuntimeTarget(status.version))
     ) return nodes;
     const installed = await installOrUpgradeNodeRuntime(
       vaultRoot,
       target,
+      targetVersion,
       status.installed ? status.origin ?? "unknown" : null,
+      { environment: commandEnv },
     );
     if (installed.code !== 0) {
       throw new Error(installed.stderr || installed.stdout || t("Node.js 安装或升级失败。"));
     }
-    nodes = await inspectNodeRuntimes(vaultRoot);
+    commandEnv = await resolveUserCommandEnvironment();
+    nodes = await inspectNodeRuntimes(vaultRoot, runProcess, commandEnv);
     const verified = nodes[target];
     if (verified.state !== "ready") {
       throw new Error(verified.detail || t("Node.js 安装后校验失败。"));
     }
-    if (requireTargetVersion && !isDshNodeRuntimeTarget(verified.version)) {
-      throw new Error(t("Node.js 升级后仍是 {version}，未达到目标版本 {target}。", {
-        version: verified.version ?? t("未知版本"),
-        target: DSH_NODE_RUNTIME_VERSION,
+    if (
+      !verified.version
+      || normalizeRuntimeVersion(verified.version) !== normalizeRuntimeVersion(targetVersion)
+    ) {
+      throw new Error(t("Node.js 操作后版本校验失败：目标 {target}，实际 {actual}。", {
+        target: targetVersion,
+        actual: verified.version ?? t("未知版本"),
       }));
     }
     await this.inspectActualEnvironment(vaultRoot);
@@ -360,14 +470,29 @@ export class DshFeature {
     preferredTarget: DshInstallTarget | null,
     chooseTarget: DshInstallTargetChooser,
   ): Promise<DshNodeLocations> {
-    let nodes = await inspectNodeRuntimes(vaultRoot);
+    const commandEnv = await resolveUserCommandEnvironment();
+    let nodes = await inspectNodeRuntimes(vaultRoot, runProcess, commandEnv);
     const selected = selectedNodeStatus(nodes);
     if (selected.state === "ready" && selected.executable && selected.npmExecutable) return nodes;
     const existing = preferredNodeLocation(nodes);
     const target = existing ?? preferredTarget ?? await chooseTarget("node");
     if (!target) throw new Error(t("已取消 Node.js 安装。"));
-    nodes = await this.ensureNodeForTarget(vaultRoot, target);
+    const targetVersion = await resolveNodeTargetVersion();
+    nodes = await this.ensureNodeForTarget(vaultRoot, target, targetVersion);
     return nodes;
+  }
+
+  private async resolvePackageTargetVersion(
+    name: DshPackageName,
+    node: ReturnType<typeof selectedNodeStatus>,
+    commandEnv: NodeJS.ProcessEnv,
+  ): Promise<string> {
+    const npmExecutable = node.npmExecutable;
+    if (!npmExecutable) throw new Error(t("未检测到可用于更新检查的 npm。"));
+    const npmEnvironment = prependExecutableDirectory(commandEnv, node.executable);
+    return name === "dsh"
+      ? resolveDshTargetVersion(npmExecutable, runProcess, npmEnvironment)
+      : resolvePnpmTargetVersion(npmExecutable, runProcess, npmEnvironment);
   }
 
   private async ensurePackage(
@@ -376,28 +501,74 @@ export class DshFeature {
     requestedTarget: DshInstallTarget | null,
     chooseTarget: DshInstallTargetChooser,
     force: boolean,
-  ): Promise<void> {
-    let { nodes, runtime } = await this.inspectActualEnvironment(vaultRoot);
+  ): Promise<{
+    action: "install" | "upgrade" | "reinstall";
+    beforeVersion?: string;
+    targetVersion: string;
+    afterVersion: string;
+  } | null> {
+    let { nodes, runtime, commandEnv } = await this.inspectActualEnvironment(vaultRoot);
     const locations = runtime[name];
-    if (!force && toolIsReady(locations)) return;
-    const existingTarget = preferredToolLocation(locations);
+    if (!force && toolIsReady(locations)) return null;
+    const existingTarget = preferredToolLocation(locations) ?? preferredRepairTarget(locations);
     const target = existingTarget ?? requestedTarget ?? await chooseTarget(name);
     if (!target) throw new Error(t("已取消{layer}安装。", { layer: name === "dsh" ? "DSH" : "pnpm" }));
 
     if (target === "global") {
-      nodes = await this.ensureNodeForTarget(vaultRoot, "global");
+      const globalNode = nodes.global;
+      if (globalNode.state !== "ready" || !globalNode.npmExecutable) {
+        const nodeTargetVersion = await resolveNodeTargetVersion();
+        nodes = await this.ensureNodeForTarget(vaultRoot, "global", nodeTargetVersion);
+      }
     } else {
       nodes = await this.ensureAnyNode(vaultRoot, "vault", chooseTarget);
     }
+    commandEnv = await resolveUserCommandEnvironment();
+    nodes = await inspectNodeRuntimes(vaultRoot, runProcess, commandEnv);
     const node = target === "global" ? nodes.global : selectedNodeStatus(nodes);
-    const installed = await installDshPackages(vaultRoot, target, node, [name]);
+    const channelTargetVersion = await this.resolvePackageTargetVersion(name, node, commandEnv);
+    const beforeVersion = runtime[name][target].version;
+    const relation = beforeVersion
+      ? runtimeUpdateRelation(beforeVersion, channelTargetVersion)
+      : "older";
+    const targetVersion = relation === "newer" && beforeVersion
+      ? beforeVersion
+      : channelTargetVersion;
+    const action = !beforeVersion
+      ? "install" as const
+      : relation === "older"
+        ? "upgrade" as const
+        : "reinstall" as const;
+    const spec: DshPackageInstallSpec = { name, version: targetVersion };
+    const lifecycle = process.platform === "win32" && name === "dsh"
+      ? {
+          beforeMutation: async (): Promise<void> => {
+            const drained = await this.processManager.stopAllDshForWindowsPackageMutation();
+            if (drained.remainingPids.length > 0) {
+              throw new Error(t("仍有 DSH 进程无法停止；为避免安装目录被占用，本次操作未执行。PID：{pids}", {
+                pids: drained.remainingPids.join(", "),
+              }));
+            }
+          },
+        }
+      : undefined;
+    const installed = await installDshPackages(
+      vaultRoot,
+      target,
+      node,
+      [spec],
+      runProcess,
+      commandEnv,
+      lifecycle,
+    );
     if (installed.code !== 0) {
       const detail = describeDshInstallFailure(target, installed);
       runtime = markInstallFailure(runtime, target, [name], detail);
       this.environment = environmentFrom(
         nodes,
         runtime,
-        { state: "blocked", detail: t("等待 DSH 与 pnpm。") },
+        blockedPluginStatuses(t("等待 DSH 与 pnpm。")),
+        this.environment.updates,
       );
       throw new Error(t("{layer} 安装或升级失败：{detail}", {
         layer: name === "dsh" ? "DSH" : "pnpm",
@@ -405,9 +576,98 @@ export class DshFeature {
       }));
     }
     const inspected = await this.inspectActualEnvironment(vaultRoot);
-    if (inspected.runtime[name][target].state !== "ready") {
+    const after = inspected.runtime[name][target];
+    if (after.state !== "ready" || !after.version) {
       throw new Error(t("{layer} 安装后校验失败。", { layer: name === "dsh" ? "DSH" : "pnpm" }));
     }
+    if (normalizeRuntimeVersion(after.version) !== normalizeRuntimeVersion(targetVersion)) {
+      throw new Error(t("{layer} 操作后版本校验失败：目标 {target}，实际 {actual}。", {
+        layer: name === "dsh" ? "DSH" : "pnpm",
+        target: targetVersion,
+        actual: after.version,
+      }));
+    }
+    this.environment.updates[name] = updateStatusFor(after.version, channelTargetVersion);
+    return { action, beforeVersion, targetVersion, afterVersion: after.version };
+  }
+
+  /**
+   * Injection/update is allowed to restart mv-agent only when the user already
+   * has an mv-agent view open. Reuse the existing restart command behavior;
+   * never infer user intent from a cached/running DSH endpoint alone.
+   */
+  private async restartOpenMvAgentAfterInjection(): Promise<void> {
+    const openViews = this.plugin.app.workspace.getLeavesOfType(DSH_WEB_VIEW_TYPE);
+    if (openViews.length === 0) return;
+    await this.restartDshWithNotice();
+  }
+
+  async reconcileIdeIntegration(options: {
+    restartRunningDsh?: boolean;
+  } = {}): Promise<DshIdeReconcileResult> {
+    if (!this.plugin.settings.dsh.enabled) {
+      this.idePluginRuntimeState = { state: "disabled" };
+      return { ok: true, changed: false, message: t("状态：已禁用") };
+    }
+
+    this.idePluginRuntimeState = { state: "checking" };
+    const vaultRoot = getVaultRoot(this.plugin.app);
+    try {
+      const nodes = await inspectNodeRuntimes(vaultRoot);
+      const runtime = await inspectDshRuntime(vaultRoot, nodes);
+      const before = await inspectDshInjection(vaultRoot);
+      this.environment = environmentFrom(nodes, runtime, before, this.environment.updates);
+      await this.updatePersistedInjectionState(before.full.state === "ready");
+
+      if (!runtime.command) {
+        const detail = combinedToolStatus(runtime.dsh).detail
+          || selectedNodeStatus(nodes).detail
+          || t("DSH 尚未安装，请先点击“安装”。");
+        this.idePluginRuntimeState = { state: "blocked", detail };
+        return { ok: false, changed: false, message: detail };
+      }
+
+      if (before.agent.state !== "ready") {
+        this.idePluginRuntimeState = { state: "injecting" };
+      }
+      const result = await ensureDshAgentInjection(vaultRoot, runtime.command);
+      const after = await inspectDshInjection(vaultRoot);
+      this.environment = environmentFrom(nodes, runtime, after, this.environment.updates);
+      await this.updatePersistedInjectionState(after.full.state === "ready");
+
+      if (!result.ok || after.agent.state !== "ready") {
+        const detail = result.ok ? after.agent.detail : result.message;
+        this.idePluginRuntimeState = { state: "error", detail };
+        return { ok: false, changed: result.changed === true, message: detail };
+      }
+
+      if (options.restartRunningDsh) {
+        await this.restartOpenMvAgentAfterInjection();
+      }
+      this.idePluginRuntimeState = { state: "ready" };
+      return { ok: true, changed: result.changed === true, message: result.message };
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      this.idePluginRuntimeState = { state: "error", detail };
+      return { ok: false, changed: false, message: detail };
+    }
+  }
+
+  async setIdeEnabled(enabled: boolean): Promise<void> {
+    this.plugin.settings.dsh.enabled = enabled;
+    await this.plugin.saveData(this.plugin.settings);
+    if (enabled) {
+      await this.reconcileIdeIntegration({ restartRunningDsh: true });
+    } else {
+      this.idePluginRuntimeState = { state: "disabled" };
+    }
+    await this.plugin.syncDshIdeServices();
+  }
+
+  private async reconcileEnabledIdeAfterEnvironmentChange(restartRunningDsh: boolean): Promise<void> {
+    if (!this.plugin.settings.dsh.enabled) return;
+    await this.reconcileIdeIntegration({ restartRunningDsh });
+    await this.plugin.syncDshIdeServices();
   }
 
   async ensureLayer(
@@ -427,18 +687,55 @@ export class DshFeature {
         const existing = preferredNodeLocation(initial);
         const target = existing ?? requestedTarget ?? await chooseTarget("node");
         if (!target) return { ok: false, message: t("已取消 Node.js 安装。") };
-        await this.ensureNodeForTarget(vaultRoot, target, true);
-        return { ok: true, message: t("Node.js 已在原位置安装或升级并通过校验。") };
+        const channelTargetVersion = await resolveNodeTargetVersion();
+        const beforeVersion = initial[target].version;
+        const relation = beforeVersion
+          ? runtimeUpdateRelation(beforeVersion, channelTargetVersion)
+          : "older";
+        const targetVersion = relation === "newer" && beforeVersion
+          ? beforeVersion
+          : channelTargetVersion;
+        const action = !beforeVersion ? "install" : relation === "older" ? "upgrade" : "reinstall";
+        const nodes = await this.ensureNodeForTarget(vaultRoot, target, targetVersion, true);
+        const afterVersion = nodes[target].version ?? targetVersion;
+        this.environment.updates.node = updateStatusFor(afterVersion, channelTargetVersion);
+        await this.reconcileEnabledIdeAfterEnvironmentChange(true);
+        return {
+          ok: true,
+          message: action === "upgrade"
+            ? t("Node.js 已从 {from} 升级到 {to}。", { from: beforeVersion ?? t("未知版本"), to: afterVersion })
+            : action === "reinstall"
+              ? t("Node.js {version} 已重新安装并通过校验。", { version: afterVersion })
+              : t("Node.js {version} 已安装并通过校验。", { version: afterVersion }),
+        };
       }
 
       if (layer === "dsh") {
-        await this.ensurePackage(vaultRoot, "dsh", requestedTarget, chooseTarget, true);
-        return { ok: true, message: t("DSH 已安装或升级并通过校验。") };
+        const operation = await this.ensurePackage(vaultRoot, "dsh", requestedTarget, chooseTarget, true);
+        if (!operation) throw new Error(t("DSH 操作未执行。"));
+        await this.reconcileEnabledIdeAfterEnvironmentChange(true);
+        return {
+          ok: true,
+          message: operation.action === "upgrade"
+            ? t("DSH 已从 {from} 升级到 {to}。", { from: operation.beforeVersion ?? t("未知版本"), to: operation.afterVersion })
+            : operation.action === "reinstall"
+              ? t("DSH {version} 已重新安装并通过校验。", { version: operation.afterVersion })
+              : t("DSH {version} 已安装并通过校验。", { version: operation.afterVersion }),
+        };
       }
 
       if (layer === "pnpm") {
-        await this.ensurePackage(vaultRoot, "pnpm", requestedTarget, chooseTarget, true);
-        return { ok: true, message: t("pnpm 已安装或升级并通过校验。") };
+        const operation = await this.ensurePackage(vaultRoot, "pnpm", requestedTarget, chooseTarget, true);
+        if (!operation) throw new Error(t("pnpm 操作未执行。"));
+        await this.reconcileEnabledIdeAfterEnvironmentChange(true);
+        return {
+          ok: true,
+          message: operation.action === "upgrade"
+            ? t("pnpm 已从 {from} 升级到 {to}。", { from: operation.beforeVersion ?? t("未知版本"), to: operation.afterVersion })
+            : operation.action === "reinstall"
+              ? t("pnpm {version} 已重新安装并通过校验。", { version: operation.afterVersion })
+              : t("pnpm {version} 已安装并通过校验。", { version: operation.afterVersion }),
+        };
       }
 
       await this.ensureAnyNode(vaultRoot, null, chooseTarget);
@@ -446,26 +743,12 @@ export class DshFeature {
       await this.ensurePackage(vaultRoot, "pnpm", null, chooseTarget, false);
       const { nodes, runtime } = await this.inspectActualEnvironment(vaultRoot);
       if (!runtime.command) throw new Error(t("DSH 命令解析失败。"));
-      let result = await injectDshPlugin(vaultRoot, runtime.command);
+      const result = await ensureDshFullInjection(vaultRoot, runtime.command);
       const actual = await inspectDshInjection(vaultRoot);
-      this.environment = environmentFrom(
-        nodes,
-        runtime,
-        { state: actual.state, detail: actual.detail },
-      );
-      await this.updatePersistedInjectionState(result.ok && actual.state === "ready");
-      if (result.ok) {
-        const connectedUrls = this.collectActiveDshUrls();
-        const hadRunningDsh = connectedUrls.length > 0 || this.processManager.currentUrl() !== null;
-        if (hadRunningDsh) {
-          const restartedUrl = await this.processManager.restartForObsidian(connectedUrls);
-          this.navigateOpenViewsTo(restartedUrl);
-          result = {
-            ...result,
-            message: `${result.message}\n已重启运行中的 DSH，以加载 mv-agent 浏览器端模块。`,
-          };
-        }
-      }
+      this.environment = environmentFrom(nodes, runtime, actual, this.environment.updates);
+      await this.updatePersistedInjectionState(result.ok && actual.full.state === "ready");
+      if (result.ok) await this.restartOpenMvAgentAfterInjection();
+      await this.reconcileEnabledIdeAfterEnvironmentChange(false);
       return result;
     } catch (error) {
       const vaultRoot = getVaultRoot(this.plugin.app);

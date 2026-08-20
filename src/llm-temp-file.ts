@@ -1,5 +1,5 @@
 import { type App, TFile } from "obsidian";
-import { MV_AIDE_VAULT_STORAGE_FOLDER } from "./vault-storage-paths";
+import { MV_AIDE_VAULT_STORAGE_FOLDER } from "./storage/vault-paths";
 
 /**
  * Single reusable temp markdown file that backs the LLM result popover.

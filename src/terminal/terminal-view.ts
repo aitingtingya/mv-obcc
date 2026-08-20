@@ -1,13 +1,14 @@
 import { ItemView, WorkspaceLeaf, TFile, Menu, Platform } from "obsidian";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
-import * as os from "os";
 import * as fs from "fs";
 import * as path from "path";
 import * as child_process from "child_process";
 import { StringDecoder } from "string_decoder";
 import { TERMINAL_VIEW_TYPE } from "../constants";
 import { t } from "../i18n";
+import { mvAideRuntimeDirectory } from "../storage/temp-paths";
+import { ensureCodexExecutablePath } from "../agent-integrations/codex/executable-wrapper";
 import {
   resolveTerminalTheme,
   terminalThemeSignature,
@@ -409,7 +410,9 @@ export class TerminalView extends ItemView {
 
     const scriptB64 = isWindows ? TERMINAL_WIN_PY_BASE64 : TERMINAL_PTY_PY_BASE64;
     const scriptName = isWindows ? "mv_terminal_win.py" : "mv_terminal_pty.py";
-    const scriptPath = path.join(os.tmpdir(), scriptName);
+    const runtimeDirectory = mvAideRuntimeDirectory("terminal");
+    await fs.promises.mkdir(runtimeDirectory, { recursive: true, mode: 0o700 });
+    const scriptPath = path.join(runtimeDirectory, scriptName);
     const scriptContent = Buffer.from(scriptB64, "base64").toString("utf-8");
     await fs.promises.writeFile(scriptPath, scriptContent, { mode: 0o755 });
 
@@ -451,6 +454,15 @@ export class TerminalView extends ItemView {
       const resolvedPath = await loginShellPath(shellPath);
       if (generation !== this.shellStartGeneration) return;
       if (resolvedPath) shellEnv.PATH = resolvedPath;
+    }
+    try {
+      const codexBinDirectory = await ensureCodexExecutablePath(settings.codexExecutable);
+      if (generation !== this.shellStartGeneration) return;
+      if (codexBinDirectory) {
+        shellEnv.PATH = [codexBinDirectory, shellEnv.PATH].filter(Boolean).join(path.delimiter);
+      }
+    } catch (error) {
+      console.warn("[mv-aide] Failed to prepare the managed Codex executable wrapper.", error);
     }
 
     try {

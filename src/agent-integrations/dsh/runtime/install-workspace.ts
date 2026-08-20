@@ -1,9 +1,13 @@
 import { promises as fs } from "node:fs";
-import os from "node:os";
 import path from "node:path";
+import { mvAideTempDirectory } from "../../../storage/temp-paths";
 
-const INSTALL_WORKSPACE_PREFIX = "mv-aide-dsh-install-";
+const INSTALL_WORKSPACE_PREFIX = "operation-";
 const LEGACY_DSH_RELATIVE_PATH = "mv-aide/dsh";
+
+function installWorkspaceRoot(): string {
+  return mvAideTempDirectory("dsh/install");
+}
 const STALE_WORKSPACE_AGE_MS = 24 * 60 * 60 * 1_000;
 
 export interface DshInstallWorkspace {
@@ -33,12 +37,14 @@ function isInside(parent: string, candidate: string): boolean {
 
 export function isDshInstallWorkspacePath(candidate: string): boolean {
   const resolved = path.resolve(candidate);
-  return isInside(os.tmpdir(), resolved)
+  return isInside(installWorkspaceRoot(), resolved)
     && path.basename(resolved).startsWith(INSTALL_WORKSPACE_PREFIX);
 }
 
 export async function createDshInstallWorkspace(): Promise<DshInstallWorkspace> {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), INSTALL_WORKSPACE_PREFIX));
+  const base = installWorkspaceRoot();
+  await fs.mkdir(base, { recursive: true, mode: 0o700 });
+  const root = await fs.mkdtemp(path.join(base, INSTALL_WORKSPACE_PREFIX));
   try {
     await fs.chmod(root, 0o700).catch(() => undefined);
     const npmCache = path.join(root, "npm-cache");
@@ -100,10 +106,11 @@ export async function cleanupStaleDshInstallWorkspaces(
   now = Date.now(),
 ): Promise<DshCleanupResult> {
   const result: DshCleanupResult = { removed: [], failures: [] };
-  const entries = await fs.readdir(os.tmpdir(), { withFileTypes: true }).catch(() => []);
+  const base = installWorkspaceRoot();
+  const entries = await fs.readdir(base, { withFileTypes: true }).catch(() => []);
   for (const entry of entries) {
     if (!entry.isDirectory() || !entry.name.startsWith(INSTALL_WORKSPACE_PREFIX)) continue;
-    const target = path.join(os.tmpdir(), entry.name);
+    const target = path.join(base, entry.name);
     try {
       const stat = await fs.stat(target);
       if (now - stat.mtimeMs < STALE_WORKSPACE_AGE_MS) continue;

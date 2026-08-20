@@ -1,6 +1,6 @@
 import { Modal, Notice, Setting, type App } from "obsidian";
-import type MvAideIdePlugin from "../../main";
-import { t } from "../i18n";
+import type MvAideIdePlugin from "../../../../main";
+import { t } from "../../../i18n";
 
 interface DshPresetEntry {
   id: string;

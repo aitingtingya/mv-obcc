@@ -1442,6 +1442,72 @@ export class WindowsFileAssociations {
     }
   }
 
+  /**
+   * Rewrites an already-owned registration only when it still exactly matches
+   * the caller's observed definition. This is used for path-authority
+   * migrations where ProgIds and effective user choices must remain intact.
+   */
+  async replaceOwnedRegistration(
+    current: WindowsFileAssociationRegistrationOptions,
+    next: WindowsFileAssociationRegistrationOptions,
+    helperPath: string,
+  ): Promise<void> {
+    const currentInspection = await this.inspect(current, helperPath);
+    if (currentInspection.state !== "complete") {
+      throw new Error(
+        t("Windows 打开器注册在路径迁移前已发生变化：{v0}", {
+          v0: describeWindowsRegistryIssues(currentInspection.issues),
+        }),
+      );
+    }
+
+    const currentValues = windowsFileAssociationRegistrationValues(
+      current,
+      this.identity,
+    );
+    const nextValues = windowsFileAssociationRegistrationValues(next, this.identity);
+    try {
+      const report = await this.runRegistryAction<NativeRegistryInspectionReport>(
+        "ApplyRegistration",
+        helperPath,
+        { values: nextValues },
+      );
+      const verified = inspectionFromReport(nextValues, report);
+      if (verified.state !== "complete") {
+        throw new Error(
+          t("Windows 打开器路径迁移写入后校验失败：{v0}", {
+            v0: describeWindowsRegistryIssues(verified.issues),
+          }),
+        );
+      }
+      await this.notifyAssociationChanged(helperPath);
+    } catch (migrationError) {
+      try {
+        const rollbackReport =
+          await this.runRegistryAction<NativeRegistryInspectionReport>(
+            "ApplyRegistration",
+            helperPath,
+            { values: currentValues },
+          );
+        const rolledBack = inspectionFromReport(currentValues, rollbackReport);
+        if (rolledBack.state !== "complete") {
+          throw new Error(
+            t("Windows 打开器路径迁移回滚校验失败：{v0}", {
+              v0: describeWindowsRegistryIssues(rolledBack.issues),
+            }),
+          );
+        }
+        await this.notifyAssociationChanged(helperPath).catch(() => undefined);
+      } catch (rollbackError) {
+        throw new AggregateError(
+          [migrationError, rollbackError],
+          t("Windows 打开器路径迁移失败，且未能验证旧注册已恢复。"),
+        );
+      }
+      throw migrationError;
+    }
+  }
+
   async queryCurrentDefaults(
     helperPath: string,
     extensions: string[],

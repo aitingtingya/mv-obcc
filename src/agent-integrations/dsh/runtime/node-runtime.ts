@@ -1,9 +1,10 @@
 import { createHash, randomUUID } from "node:crypto";
 import { createWriteStream, promises as fs } from "node:fs";
 import https from "node:https";
-import os from "node:os";
 import path from "node:path";
-import { t } from "../i18n";
+import { t } from "../../../i18n";
+import { prependExecutableDirectory } from "../../../process-environment";
+import { mvAideTempDirectory } from "../../../storage/temp-paths";
 import {
   normalizeProcessEnvironment,
   powerShellLiteral,
@@ -12,20 +13,16 @@ import {
   type ProcessOptions,
   type ProcessResult,
   windowsPowerShellEncodingLines,
-} from "../process-runner";
-import { findSystemExecutable } from "../universal-mcp-stdio-command";
-import type { DshInstallTarget } from "./dsh-settings";
+} from "../../../process-runner";
+import { findSystemExecutable } from "../../../universal-mcp-stdio-command";
+import type { DshInstallTarget } from "../settings";
+import { dshVaultNodeDirectory } from "../paths";
 import {
   createDshInstallWorkspace,
   isDshInstallWorkspacePath,
   removeDshInstallWorkspace,
-} from "./dsh-install-workspace";
-
-export const DSH_NODE_RUNTIME_VERSION = "v24.18.1";
-const NODE_DIST_BASE = `https://nodejs.org/dist/${DSH_NODE_RUNTIME_VERSION}`;
-const NODE_FOLDER = `node-${DSH_NODE_RUNTIME_VERSION}`;
-
-export const DSH_NODE_RELATIVE_PATH = "mv-aide/dsh/node";
+} from "./install-workspace";
+import { fetchText, normalizeRuntimeVersion, type TextFetcher } from "./package-update";
 
 export type DshNodeOrigin =
   | "vault-managed"
@@ -39,88 +36,20 @@ export type DshNodeOrigin =
   | "unknown";
 
 export interface NodeArtifact {
+  version: string;
   file: string;
   sha256: string;
   kind: "archive" | "pkg" | "msi";
   compression?: "gz" | "xz" | "zip";
 }
 
-const NODE_ARTIFACTS: Record<string, NodeArtifact> = {
-  "darwin-arm64-vault": {
-    file: `${NODE_FOLDER}-darwin-arm64.tar.gz`,
-    sha256: "eb02f7fab96d3d67de40c5ec8566096fcb4c2026728787683ae5a97eb612b941",
-    kind: "archive",
-    compression: "gz",
-  },
-  "darwin-x64-vault": {
-    file: `${NODE_FOLDER}-darwin-x64.tar.gz`,
-    sha256: "6fb20fceacbb157c2f95825b80df4a454a0f6d81cdcd7bb81eeae9147e0e76ec",
-    kind: "archive",
-    compression: "gz",
-  },
-  "darwin-arm64-global": {
-    file: `${NODE_FOLDER}.pkg`,
-    sha256: "c2e424f198dab39b5c68e8b06e0cdba9761dca9b5b432941fce6399d6460dabb",
-    kind: "pkg",
-  },
-  "darwin-x64-global": {
-    file: `${NODE_FOLDER}.pkg`,
-    sha256: "c2e424f198dab39b5c68e8b06e0cdba9761dca9b5b432941fce6399d6460dabb",
-    kind: "pkg",
-  },
-  "linux-arm64-vault": {
-    file: `${NODE_FOLDER}-linux-arm64.tar.xz`,
-    sha256: "7201e3a09dc825bac57867c81913e2b8f0ef87d04cb9082af4cda82f6ff3d88c",
-    kind: "archive",
-    compression: "xz",
-  },
-  "linux-x64-vault": {
-    file: `${NODE_FOLDER}-linux-x64.tar.xz`,
-    sha256: "d6c664df3f3f61458e8c277585571328522d705166723a7c7823a9253a4d15a0",
-    kind: "archive",
-    compression: "xz",
-  },
-  "linux-arm64-global": {
-    file: `${NODE_FOLDER}-linux-arm64.tar.xz`,
-    sha256: "7201e3a09dc825bac57867c81913e2b8f0ef87d04cb9082af4cda82f6ff3d88c",
-    kind: "archive",
-    compression: "xz",
-  },
-  "linux-x64-global": {
-    file: `${NODE_FOLDER}-linux-x64.tar.xz`,
-    sha256: "d6c664df3f3f61458e8c277585571328522d705166723a7c7823a9253a4d15a0",
-    kind: "archive",
-    compression: "xz",
-  },
-  "win32-arm64-vault": {
-    file: `${NODE_FOLDER}-win-arm64.zip`,
-    sha256: "ffbc7d3e1baf6804f7431ff94f19b9a885a650568c93ea4ccb1bb0038f6af825",
-    kind: "archive",
-    compression: "zip",
-  },
-  "win32-x64-vault": {
-    file: `${NODE_FOLDER}-win-x64.zip`,
-    sha256: "ec56b84a7551893ab2324ebdfdc4ab974a63b4781162600b68a1293cc3e53765",
-    kind: "archive",
-    compression: "zip",
-  },
-  "win32-arm64-global": {
-    file: `${NODE_FOLDER}-arm64.msi`,
-    sha256: "c3897213475a089b526c8ffb5a84b0151d03eb2206d3e38aac44b2c053719b81",
-    kind: "msi",
-  },
-  "win32-x64-global": {
-    file: `${NODE_FOLDER}-x64.msi`,
-    sha256: "af4a0651a26f04ac240f00fec872f305547ca2aa56301c41dfd63a29eb2ab836",
-    kind: "msi",
-  },
-};
-
 export interface DshNodeRuntimeInstallOptions {
   platform?: NodeJS.Platform;
   arch?: string;
   runner?: typeof runProcess;
   downloader?: typeof downloadAndVerify;
+  checksumFetcher?: TextFetcher;
+  environment?: NodeJS.ProcessEnv;
 }
 
 const MANAGED_NODE_ORIGINS = new Set<DshNodeOrigin>([
@@ -132,22 +61,8 @@ const MANAGED_NODE_ORIGINS = new Set<DshNodeOrigin>([
   "asdf",
 ]);
 
-export function isDshNodeRuntimeTarget(version: string | undefined): boolean {
-  const parse = (value: string | undefined): readonly number[] | null => {
-    const match = /^v?(\d+)\.(\d+)\.(\d+)$/u.exec(value ?? "");
-    return match ? [Number(match[1]), Number(match[2]), Number(match[3])] : null;
-  };
-  const actual = parse(version);
-  const target = parse(DSH_NODE_RUNTIME_VERSION);
-  if (!actual || !target) return false;
-  for (let index = 0; index < target.length; index += 1) {
-    if (actual[index] !== target[index]) return actual[index] > target[index];
-  }
-  return true;
-}
-
 export function dshNodeDir(vaultRoot: string): string {
-  return path.join(vaultRoot, ...DSH_NODE_RELATIVE_PATH.split("/"));
+  return dshVaultNodeDirectory(vaultRoot);
 }
 
 function nodeExecutableAt(directory: string, platform: NodeJS.Platform): string {
@@ -175,14 +90,63 @@ function normalizedArch(arch: string): "arm64" | "x64" | null {
   return null;
 }
 
+export async function fetchNodeChecksums(
+  version: string,
+  fetcher: TextFetcher = fetchText,
+): Promise<Map<string, string>> {
+  const body = await fetcher(`https://nodejs.org/dist/${version}/SHASUMS256.txt`);
+  const checksums = new Map<string, string>();
+  for (const line of body.split(/\r?\n/u)) {
+    const match = /^([a-f0-9]{64})\s+\*?(.+)$/iu.exec(line.trim());
+    if (match) checksums.set(match[2], match[1].toLowerCase());
+  }
+  if (checksums.size === 0) {
+    throw new Error(t("Node.js {version} 官方校验清单为空或格式无效。", { version }));
+  }
+  return checksums;
+}
+
 export function nodeArtifactFor(
+  version: string,
   target: DshInstallTarget,
   platform: NodeJS.Platform = process.platform,
   arch: string = process.arch,
+  checksums: ReadonlyMap<string, string> = new Map(),
 ): NodeArtifact | null {
   const supportedArch = normalizedArch(arch);
   if (!supportedArch) return null;
-  return NODE_ARTIFACTS[`${platform}-${supportedArch}-${target}`] ?? null;
+  const folder = `node-${version}`;
+  let file: string;
+  let kind: NodeArtifact["kind"];
+  let compression: NodeArtifact["compression"];
+  if (platform === "darwin") {
+    if (target === "global") {
+      file = `${folder}.pkg`;
+      kind = "pkg";
+    } else {
+      file = `${folder}-darwin-${supportedArch}.tar.gz`;
+      kind = "archive";
+      compression = "gz";
+    }
+  } else if (platform === "linux") {
+    file = `${folder}-linux-${supportedArch}.tar.xz`;
+    kind = "archive";
+    compression = "xz";
+  } else if (platform === "win32") {
+    if (target === "global") {
+      file = `${folder}-${supportedArch}.msi`;
+      kind = "msi";
+    } else {
+      file = `${folder}-win-${supportedArch}.zip`;
+      kind = "archive";
+      compression = "zip";
+    }
+  } else {
+    return null;
+  }
+  const sha256 = checksums.get(file);
+  if (!sha256) return null;
+  return { version, file, sha256, kind, compression };
 }
 
 export function classifyNodeOrigin(
@@ -247,7 +211,9 @@ export async function runElevatedCommand(
     );
   }
   if (platform === "win32") {
-    const outputDirectory = await fs.mkdtemp(path.join(os.tmpdir(), "mv-aide-elevated-"));
+    const elevatedRoot = mvAideTempDirectory("dsh/elevated");
+    await fs.mkdir(elevatedRoot, { recursive: true, mode: 0o700 });
+    const outputDirectory = await fs.mkdtemp(path.join(elevatedRoot, "operation-"));
     await fs.chmod(outputDirectory, 0o700).catch(() => undefined);
     const outputPath = path.join(outputDirectory, "output.log");
     const normalizedEnvironment = normalizeProcessEnvironment(options.env, "win32") ?? {};
@@ -277,14 +243,16 @@ export async function runElevatedCommand(
       "exit $mvAideExitCode",
     ].join("; ");
     const encoded = Buffer.from(innerScript, "utf16le").toString("base64");
-    const powershell = findSystemExecutable("powershell.exe") ?? "powershell.exe";
+    const powershell = findSystemExecutable("powershell.exe", "win32", normalizedEnvironment) ?? "powershell.exe";
     const script = [
       "$ErrorActionPreference = 'Stop'",
       ...windowsPowerShellEncodingLines(),
       "try {",
-      `$p = Start-Process -FilePath ${powerShellLiteral(powershell)}`,
-      `-ArgumentList @('-NoLogo','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-EncodedCommand',${powerShellLiteral(encoded)})`,
-      "-Verb RunAs -Wait -PassThru",
+      [
+        `$p = Start-Process -FilePath ${powerShellLiteral(powershell)}`,
+        `-ArgumentList @('-NoLogo','-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-EncodedCommand',${powerShellLiteral(encoded)})`,
+        "-Verb RunAs -Wait -PassThru -WindowStyle Hidden",
+      ].join(" "),
       "$mvAideExitCode = $p.ExitCode",
       `if (Test-Path -LiteralPath ${powerShellLiteral(outputPath)}) { $mvAideOutput = [IO.File]::ReadAllText(${powerShellLiteral(outputPath)}, [Text.Encoding]::UTF8); if ($mvAideExitCode -eq 0) { [Console]::Out.Write($mvAideOutput) } else { [Console]::Error.Write($mvAideOutput) } }`,
       "} catch {",
@@ -305,7 +273,7 @@ export async function runElevatedCommand(
       await fs.rm(outputDirectory, { recursive: true, force: true }).catch(() => undefined);
     }
   }
-  const pkexec = findSystemExecutable("pkexec") ?? "/usr/bin/pkexec";
+  const pkexec = findSystemExecutable("pkexec", platform, options.env ?? process.env) ?? "/usr/bin/pkexec";
   const envArgs = Object.entries(options.env ?? {})
     .filter((entry): entry is [string, string] => typeof entry[1] === "string")
     .map(([key, value]) => `${key}=${value}`);
@@ -371,7 +339,7 @@ export async function downloadAndVerify(
   artifact: NodeArtifact,
   destination: string,
 ): Promise<void> {
-  await downloadFile(`${NODE_DIST_BASE}/${artifact.file}`, destination);
+  await downloadFile(`https://nodejs.org/dist/${artifact.version}/${artifact.file}`, destination);
   const actual = await sha256(destination);
   if (actual !== artifact.sha256) {
     throw new Error(t("Node.js 下载校验失败；文件已丢弃。"));
@@ -384,9 +352,10 @@ async function extractArchive(
   staging: string,
   runner: typeof runProcess,
   platform: NodeJS.Platform,
+  environment: NodeJS.ProcessEnv,
 ): Promise<ProcessResult> {
   if (artifact.compression === "zip" || platform === "win32") {
-    const powershell = findSystemExecutable("powershell.exe") ?? "powershell.exe";
+    const powershell = findSystemExecutable("powershell.exe", platform, environment) ?? "powershell.exe";
     return runner(
       powershell,
       [
@@ -395,12 +364,13 @@ async function extractArchive(
         "-Command",
         `Expand-Archive -LiteralPath ${powerShellLiteral(archive)} -DestinationPath ${powerShellLiteral(staging)} -Force`,
       ],
-      { timeoutMs: 300_000 },
+      { timeoutMs: 300_000, env: environment },
     );
   }
   const compressionFlag = artifact.compression === "gz" ? "-xzf" : "-xJf";
   return runner("/usr/bin/tar", [compressionFlag, archive, "-C", staging], {
     timeoutMs: 300_000,
+    env: environment,
   });
 }
 
@@ -417,6 +387,8 @@ async function installVaultNode(
   workspaceRoot: string,
   runner: typeof runProcess,
   platform: NodeJS.Platform,
+  targetVersion: string,
+  environment: NodeJS.ProcessEnv,
 ): Promise<ProcessResult> {
   const target = dshNodeDir(vaultRoot);
 
@@ -426,7 +398,7 @@ async function installVaultNode(
   const tmpStaging = path.join(workspaceRoot, "vault-node-staging");
   await fs.rm(tmpStaging, { recursive: true, force: true });
   await fs.mkdir(tmpStaging, { recursive: true });
-  const extracted = await extractArchive(artifact, archive, tmpStaging, runner, platform);
+  const extracted = await extractArchive(artifact, archive, tmpStaging, runner, platform, environment);
   if (extracted.code !== 0) {
     await fs.rm(tmpStaging, { recursive: true, force: true });
     return extracted;
@@ -438,8 +410,13 @@ async function installVaultNode(
   }
   const preflight = await runner(nodeExecutableAt(extractedRoot, platform), ["--version"], {
     timeoutMs: 30_000,
+    env: environment,
   });
-  if (preflight.code !== 0 || !processOutput(preflight).includes(DSH_NODE_RUNTIME_VERSION)) {
+  if (
+    preflight.code !== 0
+    || normalizeRuntimeVersion(processOutput(preflight).split(/\r?\n/u)[0] ?? "")
+      !== normalizeRuntimeVersion(targetVersion)
+  ) {
     await fs.rm(tmpStaging, { recursive: true, force: true });
     return {
       code: null,
@@ -466,8 +443,13 @@ async function installVaultNode(
     await fs.rename(stagedRoot, target);
     const verified = await runner(managedNodeExecutable(vaultRoot, platform), ["--version"], {
       timeoutMs: 30_000,
+      env: environment,
     });
-    if (verified.code !== 0 || !processOutput(verified).includes(DSH_NODE_RUNTIME_VERSION)) {
+    if (
+      verified.code !== 0
+      || normalizeRuntimeVersion(processOutput(verified).split(/\r?\n/u)[0] ?? "")
+        !== normalizeRuntimeVersion(targetVersion)
+    ) {
       throw new Error(processOutput(verified) || t("Node.js 安装后校验失败。"));
     }
     await fs.rm(backup, { recursive: true, force: true });
@@ -495,7 +477,9 @@ async function installGlobalNode(
   archive: string,
   runner: typeof runProcess,
   platform: NodeJS.Platform,
+  environment: NodeJS.ProcessEnv,
 ): Promise<ProcessResult> {
+  const privilegedEnvironment: NodeJS.ProcessEnv = { PATH: environment.PATH };
   if (artifact.kind === "pkg") {
     // macOS Installer delegates package parsing to a system service that
     // cannot traverse a vault-owned 0700 directory. Stage only the already
@@ -510,7 +494,7 @@ async function installGlobalNode(
       return await runElevatedCommand(
         "/usr/sbin/installer",
         ["-pkg", stagedPackage, "-target", "/"],
-        { timeoutMs: 900_000 },
+        { timeoutMs: 900_000, env: privilegedEnvironment },
         runner,
         platform,
       );
@@ -522,7 +506,7 @@ async function installGlobalNode(
     return runElevatedCommand(
       "msiexec.exe",
       ["/i", archive, "/passive", "/norestart"],
-      { timeoutMs: 900_000 },
+      { timeoutMs: 900_000, env: privilegedEnvironment },
       runner,
       platform,
     );
@@ -531,7 +515,7 @@ async function installGlobalNode(
   const script = path.join(workspaceRoot, `install-node-${randomUUID()}.sh`);
   try {
     await fs.mkdir(staging, { recursive: true });
-    const extracted = await extractArchive(artifact, archive, staging, runner, platform);
+    const extracted = await extractArchive(artifact, archive, staging, runner, platform, environment);
     if (extracted.code !== 0) return extracted;
     const root = await firstDirectory(staging);
     if (!root) return { code: null, stdout: "", stderr: t("Node.js 压缩包没有有效的运行时目录。"), timedOut: false };
@@ -540,7 +524,7 @@ async function installGlobalNode(
       `#!/bin/sh\nset -eu\ncp -a ${shellQuote(`${root}/.`)} /usr/local/\n`,
       { encoding: "utf8", mode: 0o700 },
     );
-    return runElevatedCommand("/bin/sh", [script], { timeoutMs: 900_000 }, runner, platform);
+    return runElevatedCommand("/bin/sh", [script], { timeoutMs: 900_000, env: privilegedEnvironment }, runner, platform);
   } finally {
     await fs.rm(staging, { recursive: true, force: true });
     await fs.rm(script, { force: true });
@@ -549,34 +533,46 @@ async function installGlobalNode(
 
 async function upgradeManagedNode(
   origin: DshNodeOrigin,
+  targetVersion: string,
   runner: typeof runProcess,
+  environment: NodeJS.ProcessEnv,
 ): Promise<ProcessResult | null> {
-  const target = DSH_NODE_RUNTIME_VERSION.slice(1);
+  const target = normalizeRuntimeVersion(targetVersion);
   const command = (executable: string | null, args: string[]): Promise<ProcessResult> | null =>
-    executable ? runner(executable, args, { timeoutMs: 900_000 }) : null;
+    executable ? runner(executable, args, { timeoutMs: 900_000, env: environment }) : null;
   if (origin === "homebrew") {
-    const brew = findSystemExecutable("brew");
+    const brew = findSystemExecutable("brew", process.platform, environment);
     if (!brew) return null;
-    const installed = await runner(brew, ["install", "node@24"], { timeoutMs: 900_000 });
-    if (installed.code !== 0 && !/already installed/iu.test(processOutput(installed))) return installed;
-    return runner(brew, ["link", "--overwrite", "--force", "node@24"], { timeoutMs: 300_000 });
+    const brewEnvironment = prependExecutableDirectory(environment, brew);
+    const updated = await runner(brew, ["update"], { timeoutMs: 900_000, env: brewEnvironment });
+    if (updated.code !== 0) return updated;
+    const upgraded = await runner(brew, ["upgrade", "node"], { timeoutMs: 900_000, env: brewEnvironment });
+    if (upgraded.code === 0 || /already (?:up-to-date|installed)|up to date/iu.test(processOutput(upgraded))) {
+      return upgraded;
+    }
+    if (/not installed|no available formula/iu.test(processOutput(upgraded))) {
+      return runner(brew, ["install", "node"], { timeoutMs: 900_000, env: brewEnvironment });
+    }
+    return upgraded;
   }
-  if (origin === "fnm") return command(findSystemExecutable("fnm"), ["install", target]);
-  if (origin === "volta") return command(findSystemExecutable("volta"), ["install", `node@${target}`]);
-  if (origin === "mise") return command(findSystemExecutable("mise"), ["use", "--global", `node@${target}`]);
+  if (origin === "fnm") return command(findSystemExecutable("fnm", process.platform, environment), ["install", target]);
+  if (origin === "volta") return command(findSystemExecutable("volta", process.platform, environment), ["install", `node@${target}`]);
+  if (origin === "mise") return command(findSystemExecutable("mise", process.platform, environment), ["use", "--global", `node@${target}`]);
   if (origin === "asdf") {
-    const asdf = findSystemExecutable("asdf");
+    const asdf = findSystemExecutable("asdf", process.platform, environment);
     if (!asdf) return null;
+    const asdfEnvironment = prependExecutableDirectory(environment, asdf);
     const installed = await runner(asdf, ["install", "nodejs", target], {
       timeoutMs: 900_000,
+      env: asdfEnvironment,
     });
     if (installed.code !== 0) return installed;
-    return runner(asdf, ["global", "nodejs", target], { timeoutMs: 300_000 });
+    return runner(asdf, ["global", "nodejs", target], { timeoutMs: 300_000, env: asdfEnvironment });
   }
   if (origin === "nvm") {
-    const shell = process.env.SHELL || "/bin/sh";
+    const shell = environment.SHELL || process.env.SHELL || "/bin/sh";
     const script = `[ -s \"$NVM_DIR/nvm.sh\" ] && . \"$NVM_DIR/nvm.sh\" && nvm install ${shellQuote(target)} && nvm alias default ${shellQuote(target)}`;
-    return runner(shell, ["-lc", script], { timeoutMs: 900_000 });
+    return runner(shell, ["-lc", script], { timeoutMs: 900_000, env: environment });
   }
   return null;
 }
@@ -584,14 +580,16 @@ async function upgradeManagedNode(
 export async function installOrUpgradeNodeRuntime(
   vaultRoot: string,
   target: DshInstallTarget,
+  targetVersion: string,
   existingOrigin: DshNodeOrigin | null = null,
   options: DshNodeRuntimeInstallOptions = {},
 ): Promise<ProcessResult> {
   const platform = options.platform ?? process.platform;
   const arch = options.arch ?? process.arch;
   const runner = options.runner ?? runProcess;
+  const environment = options.environment ?? process.env;
   if (target === "global" && existingOrigin && MANAGED_NODE_ORIGINS.has(existingOrigin)) {
-    const managed = await upgradeManagedNode(existingOrigin, runner);
+    const managed = await upgradeManagedNode(existingOrigin, targetVersion, runner, environment);
     return managed ?? {
       code: null,
       stdout: "",
@@ -599,12 +597,23 @@ export async function installOrUpgradeNodeRuntime(
       timedOut: false,
     };
   }
-  const artifact = nodeArtifactFor(target, platform, arch);
+  let artifact: NodeArtifact | null = null;
+  try {
+    const checksums = await fetchNodeChecksums(targetVersion, options.checksumFetcher ?? fetchText);
+    artifact = nodeArtifactFor(targetVersion, target, platform, arch, checksums);
+  } catch (error) {
+    return {
+      code: null,
+      stdout: "",
+      stderr: error instanceof Error ? error.message : String(error),
+      timedOut: false,
+    };
+  }
   if (!artifact) {
     return {
       code: null,
       stdout: "",
-      stderr: t("当前平台或架构没有受支持的 Node.js 安装包。"),
+      stderr: t("当前平台或架构没有受支持的 Node.js 安装包，或官方校验清单中缺少该安装包。"),
       timedOut: false,
     };
   }
@@ -614,8 +623,8 @@ export async function installOrUpgradeNodeRuntime(
   try {
     await (options.downloader ?? downloadAndVerify)(artifact, archive);
     result = await (target === "vault"
-      ? installVaultNode(vaultRoot, artifact, archive, workspace.root, runner, platform)
-      : installGlobalNode(workspace.root, artifact, archive, runner, platform));
+      ? installVaultNode(vaultRoot, artifact, archive, workspace.root, runner, platform, targetVersion, environment)
+      : installGlobalNode(workspace.root, artifact, archive, runner, platform, environment));
   } catch (error) {
     result = {
       code: null,

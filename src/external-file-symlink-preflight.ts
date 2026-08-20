@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import { t } from "./i18n";
-import os from "node:os";
 import path from "node:path";
+import { mvAideTempDirectory } from "./storage/temp-paths";
 import {
   createVerifiedFileSymlink,
   type FileSymlinkFailure,
@@ -117,10 +117,11 @@ export async function preflightExternalFileSymlink(
   const platform = options.platform ?? process.platform;
   const randomId = options.randomId?.() ??
     `${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-  const temporaryDirectory = options.temporaryDirectory?.() ?? os.tmpdir();
+  const temporaryDirectory =
+    options.temporaryDirectory?.() ?? mvAideTempDirectory("file-opener/symlink-probe");
   const sourceDir = path.join(
     temporaryDirectory,
-    `mv-aide-symlink-probe-${randomId}`,
+    `operation-${randomId}`,
   );
   const sourcePath = path.join(sourceDir, "probe.md");
   let normalizedMirror: string;

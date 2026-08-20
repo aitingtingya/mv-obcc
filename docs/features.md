@@ -2,7 +2,7 @@
 
 [返回 README](../README.md) | [English](features-en.md)
 
-本文档对应 mv-AIDE `0.9.7`，以设置页顺序记录功能、默认值、边界和故障处理。README 负责快速了解产品；本文档是功能行为的完整参考。
+本文档对应 mv-AIDE `0.9.10`，以设置页顺序记录功能、默认值、边界和故障处理。README 负责快速了解产品；本文档是功能行为的完整参考。
 
 ## 目录
 
@@ -11,14 +11,15 @@
 - [设置分区](#settings-map)
 - [1. IDE 桥接](#ide-bridge)
 - [2. mv-agent](#mv-agent)
-- [3. 划词助手](#selection-assistant)
-- [4. 行内补全](#inline-completion)
-- [5. 终端](#terminal)
-- [6. 源码编写辅助](#source-assist)
-- [7. Vim 增强](#vim)
-- [8. 默认文件打开器](#default-opener)
-- [9. 文件系统与浏览器](#filesystem-browser)
-- [API 提供商](#api-providers)
+- [3. 文件内AI助手](#in-document-ai)
+  - [API提供商](#api-providers)
+  - [划词助手](#selection-assistant)
+  - [行内补全](#inline-completion)
+- [4. 终端](#terminal)
+- [5. 源码编写辅助](#source-assist)
+- [6. Vim 增强](#vim)
+- [7. 默认文件打开器](#default-opener)
+- [8. 文件系统与浏览器](#filesystem-browser)
 - [跨功能关系](#cross-feature)
 - [命令与入口](#commands)
 - [平台支持矩阵](#platform-matrix)
@@ -29,7 +30,7 @@
 <a id="overview"></a>
 ## 概览
 
-mv-AIDE 是 Obsidian 桌面端 AI IDE 插件。九个功能分区彼此独立，通过一条受控主线共享编辑器上下文：Agent 能读取当前工作现场，AI 能直接参与文字编辑，终端和源码工具留在 Obsidian 内，Vim、默认打开器和文件浏览则扩展编辑器与操作系统的边界。
+mv-AIDE 是 Obsidian 桌面端 AI IDE 插件。八个主设置分区保持功能边界，其中「文件内AI助手」统一收纳 API 提供商、划词助手和行内补全。各功能通过受控主线共享必要的编辑器上下文：Agent 能读取当前工作现场，AI 能直接参与文字编辑，终端和源码工具留在 Obsidian 内，Vim、默认打开器和文件浏览则扩展编辑器与操作系统的边界。
 
 设计原则：
 
@@ -60,15 +61,16 @@ mv-AIDE 是 Obsidian 桌面端 AI IDE 插件。九个功能分区彼此独立，
 | --- | --- | --- | --- |
 | 1 | IDE 桥接 | Claude 开；Codex、通用 MCP、dsh 关 | Agent 上下文、工具、Diff 审核 |
 | 2 | mv-agent | 关 | 内置 DSH：环境安装、插件注入、视图与库外策略 |
-| 3 | 划词助手 | 关 | 对 Markdown、PDF、网页选区调用 LLM |
-| 4 | 行内补全 | 关 | Markdown ghost text 补全 |
-| 5 | 终端 | 可用，默认右侧打开 | 系统 Shell、路径联动、MCP 输出 |
-| 6 | 源码编写辅助 | 开；仅内置 Markdown profile | 非 md 后缀、Code Suite、Lint、TeX |
-| 7 | Vim 增强 | 所有后缀均关 | 独立 Vim 引擎与仓库级 vimrc |
-| 8 | 默认文件打开器 | 关 | 系统文件关联与库外文件镜像 |
-| 9 | 文件系统与浏览器 | 三个入口均开 | 下载、历史、任意目录浏览 |
+| 3 | 文件内AI助手 | 三个子区默认折叠；划词与行内开关均关 | API 提供商、划词任务、Markdown ghost text |
+| 4 | 终端 | 可用，默认右侧打开 | 系统 Shell、路径联动、MCP 输出 |
+| 5 | 源码编写辅助 | 开；仅内置 Markdown profile | 非 md 后缀、Code Suite、Lint、TeX |
+| 6 | Vim 增强 | 所有后缀均关 | 独立 Vim 引擎与仓库级 vimrc |
+| 7 | 默认文件打开器 | 关 | 系统文件关联与库外文件镜像 |
+| 8 | 文件系统与浏览器 | 三个入口均开 | 下载、历史、任意目录浏览 |
 
-界面语言默认中文。所有设置保存在当前 vault 的插件数据中，不跨 vault 自动同步。
+「文件内AI助手」内部顺序固定为「API提供商」、「划词助手」、「行内补全」。三个子区初始均折叠；展开状态只在当前设置页会话中记忆，不写入新配置字段。这一层级只重组设置入口：提供商、划词和行内补全仍使用原有设置、默认值、保存方式和运行链路。
+
+界面语言默认中文。持久化设置保存在当前 vault 的插件数据中，不跨 vault 自动同步。
 
 <a id="ide-bridge"></a>
 ## 1. IDE 桥接
@@ -79,19 +81,17 @@ IDE 桥接把 Obsidian 的活动上下文提供给 Claude Code、Codex CLI、通
 
 | 设置 | 默认值 | 行为 |
 | --- | --- | --- |
-| 启用 Claude Code IDE 功能 | 开 | 写入统一 discovery lock（`~/.mv-aide/ide`）并在 `~/.claude/ide` 写 Claude 兼容镜像，注册 `mv-aide` MCP，并管理必要 hooks/config |
+| 启用 Claude Code IDE 功能 | 开 | 写入统一 discovery lock（`~/.mv-aide/ide`）并在 `~/.claude/ide` 写 Claude 兼容镜像，注册 `mv-aide` MCP |
 | 启用 Codex IDE 功能 | 关 | 写入受管 MCP 配置块，提供 `/ide` 上下文 |
 | 启用 dsh IDE 功能 | 关 | 启动 IDE 桥接并把权威 discovery lock 写入 `~/.mv-aide/ide`，使 dsh 中的 mv-AIDE 插件可连接本仓库 |
 | 暴露 mv-AIDE 协议 | 关 | 向其它 MCP 客户端开放独立授权的 HTTP/stdio 接口 |
-| 自动管理当前仓库 Claude 设置 | 开 | 仅管理当前仓库被插件接管的 `ANTHROPIC_BASE_URL` |
-| 上游模式 | 原生 | 原生不改请求；兼容模式把 IDE system 上下文移动到 user 消息，不复制两份 |
-| 支持所有活动页面 | 关 | 开启后追踪任意 Obsidian 标签；会精确忽略当前 Agent 自己的终端 |
+| 支持所有活动页面 | 关 | 开启后追踪任意非终端 Obsidian 标签；终端始终排除并保留最近一次合法被动上下文 |
 | 追踪 Markdown / PDF / Web Viewer | 开 / 开 / 开 | “支持所有活动页面”关闭时分别控制页面类型 |
 | 切换标签时保留选区高亮 | 开 | 离开页面后保留最后选区的视觉提示，不改变发送内容 |
 | 推送 Lint 错误 | 开 | 将 Source Assist 诊断提供给 Agent |
 | 包含标题面包屑 | 开 | 给选区补充所在标题层级 |
 
-关闭 Claude 或 Codex 开关时，插件只清理由自己写入的注册和受管配置，不改客户端其它配置。Claude Code 可用 `/ide` 验证 IDE 连接，并用 `claude mcp get mv-aide` 查看注册；Codex 配置以受管块写入 `~/.codex/config.toml` 的 `mcp_servers.mv_aide_obsidian`。修改“支持所有活动页面”后应重启 Claude Code。
+关闭 Claude 或 Codex 开关时，插件只清理由自己写入的注册和 discovery 信息，不改客户端其它配置。Claude Code 可用 `/ide` 验证 IDE 连接，并用 `claude mcp get mv-aide` 查看注册；Codex 配置以受管块写入 `~/.codex/config.toml` 的 `mcp_servers.mv_aide_obsidian`。“支持所有活动页面”可实时切换，无需为终端识别安装 hook 或重启 Agent。
 
 保留选区高亮只是一层视觉状态：切到终端等标签后仍能看到 Markdown、PDF 或网页的最后选区；回到原页面空点或重新划词后恢复 Obsidian 原有行为。
 
@@ -157,15 +157,15 @@ pattern = "Write(F:/path/to/vault/**)"
 
 Kimi 当前只有放行/阻止，没有可编程“批准”；接受 Diff 后若要跳过原生确认，仍需 `permission.rules`。权限规则只在会话启动时加载，glob 不自动匹配点目录；审核页中的手工改动不能通过 `updatedInput` 回传。hook 上限 600 秒且超时/崩溃为 fail-open；权限模式识别依赖未公开的 `wire.jsonl` 中 `permission.set_mode` 事件，客户端升级后可能变化。
 
-### 上游兼容与回退
+### 桥接与回退
 
-原生模式不改 Agent 请求。兼容模式只用于自定义 Anthropic 上游：它把 IDE system 上下文移动到同一请求的 user 消息中，并可把当前仓库的 `ANTHROPIC_BASE_URL` 临时指向本地兼容端点。Anthropic 上游地址留空时自动读取 Claude 配置，设置页同时显示当前识别结果；关闭后只恢复插件接管前的值。
+IDE 桥接不再改写 Agent 请求，也不提供任意上游代理；被动上下文通过 IDE 协议投递，主动能力通过 IDE/MCP 工具调用。
 
-桥接失败时，编辑器、划词助手、行内补全、终端和源码工具仍可独立运行。“重启桥接”会重建本地服务与统一 discovery lock（含 Claude 兼容镜像）；“恢复插件管理的 Claude 设置”只恢复被接管的 `ANTHROPIC_BASE_URL`。也可使用“重新注册”或“清理注册”，清理不会删除其它 MCP 服务。
+桥接失败时，编辑器、划词助手、行内补全、终端和源码工具仍可独立运行。“重启桥接”会重建本地服务与统一 discovery lock（含 Claude 兼容镜像）。也可使用“重新注册”或“清理注册”，清理不会删除其它 MCP 服务。
 
 ### dsh 支持
 
-dsh 是第四个已适配 Agent。开启「启用 dsh IDE 功能」后，插件启动 IDE 桥接并把权威 discovery lock 写入 `~/.mv-aide/ide`，dsh 中安装的 `@mv-aide/dsh-plugin` 会扫描该 lock 文件，用与 Claude Code 相同的本地 JSON-RPC 协议连接本仓库（`127.0.0.1`、端口 `47000 + 仓库种子 % 1500`）。连接后 dsh 侧出现：
+dsh 是第四个已适配 Agent。开启「启用 dsh IDE 功能」后，插件启动 IDE 桥接并把权威 discovery lock 写入 `~/.mv-aide/ide`，dsh 中安装的 `@mv-aide/mv-agent` 会扫描该 lock 文件，用与 Claude Code 相同的本地 JSON-RPC 协议连接本仓库（`127.0.0.1`、端口 `47000 + 仓库种子 % 1500`）。连接后 dsh 侧出现：
 
 - `/mv-aide` 命令：`status`（本会话连接状态与桥信息）、`bridges`（列出所有 IDE 桥）、`connect <序号|端口|路径|auto>`（单会话手动选择/切回自动）、`tools`（列出 IDE 工具）、`selection`（读取当前选区）、`call <name> [json]`（调用任意桥接工具）。桥接选择按 dsh 会话独立持久化，重启 dsh 后仍恢复。在 `/` 菜单选中 `mv-aide` 后会先把命令补全进输入框（`/mv-aide `，选 `connect` 后为 `/mv-aide connect `），再继续弹出二级字段（`connect` 再弹桥列表、`call` 再弹工具列表），选中叶子才执行；选择器自身的错误以中文显示。
 - `mv_aide__*` 原生工具（如 `mv_aide__getLatestSelection`、`mv_aide__openFile`），与本章「上下文与工具」的公共工具一一对应，遵守同一组工具开关。
@@ -189,19 +189,20 @@ mv-agent 把 DeepSeek Harness（DSH）内嵌进 Obsidian：直接使用 DSH Web 
 
 ### 运行环境
 
-设置页把运行环境拆成 Node.js、DSH、pnpm 和插件注入四层，每层都有独立检测结果和安装、升级、注入或修复按钮。
+设置页把运行环境拆成 Node.js、DSH、pnpm 和插件注入四层。点击“检测”时先读取本地真实版本，再检查可安装的目标版本；旧于目标时显示目标版本并提供“升级”，已经等于目标时显示“重装”。版本检查不会在打开设置页时自动联网。
 
-- DSH 支持 Node.js `22.19+` 的 22.x 或 `24+`。mv-AIDE 的仓库运行时固定使用经过 SHA-256 校验的官方 Node.js `24.18.1`。
-- 缺失 Node.js、DSH 或 pnpm 时，点击对应按钮后选择“当前仓库”或“全局”；已安装但需要升级时严格在原位置执行，不再次询问位置。
-- 点击下层项目会先补齐它依赖的上层。例如插件注入会依次确保 Node.js、DSH 和 pnpm 可用，每层完成后都重新读取真实状态。
+- DSH 支持 Node.js `22.19+` 的 22.x 或 `24+`；mv-AIDE 主动安装或升级 Node.js 时选择 Node 官方当前最新的 `24+` 稳定版本，并从同一版本目录读取 `SHASUMS256.txt` 校验安装包。
+- DSH 的更新目标跟随 npm `@deepseek-ai/dsh@next`，pnpm 跟随 `pnpm@latest`。dist-tag 只用于解析目标版本，真正安装时使用解析出的精确版本号。
+- 缺失 Node.js、DSH 或 pnpm 时，点击对应按钮后选择“当前仓库”或“全局”；已安装后的升级或重装严格在原位置执行，不再次询问位置。若本地版本高于当前发布通道目标，不会自动降级。
+- 点击下层项目会先补齐它依赖的上层。例如插件注入会依次确保 Node.js、DSH 和 pnpm 可用，每层完成后都重新读取真实状态。安装命令返回成功并不等于升级成功：最终探测到的版本必须与本次精确目标一致，否则操作会报告失败。
 - 仓库安装的最终运行时位于 `<vault>/mv-aide/dsh/`；下载、npm 缓存、安装脚本和 staging 仅存在于单次操作的临时工作区，成功、失败或取消后都会清理。全局 Node.js、DSH 或 pnpm 安装需要写受保护目录时，会弹出 macOS 管理员确认、Windows UAC 或 Linux `pkexec`，用户拒绝后停止且不会降级到仓库。
 - macOS 全局 Node 安装会在 SHA-256 校验通过后，把公开的官方 `.pkg` 临时放到 `/private/tmp` 供系统安装服务读取；安装结束、失败或取消后都会删除该临时文件。
-- 仓库和全局同时存在时优先使用仓库版本。插件注入写入当前 DSH web profile；缺失时显示“注入”，旧版或不完整时显示“修复”，已就绪时可“更新”。
-- 安装下载只由用户点击触发。Node.js 下载先写入仓库临时目录，校验失败或安装取消会删除临时文件并保留原运行时。
+- 仓库和全局同时存在时优先使用仓库版本。运行环境检测先解析当前用户真实命令环境：macOS/Linux 使用登录交互 shell 的 PATH，Windows 合并当前进程与 User/Machine PATH；Node 与 npm 必须成对且可执行。全局 DSH/pnpm 优先从该 npm 的 global prefix 定位，找不到时再从同一用户命令环境 PATH 查找；版本查询、安装、升级与安装后验证都复用同一环境，避免检测到 A、执行却落到 B。插件注入写入当前 DSH web profile；缺失时显示“注入”，旧版或不完整时显示“修复”，已就绪时可“更新”。
+- 安装下载只由用户点击触发。Node.js 下载先写入操作级临时目录，校验失败或安装取消会删除临时文件并保留原运行时。
 
 ### 插件注入与 DSH 侧能力
 
-「插件注入」把 `@mv-aide/dsh-plugin` 注册进当前 DSH web profile 的 patch 层，DSH 热加载该目录，无需重启。注入后（能力细节见第 1 章「dsh 支持」）：
+「插件注入」把两个公开包写入当前 DSH web profile 的 `node_modules` 并注册到 patch 层：`@mv-aide/mv-agent` 提供桥接、命令和原生工具，`@mv-aide/mv-dsh-manager` 提供插件、技能和预设管理。落盘后会用 `dsh --profile web --dump-config` 校验真实加载状态；注入、修复或更新改变插件图时，mv-AIDE 会协调重启已运行的 DSH 一次，使浏览器端模块图与新状态一致。注入后（能力细节见第 1 章「dsh 支持」）：
 
 - `/mv-aide status | tools | bridges | connect <序号|端口|路径|auto> | selection | call <name> [json]` 命令；
 - 与公共工具开关对应的 `mv_aide__*` 原生工具；
@@ -211,7 +212,7 @@ mv-agent 把 DeepSeek Harness（DSH）内嵌进 Obsidian：直接使用 DSH Web 
 
 mv-agent 设置页和 DSH Web 页注入的 `/api/mv-aide/*` 管理面板现在执行真实安装而不是只写配置：
 
-- **导入插件**：本地目录先经 `dsh plugin --profile web add file:<目录>` 安装到 `profiles/web/node_modules`，再注册 patch 行；`dsh` 不可用时回退为 `file:` 热加载并明确提示。卸载同时移除 patch 行与 profile 依赖。
+- **导入插件**：包名或本地路径统一交给 `dsh plugin --profile web add <spec>`；本地路径会转换为绝对 `file:<路径>` 规格。成功后必须能从 web profile 的 manifest 确认 package 依赖，这条链路不会额外追加 patch 行。`dsh plugin add` 不可用或返回失败时会直接报错，**不做 `file:` 热加载回退**。对 package 插件的卸载同样通过 `dsh plugin remove` 并校验 manifest。
 - **克隆预设**：复制源预设的完整目录（含 `agent.cordis.yml` 与本地插件文件），新预设可被 DSH 正常挂载；不再写 DSH 不认识的 `base:` 字段。
 - **预设启停**：用户预设通过目录改名（`<id>.disabled`）真实隐藏/恢复，不再写 DSH 不读取的 `disabled:` 字段；系统预设不支持停用。
 - **新建技能**：写入 `$DSH_HOME/skills`（DSH 的真实用户技能根，热监听），并强制名称符合 DSH 的 kebab-case 规则，避免生成被静默忽略的技能。
@@ -229,19 +230,37 @@ dsh 插件包装写文件工具：当一次写入需要 DSH 的权限确认（`w
 
 ### 被动上下文
 
-桥接把选区变化推给 dsh 插件，插件注入 Agent 的 inbox，不需要 Agent 调用工具。两种投递模式（设置 → mv-agent → 被动推送）：
+桥接持续记录最新合法选区状态，但不在选区变化时即时注入 Agent。用户向 dsh 发送消息时，插件把最新快照注入该 Agent 的 inbox；Agent 工作期间不会因为页面/选区变化持续收到新的被动注入。显式 @提及仍会 steering 当前 Agent 并触发行动（5 秒内重复 @提及去重）。
 
-- **实时跟踪活动轨迹（live，默认）**：每次稳定选区状态即时注入，400ms 防抖、完全相同内容去重、未消费时原位替换；同一文件内的纯光标移动与低于防抖窗口的 URL 变化跳过。
-- **仅发送消息时推送一次（on-send）**：只缓存，用户发送消息的那一刻推送一份快照；Agent 工作中不注入。显式 @提及在两种模式下都会唤起 Agent。
-
-两种模式共有：`selection_changed` 作为插件上下文注入 inbox，上限 6000 字符，不唤醒空闲 Agent；@提及会 steering 当前 Agent 并触发行动（5 秒内重复 @提及去重）。状态栏的「位置」「选中」勾选框控制是否推送对应内容（轨迹跟踪开启时强制生效）。库内 Agent 总是收到推送；库外 Agent 按「库外项目工具策略」逐通道决定（默认全关）。
+`selection_changed` 只用于更新待发送快照，上限 6000 字符；400ms 防抖、完全相同内容去重，并由最新状态覆盖旧状态。状态栏的「位置」「选中」勾选框独立控制快照中是否包含对应内容。库内 Agent 总是可接收该快照；库外 Agent 按「库外项目工具策略」逐通道决定（默认全关）。
 
 ### 库外项目策略
 
 mv-agent 分区的「IDE 工具」网格与 IDE 桥接的工具列表一一对应，区别是每一项末尾的控制从开关换成**范围下拉**：「仅库内工作区 / 库内外均可用」。所有通道默认仅库内。库外 Agent 调用未开放的通道会收到错误而不是桥接调用。网格中的「Diff 审核行为」行写入独立开关「使用 Obsidian 审阅仓库外 diff」（默认关），控制库外写入是否走 Obsidian Diff 审核。
 
+<a id="in-document-ai"></a>
+## 3. 文件内AI助手
+
+这一主分区只整合设置导航，不合并三套数据模型或运行时。展开主分区后，「API提供商」、「划词助手」、「行内补全」按该顺序显示并默认折叠。
+
+<a id="api-providers"></a>
+### API提供商
+
+划词助手和行内补全共用提供商列表。
+
+| 项目 | 行为 |
+| --- | --- |
+| 类型 | OpenAI-compatible 或 Anthropic |
+| Base URL | 必填；OpenAI 兼容接口追加 `/chat/completions`，Anthropic 追加 `/v1/messages` |
+| API Key | 明文保存在插件 `data.json`；本地无鉴权服务可留空 |
+| 模型 | 用户自由维护；列表中的「模型名称」字符串原样发送给 API，内部 ID 只用于稳定引用 |
+| 思考参数 | 默认、开、关、自定义 JSON；兼容性由提供商决定 |
+| 绕过 CORS | 默认关；开启后走 Obsidian 内部网络请求，可绕过 `app://` Origin，但响应一次性返回，不流式显示 |
+
+删除提供商或模型会清除引用它的模板和补全配置，防止保留悬空引用。插件不会自动上传仓库、终端或选区；只有用户触发的模板/补全请求以及明确启用的 Agent 工具会发送对应上下文。
+
 <a id="selection-assistant"></a>
-## 3. 划词助手
+### 划词助手
 
 总开关默认关闭，独立于 IDE 桥接。启用后可在 Markdown、PDF、Web Viewer 中对选区调用模板。
 
@@ -249,13 +268,13 @@ mv-agent 分区的「IDE 工具」网格与 IDE 桥接的工具列表一一对�
 - PDF：右键菜单通常由 Obsidian/pdf++ 占用，使用快捷键。
 - Web Viewer：默认使用注入到网页中的已绑定快捷键；实验性的网页右键菜单会屏蔽网页原生右键，并可能被站点安全策略阻止。
 
-### 提示词模板
+#### 提示词模板
 
 内置“翻译”“总结”“润色”三个启用模板。每个模板独立配置：名称、启用状态、提示词、提供商、模型和思考模式。`{selection}` 表示选区；模板不含该变量时，选区自动追加在末尾。
 
 思考模式可选默认、开启、关闭或自定义 JSON。自定义内容直接传给兼容提供商，是否生效取决于 API。
 
-### 输出窗口与历史
+#### 输出窗口与历史
 
 - 回答以流式方式进入可拖动、可缩放的悬浮 Markdown 编辑器。
 - 可以插入到光标、替换原选区或保留为独立结果。
@@ -266,9 +285,9 @@ mv-agent 分区的「IDE 工具」网格与 IDE 桥接的工具列表一一对�
 请求失败只在悬浮窗显示错误，不改原文。关闭总开关后移除右键入口、快捷键注入、自动触发监听和悬浮窗口运行链。
 
 <a id="inline-completion"></a>
-## 4. 行内补全
+### 行内补全
 
-### 默认参数
+#### 默认参数
 
 | 设置 | 默认值 |
 | --- | --- |
@@ -286,18 +305,18 @@ mv-agent 分区的「IDE 工具」网格与 IDE 桥接的工具列表一一对�
 
 启用后，功能区按钮控制自动触发；按钮未点亮时仍可使用手动请求键。补全只在 Markdown 编辑器中显示 ghost text，不会在请求完成前写入文档。
 
-### 提示词与结果
+#### 提示词与结果
 
 可配置提示词主体、无需补全指令、拒绝后重生成指令。拒绝指令支持 `{rejected}`。无需补全指令中的 `<MV_AIDE_NO_COMPLETION>` 是协议哨兵，删除或改写会使“无需补全”结果无法稳定识别。
 
 接受后用一个编辑事务写入；取消只清空建议；拒绝可把原建议发送给模型并请求另一版。新编辑、光标移动、文件切换或关闭功能都会使过期请求失效，旧响应不能覆盖新位置。
 
-### 与其它输入功能的关系
+#### 与其它输入功能的关系
 
 AI 建议可见时优先消费接受/取消键。Vim Insert 模式中的完整优先级见[跨功能关系](#cross-feature)。模型和 API 配置与划词助手共用，但启用状态、提示词和运行生命周期独立。
 
 <a id="terminal"></a>
-## 5. 终端
+## 4. 终端
 
 ### 打开与布局
 
@@ -332,7 +351,7 @@ AI 建议可见时优先消费接受/取消键。Vim Insert 模式中的完整�
 `getTerminalOutput` 只返回用户请求的最近行数，不持续把终端内容发送到网络。终端进程本身的联网行为由用户运行的命令决定。
 
 <a id="source-assist"></a>
-## 6. 源码编写辅助
+## 5. 源码编写辅助
 
 ### Profile 与后缀注册
 
@@ -387,7 +406,7 @@ Code Suite 是按 profile 独立开关的 Latex Suite 兼容编辑内核，不�
 可导入 Prism CSS、highlight.js CSS、VS Code/Shiki/TextMate JSON 或 mv-AIDE JSON。格式可自动识别；非 Prism 格式会转换成近似 token 配色，不能保证像素级还原。主题只影响源码 token，不改变 Code Suite 替换或 Markdown view 注册。
 
 <a id="vim"></a>
-## 7. Vim 增强
+## 6. Vim 增强
 
 ### 隔离与启用
 
@@ -440,7 +459,7 @@ Vim 由 mv-AIDE 独立实现，不依赖 Obsidian 内置 Vim 或第三方 Vim �
 `:!` 和 autocmd 间接执行外部程序需要单独授权，默认关闭。`:w/:wq/:x` 调用 Obsidian 当前视图的显式保存；保存失败不会继续退出。
 
 <a id="default-opener"></a>
-## 8. 默认文件打开器
+## 7. 默认文件打开器
 
 ### 模型与状态
 
@@ -484,12 +503,14 @@ Vim 由 mv-AIDE 独立实现，不依赖 Obsidian 内置 Vim 或第三方 Vim �
 
 Windows 不申请管理员权限、不写受保护的 `UserChoice`。在系统列表中应选择 **MV AIDE File Opener**，不是 Windows Based Script Host。
 
-系统 wrapper 的必要注册状态位于批准的 `~/.mv-aide/` 系统状态目录中，与 IDE discovery、dsh bridge selection 等跨进程状态共享同一根目录。它不是守护进程：Obsidian 关闭时先通过 Obsidian URL 唤醒目标 vault，再等待插件服务；Obsidian 已打开时会将窗口带到前台。
+mv-AIDE 自有打开器产物的当前 authority 是 `~/.mv-aide/file-opener/`，包含 owner、runtime、wrapper、helper 和图标。操作系统关联本身不在该目录中：macOS 由 Launch Services 保持，Windows 位于当前用户 `HKCU`，Linux 使用 desktop/MIME 数据库。wrapper 不是守护进程：Obsidian 关闭时先通过 Obsidian URL 唤醒目标 vault，再等待插件服务；Obsidian 已打开时会将窗口带到前台。
+
+升级时只把 `~/.mv-aide/` 根下精确命名且能验证 owner 的旧 wrapper/runtime/helper/icon 视为 legacy。迁移会先在新 authority 生成并校验产物，再完成 macOS Launch Services 激活、Windows owned registration 切换并确认有效默认项不变，或 Linux desktop 入口切换；成功后才退役 legacy owner/runtime，旧产物则只按已知路径清理。无效、冲突、自定义路径、符号链接或切换前的任何失败均保留 legacy owner 与旧入口供继续使用和下次重试；已验证的旧启动器仍在生效时，兼容层会同步刷新那一个精确 legacy runtime 文件。
 
 “Obsidian 内显示文件类型图标”默认开启，只影响标签页等界面；系统文件关联图标由 wrapper 应用提供，样式为白色文档、后缀标注与 Obsidian 官方 logo 徽章。
 
 <a id="filesystem-browser"></a>
-## 9. 文件系统与浏览器
+## 8. 文件系统与浏览器
 
 三个入口默认开启，可分别关闭。
 
@@ -517,22 +538,6 @@ Windows 不申请管理员权限、不写受保护的 `UserChoice`。在系统�
 - 插件支持的格式直接在当前 vault 打开，不经过系统默认打开器；明确点击“默认应用”时才走系统关联。
 
 关闭入口后只移除对应按钮和监听器，不删除下载、历史或任何外部文件。
-
-<a id="api-providers"></a>
-## API 提供商
-
-划词助手和行内补全共用提供商列表。
-
-| 项目 | 行为 |
-| --- | --- |
-| 类型 | OpenAI-compatible 或 Anthropic |
-| Base URL | 必填；OpenAI 兼容接口追加 `/chat/completions`，Anthropic 追加 `/v1/messages` |
-| API Key | 明文保存在插件 `data.json`；本地无鉴权服务可留空 |
-| 模型 | 用户自由维护；列表中的“模型名称”字符串原样发送给 API，内部 ID 只用于稳定引用 |
-| 思考参数 | 默认、开、关、自定义 JSON；兼容性由提供商决定 |
-| 绕过 CORS | 默认关；开启后走 Obsidian 内部网络请求，可绕过 `app://` Origin，但响应一次性返回，不流式显示 |
-
-删除提供商或模型会清除引用它的模板和补全配置，防止保留悬空引用。插件不会自动上传仓库、终端或选区；只有用户触发的模板/补全请求以及明确启用的 Agent 工具会发送对应上下文。
 
 <a id="cross-feature"></a>
 ## 跨功能关系
@@ -566,8 +571,8 @@ mv-agent 与 IDE 桥接共享同一条本地桥接服务、同一组公共工具
 - Code Suite/TeX 渲染失败保留原始源码。
 - Vim 配置错误按指令隔离；全部 Vim 开关关闭后不加载运行时。
 - 默认打开器注册失败不影响 Obsidian 内部文件路由。
-- 终端依赖失败不阻止其它八个分区加载。
-- mv-agent 环境缺失或 DSH 未运行时，其余八个分区照常工作；视图显示「mv-agent 未运行」而不是报错。
+- 终端依赖失败不阻止其它七个主分区加载。
+- mv-agent 环境缺失或 DSH 未运行时，其余七个主分区照常工作；视图显示「mv-agent 未运行」而不是报错。
 
 <a id="commands"></a>
 ## 命令与入口
@@ -602,12 +607,10 @@ mv-agent 与 IDE 桥接共享同一条本地桥接服务、同一组公共工具
 | 符号链接镜像 | 原生 | 取决于权限/开发者模式 | 原生 | 失败后才允许受管副本回退 |
 | Web Viewer 工具栏 | 是 | 是 | 是 | 依赖 Obsidian 内置 Web Viewer |
 
-Windows 默认打开器的发布前验证步骤见 [WINDOWS-VALIDATION.md](../WINDOWS-VALIDATION.md)。
-
 <a id="storage-network"></a>
 ## 数据与网络边界
 
-### 持久化路径
+### 持久化与运行路径
 
 | 路径 | 内容 |
 | --- | --- |
@@ -616,12 +619,17 @@ Windows 默认打开器的发布前验证步骤见 [WINDOWS-VALIDATION.md](../WI
 | `<vault>/mv-aide/external-files/mirror` | 库外文件符号链接或获授权的受管副本 |
 | `<vault>/mv-aide/external-files/hosts` | 库外文件 host/映射状态 |
 | `<vault>/mv-aide/llm-history/latest.md` | 最近一次划词助手内容，覆盖写入并从常用索引隐藏 |
-| `<vault>/mv-aide/dsh/` | mv-agent 仓库级安装的 Node.js、DSH、pnpm 运行时与桥接插件 |
+| `<vault>/mv-aide/dsh/` | mv-agent 仓库级安装的 Node.js、DSH 和 pnpm 运行时 |
+| `$DSH_HOME/profiles/web/`（默认 `~/.dsh/profiles/web/`） | DSH web profile、patch 层以及 `@mv-aide/mv-agent` / `@mv-aide/mv-dsh-manager` |
 | `~/.mv-aide/ide/` | 统一 IDE 桥接发现注册表（mv-AIDE 权威 lock 文件） |
-| `~/.mv-aide/dsh-bridge-selection.json` | dsh 各会话的桥接选择（持久化，会话键分区） |
-| `~/.mv-aide/` | 默认打开器 wrapper、owner、系统关联，以及上述 IDE/dsh 状态 |
+| `~/.mv-aide/dsh/bridge-selection.json` | dsh 各会话的桥接选择（持久化，会话键分区） |
+| `~/.mv-aide/file-opener/` | 默认打开器当前 authority：owner、runtime、wrapper、helper 和图标；不包含 OS 系统关联数据库 |
+| `~/.mv-aide/runtime/` | 终端、通用 MCP 和 Codex 集成所需的可重建运行产物 |
+| `~/.mv-aide/tmp/` | DSH 安装、打开器预检等操作范围的临时文件 |
+| `$CLAUDE_CONFIG_DIR/ide/`（默认 `~/.claude/ide/`） | Claude Code 只读的 discovery 兼容镜像；权威来源仍是 `~/.mv-aide/ide/` |
+| `$CODEX_HOME/config.toml`（默认 `~/.codex/config.toml`） | mv-AIDE 带标记的 `mcp_servers.mv_aide_obsidian` 受管块 |
 
-除本表列出的 `~/.mv-aide/` 条目外，运行配置不得放在用户目录。旧 Vim 配置路径只在用户点击迁移时读取，不作为运行时来源。
+mv-AIDE 新建的跨进程产物只写入表中的精确子目录；Claude、Codex 和 DSH 的客户端目录分别遵循 `CLAUDE_CONFIG_DIR`、`CODEX_HOME` 和 `DSH_HOME`。旧 Vim 配置路径只在用户点击迁移时读取，不作为运行时来源。
 
 ### 本地端口与外部网络
 
@@ -644,7 +652,14 @@ API Key 明文存储在 `data.json`，可能随 vault 备份或同步传播。�
 1. 检查对应 Claude/Codex 开关和可执行文件路径。
 2. 点击“刷新状态”或“重新注册”，重启客户端或重新执行客户端的 MCP 刷新命令。
 3. 通用 MCP 客户端确认 URL、Bearer token 和协议版本；stdio 方式要求 Obsidian 已经运行。
-4. 自定义 Anthropic 上游只在必要时启用兼容模式；先确认当前识别的上游地址。
+4. IDE 桥接不再代理自定义上游；若 Agent 使用自定义模型端点，请在 Agent 自身配置中排查。
+
+### DSH 环境、注入或插件导入失败
+
+1. 在 mv-agent 分区按 Node.js → DSH → pnpm → 插件注入的顺序检查；下层按钮会先补齐上层，但每层失败仍会保留真实错误。
+2. 完整注入的就绪状态必须同时包含 `@mv-aide/mv-agent` 和 `@mv-aide/mv-dsh-manager`；缺一项或 `--dump-config` 校验不通过时使用「修复」。
+3. 插件图发生变化后，运行中的 DSH 会被协调重启一次。若界面仍是旧模块图，先查看重启报错，再使用命令面板的「重启 mv-agent」。
+4. 用户导入插件始终经由 `dsh plugin add`。该命令、本地路径、`package.json` 名称或 profile manifest 校验失败时，修正原因后重试；不要期待 `file:` 热加载回退，也不要手工追加 patch 行。
 
 ### Diff 没有出现
 
@@ -676,7 +691,9 @@ API Key 明文存储在 `data.json`，可能随 vault 备份或同步传播。�
 ### 默认打开器注入后仍未生效
 
 - 先点“检查”，若 owner 不是当前 vault 或注册残缺，必须“清理”后再“一键注入”。
-- Windows 还需在系统“默认应用”中逐后缀选择 **MV AIDE File Opener**；详细步骤见 [Windows 验证文档](../WINDOWS-VALIDATION.md)。
+- mv-AIDE 自有打开器文件的当前 authority 是 `~/.mv-aide/file-opener/`；请不要把 OS 关联是否生效等同于该目录是否存在。
+- 如果「检查」报告 legacy 路径迁移失败，旧文件会原样保留；处理报错中的权限、路径或新旧冲突后再点「检查」重试，不要先手工删除旧 owner/wrapper。
+- Windows 还需在系统“默认应用”中逐后缀选择 **MV AIDE File Opener**；插件不会绕过 Windows 的用户确认机制直接修改 `UserChoice`。
 - macOS 可在 Finder“打开方式”确认应用；图标未刷新通常是系统缓存。Windows 可重启 `explorer.exe` 或注销重登以刷新图标缓存。
 - 不要手动把 wrapper 指向 Obsidian 可执行文件本身，否则可能造成 URL/文件关联循环。
 
@@ -694,4 +711,4 @@ API Key 明文存储在 `data.json`，可能随 vault 备份或同步传播。�
 
 mv-AIDE 在运行时不要求安装或启用上述任何插件。
 
-法律声明见[第三方声明](../THIRD_PARTY_NOTICES.md)，Vim 边界见[Vim 独立实现与来源说明](vim-engine-provenance.md)，项目许可见[LICENSE](../LICENSE)。
+法律声明与实现边界见[第三方声明](../THIRD_PARTY_NOTICES.md)，项目许可见[LICENSE](../LICENSE)。

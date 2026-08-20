@@ -6,7 +6,11 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { persistPluginDisabled, persistPluginRemoval } from './plugin-toggle-state.js';
 
-const INJECTION_MANAGED_IDS = new Set(['mv-agent', 'mv-dsh-manager']);
+const INJECTION_MANAGED_PACKAGES = new Map([
+  ['mv-agent', { packageName: '@mv-aide/mv-agent', pathSegments: ['@mv-aide', 'mv-agent'] }],
+  ['mv-dsh-manager', { packageName: '@mv-aide/mv-dsh-manager', pathSegments: ['@mv-aide', 'mv-dsh-manager'] }],
+]);
+const INJECTION_MANAGED_IDS = new Set(INJECTION_MANAGED_PACKAGES.keys());
 
 function dshHome() {
   return process.env.DSH_HOME || path.join(os.homedir(), '.dsh');
@@ -20,9 +24,12 @@ function profileManifestFile() {
   return path.join(profileDir(), 'package.json');
 }
 
-function installedPackageDir(packageName) {
-  const parts = String(packageName || '').split('/').filter(Boolean);
-  return path.join(profileDir(), 'node_modules', ...parts);
+function injectionManagedPackage(configRowId) {
+  return INJECTION_MANAGED_PACKAGES.get(String(configRowId || '')) || null;
+}
+
+function installedInjectionPackageDir(managedPackage) {
+  return path.join(profileDir(), 'node_modules', ...managedPackage.pathSegments);
 }
 
 async function readProfileManifest() {
@@ -378,23 +385,27 @@ export async function deletePlugin(ctx, entryId, force = false, deps = {}) {
     // mv-agent / mv-dsh-manager are materialized by mv-AIDE itself rather than
     // declared as profile dependencies. Their uninstall lifecycle is therefore
     // user-patch registration removal + removal of the materialized package.
+    const managedPackage = injectionManagedPackage(found.view.configRowId);
+    if (!managedPackage) {
+      return { ok: false, error: `未知的 mv-AIDE 注入组件 "${found.view.configRowId}"，拒绝删除 materialized package。` };
+    }
     let patchResult;
     try {
       patchResult = await persistRemoval(found.view.configRowId);
       if (!patchResult || patchResult.removed < 1) {
         return { ok: false, error: `未在 DSH 用户 patch 中找到注入行 "${found.view.configRowId}"，拒绝伪报卸载成功。` };
       }
-      const removeInjectedPackage = deps.removeInjectedPackage || (async (packageName) => {
-        await fs.rm(installedPackageDir(packageName), { recursive: true, force: true });
+      const removeInjectedPackage = deps.removeInjectedPackage || (async () => {
+        await fs.rm(installedInjectionPackageDir(managedPackage), { recursive: true, force: true });
       });
-      await removeInjectedPackage(found.view.name);
+      await removeInjectedPackage(managedPackage.packageName);
     } catch (error) {
       return { ok: false, error: `插件 "${found.view.configRowId}" 注入卸载失败：${error instanceof Error ? error.message : String(error)}` };
     }
     return {
       ok: true,
       id: found.view.configRowId,
-      packageName: found.view.name,
+      packageName: managedPackage.packageName,
       installed: false,
       active: Boolean(findPluginEntry(ctx, entryId)),
       requiresFrontendReload: true,

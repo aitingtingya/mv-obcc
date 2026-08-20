@@ -44,15 +44,10 @@ Known limitations: the write bypasses DSH's sandbox bookkeeping (`fs/observed` i
 
 ## Passive context delivery
 
-The bridge pushes id-less notifications, and this plugin delivers them to the running agent's inbox without a tool call. Two delivery modes are selectable in the mv-agent settings (mv-AIDE → mv-agent → 被动推送, carried over the bridge):
+The bridge pushes id-less notifications, but selection changes are only used to maintain the latest pending snapshot. A snapshot is injected into the running agent's inbox when the user sends the next message (via the `agent/status` idle→running transition, with an inbox `nextTurn` backup trigger); page and selection changes do not stream context into an agent while it is working.
 
-- **`live` (default, 实时跟踪活动轨迹)** — every stable selection state is injected as it happens, debounced (400 ms), deduplicated (exact repeats are never re-injected), and **replaced in place** while still pending (`Inbox.replace`), so a growing selection costs one message instead of one per intermediate state. Pure cursor moves inside the already-reported file and text-less URL changes below the debounce window are skipped.
-- **`on-send` (仅发送消息时推送一次)** — the selection is only buffered; a single snapshot is pushed at the moment the user sends a message (the agent's turn starts, via the `agent/status` idle→running transition with an inbox `nextTurn` backup trigger), and nothing is injected while the agent works. Explicit @mentions still steer.
-
-Both modes:
-
-- `selection_changed` — injected into the agent's inbox as context (`source: { kind: 'plugin', plugin: 'mv-aide-dsh' }`), capped at 6000 chars. Injections do not wake an idle agent; they are claimed at the next step.
-- `at_mentioned` — triggering mv-AIDE's "发送当前选中内容到 Claude Code" command **steers** the agent, waking it to act on the mention (duplicate mentions within 5 s are dropped).
+- `selection_changed` — updates the pending snapshot (`source: { kind: 'plugin', plugin: 'mv-aide-dsh' }` when eventually injected), capped at 6000 chars, debounced by 400 ms, exact-repeat deduplicated, and replaced by the latest state.
+- `at_mentioned` — triggering mv-AIDE's "发送当前选中内容到 Claude Code" command **steers** the agent immediately, waking it to act on the mention (duplicate mentions within 5 s are dropped).
 
 Delivery targets agents by their session `cwd` against the bridge's vault `workspaceFolders`:
 **in-vault agents always receive everything**; agents running **outside the vault** only receive a channel when the mv-agent setting「库外项目工具策略」(settings → mv-agent → IDE 工具) opts that channel in (default: all off). Without vault-folder knowledge every agent receives it; when no agent is allowed the delivery is dropped (logged). Each agent receives its own freshly built message.
@@ -61,7 +56,7 @@ The same per-channel policy gates the **active tools** (`mv_aide__*`): an outsid
 
 ## How it connects
 
-mv-AIDE exposes a local server on `127.0.0.1` (port `47000 + stablePortSeed(vaultRoot) % 1500`) and writes the authoritative discovery lock file to `~/.mv-aide/ide/<port>.lock` (`ideName: "Obsidian"`) carrying the WebSocket auth token. When Claude Code integration is enabled, an identical compatibility mirror is also written to `~/.claude/ide/<port>.lock` because Claude CLI only scans `$CLAUDE_CONFIG_DIR/ide`. This plugin scans the unified registry first and falls back to `~/.claude/ide` for old-version compatibility, connects with `x-claude-code-ide-authorization`, and speaks JSON-RPC. The header/lock-file naming reuses Claude Code's conventions so CC can also connect; the protocol itself is mv-AIDE's own.
+mv-AIDE exposes a local server on `127.0.0.1` (port `47000 + stablePortSeed(vaultRoot) % 1500`) and writes the authoritative discovery lock file to `~/.mv-aide/ide/<port>.lock` (`ideName: "Obsidian"`) carrying the WebSocket auth token. When Claude Code integration is enabled, an identical compatibility mirror is also written to `~/.claude/ide/<port>.lock` because Claude CLI only scans `$CLAUDE_CONFIG_DIR/ide`. This plugin scans only the unified `~/.mv-aide/ide` registry, connects with `x-claude-code-ide-authorization`, and speaks JSON-RPC. The header/lock-file naming reuses Claude Code's conventions so CC can also connect; the protocol itself is mv-AIDE's own.
 
 The browser half subscribes to DSH's official `sessions.list.current` store and keeps a same-origin control WebSocket to the host half. A session may own an Obsidian bridge only while at least one live DSH frontend currently has that session open. Switching or closing the frontend revokes the old session before activating the next one; multiple frontends contribute the union of their currently open sessions. Host startup, persisted sessions, `agent/status`, commands, and tools cannot bypass this activity gate.
 
@@ -108,7 +103,7 @@ The row accepts one optional field:
         workspace: '/absolute/path/to/vault'   # pin which vault's bridge to use (optional)
 ```
 
-Bridge selection is persisted in the v3 `~/.mv-aide/dsh-bridge-selection.json` store with explicit per-session and per-workspace records. An opened session first reuses its own target. A new session then chooses the outermost Obsidian vault that equals or contains its DSH workspace, or falls back to the DSH workspace's last attempted target. Manual and automatic choices both become the session target and update the workspace target. When neither exists, no supervisor or retry loop is created.
+Bridge selection is persisted in the v3 `~/.mv-aide/dsh/bridge-selection.json` store with explicit per-session and per-workspace records. An opened session first reuses its own target. A new session then chooses the outermost Obsidian vault that equals or contains its DSH workspace, or falls back to the DSH workspace's last attempted target. Manual and automatic choices both become the session target and update the workspace target. When neither exists, no supervisor or retry loop is created.
 
 ## Reconnection
 

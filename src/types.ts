@@ -3,9 +3,7 @@ import type { LintSettings } from "./lint/lint-types";
 import type { RegexReplaceSettings } from "./regex-replace/regex-replace-types";
 import type { MvRunSettings } from "./terminal/mv-run-types";
 import type { VimSettings } from "./vim/settings";
-import type { DshSettings } from "./dsh/dsh-settings";
-
-export type UpstreamMode = "native" | "compatibility";
+import type { DshSettings } from "./agent-integrations/dsh/settings";
 
 export interface ToolToggles {
   getLatestSelection: boolean;
@@ -329,12 +327,6 @@ export type TerminalOpenPosition = "tab" | "left" | "right" | "bottom";
 export type TerminalOpenMode = "split" | "new-tab";
 
 export interface BridgeSettings {
-  upstreamMode: UpstreamMode;
-  /** Optional manual override. Empty means resolve from Claude settings. */
-  upstreamBaseUrl: string;
-  autoManageClaudeSettings: boolean;
-  previousLocalBaseUrl: string | null;
-  managedLocalBaseUrl: string | null;
   activityTracking: ActivityTrackingSettings;
   preserveSelectionHighlights: boolean;
   /** 文件系统与浏览器：内置浏览器视图工具栏「浏览历史」按钮。 */
@@ -427,17 +419,6 @@ export interface OpenEditorTab {
   filePath?: string;
   relativePath?: string;
   url?: string;
-}
-
-export interface ResolvedUpstream {
-  url: string;
-  source:
-    | "manual"
-    | "vault-local"
-    | "vault-project"
-    | "user"
-    | "environment"
-    | "none";
 }
 
 export interface JsonRpcRequest {

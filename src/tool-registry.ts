@@ -16,7 +16,7 @@ import {
   isAbsolutePath,
   readOutsideFileForDiff,
   validateOutsideOriginal,
-} from "./dsh/dsh-outside-diff";
+} from "./agent-integrations/dsh/ide/outside-diff";
 import type { LintDiagnosticsFile } from "./lint/lint-feature";
 import {
   getOpenWorkspaceTabs,

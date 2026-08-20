@@ -27,23 +27,22 @@ import {
   type DecorationSet,
   type ViewUpdate,
 } from "@codemirror/view";
-import { isSelectedPageType } from "./src/activity-tracking";
+import { isAllPagesPassiveViewType, isSelectedPageType } from "./src/activity-tracking";
 import { detectSystemNodeCommand } from "./src/universal-mcp-stdio-command";
 import {
   UniversalMcpServer,
   type UniversalMcpRuntimeDescriptor,
 } from "./src/universal-mcp";
 import stdioLauncherSource from "inline:dist/universal-mcp-stdio.cjs";
-import { BridgeServer } from "./src/bridge-server";
+import { ClaudeCompatibleBridgeServer as BridgeServer } from "./src/agent-integrations/claude-code/bridge-compat";
 import {
-  applyManagedTerminalHooks,
-  restoreManagedTerminalHooks,
-} from "./src/claude-hooks";
+  cleanupLegacyManagedTerminalHooks,
+} from "./src/agent-integrations/claude-code/hooks";
 import {
-  applyManagedBaseUrl,
+  cleanupLegacyManagedBaseUrl,
   localClaudeSettingsPath,
-  restoreManagedBaseUrl,
-} from "./src/claude-settings";
+  preserveLegacyManagedBaseUrlRetryMetadata,
+} from "./src/agent-integrations/claude-code/settings";
 import {
   DEFAULT_SETTINGS,
   DIFF_VIEW_TYPE,
@@ -62,11 +61,15 @@ import { TerminalView } from "./src/terminal/terminal-view";
 import { normalizeTerminalThemeSettings } from "./src/terminal/terminal-themes";
 import {
   cleanStaleObsidianLocks,
-  claudeCompatibilityLockDirectory,
   discoveryLockDirectory,
   removeLockFile,
   writeLockFile,
-} from "./src/lock-file";
+} from "./src/ide/discovery-lock";
+import {
+  cleanStaleClaudeIdeLocks,
+  removeClaudeIdeLock,
+  writeClaudeIdeLock,
+} from "./src/agent-integrations/claude-code/ide-discovery";
 import { migrateLlm } from "./src/llm-migrate";
 import { migrateInlineCompletion } from "./src/inline-completion/inline-completion-migrate";
 import { LintFeature } from "./src/lint/lint-feature";
@@ -77,8 +80,8 @@ import { BrowserHistoryButtonFeature } from "./src/browser-history-button";
 import { BrowserDownloadsButtonFeature } from "./src/browser-downloads-button";
 import { FileExplorerPathBarFeature } from "./src/file-explorer-path-bar";
 import { LocalWebPreviewFeature } from "./src/local-web-preview";
-import { DshFeature } from "./src/dsh/dsh-feature";
-import { normalizeDshSettings } from "./src/dsh/dsh-settings";
+import { DshFeature } from "./src/agent-integrations/dsh/feature";
+import { normalizeDshSettings } from "./src/agent-integrations/dsh/settings";
 import {
   FALLBACK_OPENABLE_EXTENSIONS,
   extensionOfFileName,
@@ -141,16 +144,12 @@ import {
 import {
   ensureMcpRegistration,
   removeMcpRegistration,
-} from "./src/mcp-registration";
-import {
-  migrateManualUpstream,
-  resolveAnthropicBaseUrl,
-} from "./src/upstream-resolver";
+} from "./src/agent-integrations/claude-code/mcp-registration";
 import {
   schedulePostLayoutStartup,
   type PostLayoutStartupHandle,
 } from "./src/post-layout-startup";
-import { stablePortSeed } from "./src/path-utils";
+import { isPathInside, stablePortSeed } from "./src/path-utils";
 import { FileTypeIconView } from "./src/file-type-icon-view";
 import {
   createStartupPerformanceRecorder,
@@ -167,7 +166,6 @@ import {
   parseWebSelectionMessage,
 } from "./src/web-selection-reporter";
 import { SelectionHighlightController } from "./src/selection-highlights";
-import { TerminalSessionTracker } from "./src/terminal-session-tracker";
 import { LlmFeature } from "./src/llm-feature";
 import { InlineCompletionFeature } from "./src/inline-completion/inline-completion-feature";
 import {
@@ -201,7 +199,9 @@ import { normalizeExternalFileMirrorFolder } from "./src/external-file-mirror-pa
 import {
   EXTERNAL_FILE_MIRROR_FOLDER,
   VIM_VAULT_CONFIG_PATH,
-} from "./src/vault-storage-paths";
+} from "./src/storage/vault-paths";
+import { mvAideRuntimeDirectory } from "./src/storage/temp-paths";
+import { legacyExternalFileHostIdPath, legacyVimConfigPath } from "./src/storage/system-paths";
 import {
   openFileWithDefaultApp,
   type DefaultFileOpenResult,
@@ -213,21 +213,22 @@ import type {
 } from "./src/managed-copy-fallback";
 import {
   CodexIdeProvider,
-  codexIdeSocketPathForRuntime,
   type CodexIdeContextSnapshot,
-} from "./src/codex-ide-provider";
+} from "./src/agent-integrations/codex/ide-endpoint";
+import { codexIdeEndpoint } from "./src/agent-integrations/codex/paths";
 import {
   ensureCodexMcpRegistration,
   removeCodexMcpRegistration,
-  ensureCodexShellAlias,
-  removeCodexShellAlias,
-} from "./src/codex-mcp-registration";
+} from "./src/agent-integrations/codex/mcp-registration";
+import {
+  migrateLegacyCodexArtifacts,
+  removeLegacyCodexShellAlias,
+} from "./src/agent-integrations/codex/legacy-migration";
 import type {
   BridgeClientContext,
   BridgeSettings,
   JsonRpcRequest,
   JsonRpcResponse,
-  ResolvedUpstream,
   SelectionState,
 } from "./src/types";
 
@@ -461,7 +462,6 @@ export default class MvAideIdePlugin extends Plugin {
   private broadcastInFlight = false;
   private broadcastQueued = false;
   private toolRegistry: ToolRegistry | null = null;
-  private terminalTracker: TerminalSessionTracker | null = null;
   terminalRegistry: TerminalRegistry | null = null;
   private dshTerminalRpc: DshTerminalRpc | null = null;
   private selectionHighlighter: SelectionHighlightController | null = null;
@@ -519,9 +519,32 @@ export default class MvAideIdePlugin extends Plugin {
     try {
     this.unloaded = false;
     const rawLoaded = (await this.loadData()) as
-      | (Partial<BridgeSettings> & { codex?: unknown })
+      | (Partial<BridgeSettings> & {
+          codex?: unknown;
+          upstreamMode?: unknown;
+          upstreamBaseUrl?: unknown;
+          autoManageClaudeSettings?: unknown;
+          previousLocalBaseUrl?: unknown;
+          managedLocalBaseUrl?: unknown;
+        })
       | null;
-    const { codex: _legacyCodex, ...loaded } = rawLoaded ?? {};
+    const loaded = { ...(rawLoaded ?? {}) };
+    const legacyPreviousLocalBaseUrl =
+      typeof loaded.previousLocalBaseUrl === "string" ? loaded.previousLocalBaseUrl : null;
+    const legacyManagedLocalBaseUrl =
+      typeof loaded.managedLocalBaseUrl === "string" ? loaded.managedLocalBaseUrl : null;
+    const hadLegacyCompatibilitySettings =
+      "upstreamMode" in loaded ||
+      "upstreamBaseUrl" in loaded ||
+      "autoManageClaudeSettings" in loaded ||
+      "previousLocalBaseUrl" in loaded ||
+      "managedLocalBaseUrl" in loaded;
+    delete loaded.codex;
+    delete loaded.upstreamMode;
+    delete loaded.upstreamBaseUrl;
+    delete loaded.autoManageClaudeSettings;
+    delete loaded.previousLocalBaseUrl;
+    delete loaded.managedLocalBaseUrl;
     const terminalOpenPosition = normalizeTerminalOpenPosition(
       loaded.terminalOpenPosition ?? DEFAULT_SETTINGS.terminalOpenPosition,
     );
@@ -613,7 +636,40 @@ export default class MvAideIdePlugin extends Plugin {
     } else if (!this.settings.mcpAuthToken) {
       this.settings.mcpAuthToken = randomUUID();
     }
-    this.settings = migrateManualUpstream(getVaultRoot(this.app), this.settings);
+    const legacyClaudeSettingsPath = localClaudeSettingsPath(getVaultRoot(this.app));
+    const legacyBaseUrlCleanup = cleanupLegacyManagedBaseUrl(
+      legacyClaudeSettingsPath,
+      legacyManagedLocalBaseUrl,
+      legacyPreviousLocalBaseUrl,
+    );
+    const legacyTerminalHooksCleanup =
+      cleanupLegacyManagedTerminalHooks(legacyClaudeSettingsPath);
+    if (
+      legacyBaseUrlCleanup === "cleaned" ||
+      legacyTerminalHooksCleanup === "cleaned"
+    ) {
+      try {
+        fs.rmdirSync(path.dirname(legacyClaudeSettingsPath));
+      } catch {
+        // Preserve non-empty/user-owned .claude directories.
+      }
+    }
+    preserveLegacyManagedBaseUrlRetryMetadata(
+      this.settings,
+      legacyBaseUrlCleanup,
+      legacyManagedLocalBaseUrl,
+      legacyPreviousLocalBaseUrl,
+    );
+    if (hadLegacyCompatibilitySettings) {
+      try {
+        await this.saveData(this.settings);
+      } catch (error) {
+        console.warn(
+          "[mv-aide] Failed to persist legacy Claude cleanup state; migration will retry on the next startup.",
+          error,
+        );
+      }
+    }
     this.registerView(DIFF_VIEW_TYPE, (leaf) => new ObsidianDiffView(leaf));
     this.registerView(TERMINAL_VIEW_TYPE, (leaf) => new TerminalView(leaf, this));
     this.register(() => this.unregisterCustomMarkdownExtensions());
@@ -625,7 +681,6 @@ export default class MvAideIdePlugin extends Plugin {
     this.applyObsidianStatusBarVisibility();
     this.syncCustomMarkdownExtensions();
     this.addSettingTab(new MvAideIdeSettingTab(this.app, this));
-    this.terminalTracker = new TerminalSessionTracker(this.app);
     this.selectionHighlighter = new SelectionHighlightController(
       this.app,
       this.settings.preserveSelectionHighlights,
@@ -643,7 +698,7 @@ export default class MvAideIdePlugin extends Plugin {
         ),
       getManagedCopyHostId: () => readOrCreateExternalFileHostId(
         getVaultRoot(this.app),
-        path.join(os.homedir(), ".mv-aide", "external-file-host-id"),
+        legacyExternalFileHostIdPath(),
       ),
       moveVaultDirectory: async (previousVaultPath, targetVaultPath) => {
         await this.moveVaultDirectory(previousVaultPath, targetVaultPath);
@@ -674,13 +729,12 @@ export default class MvAideIdePlugin extends Plugin {
 
     this.codexIdeProvider = new CodexIdeProvider({
       getSnapshot: () => this.codexIdeContextSnapshot(),
-      socketPath: codexIdeSocketPathForRuntime(this.codexRuntimeDir()),
+      socketPath: codexIdeEndpoint(),
       onLog: (message) => console.error("[mv-aide]", message),
     });
 
     this.registerEvent(
       this.app.workspace.on("active-leaf-change", (leaf) => {
-        this.terminalTracker?.scan();
         this.terminalRegistry?.refresh();
         this.terminalRegistry?.markActiveLeaf(leaf);
         this.fileTypeIconView?.refreshTabIcons();
@@ -694,7 +748,6 @@ export default class MvAideIdePlugin extends Plugin {
     );
     this.registerEvent(
       this.app.workspace.on("layout-change", () => {
-        this.terminalTracker?.scan();
         this.terminalRegistry?.refresh();
         this.fileTypeIconView?.refreshTabIcons();
         this.selectionHighlighter?.sync();
@@ -709,12 +762,10 @@ export default class MvAideIdePlugin extends Plugin {
     );
     this.registerDomEvent(activeWindow, "focus", () => {
       this.previousBroadcasts.clear();
-      this.terminalTracker?.scan();
       this.scheduleBroadcast();
     });
     this.registerInterval(
       activeWindow.setInterval(() => {
-        this.terminalTracker?.scan();
         this.selectionHighlighter?.sync();
         this.llmFeature?.tick();
         this.inlineCompletion?.tick();
@@ -803,7 +854,6 @@ export default class MvAideIdePlugin extends Plugin {
     this.app.workspace.onLayoutReady(() => this.fileTypeIconView?.refresh());
 
     this.schedulePostLayoutStartup();
-    this.terminalTracker.scan();
     this.terminalRegistry?.refresh();
     this.terminalRegistry?.markActiveLeaf(activeWorkspaceLeaf(this.app));
     this.selectionHighlighter.sync(true);
@@ -858,7 +908,7 @@ export default class MvAideIdePlugin extends Plugin {
       }
     }
 
-    void removeCodexShellAlias();
+    void removeLegacyCodexShellAlias();
     void this.finishUnload();
   }
 
@@ -911,7 +961,7 @@ export default class MvAideIdePlugin extends Plugin {
     this.fileTypeIconView?.syncFromSettings();
     this.syncCustomMarkdownExtensions();
     await this.sourceAssist?.settingsChanged();
-    await this.syncLocalServices(true, false);
+    await this.syncLocalServices(false);
     await this.syncCodexIdeProvider();
     await this.applyUniversalMcpSetting();
     this.scheduleCodexMcpRegistrationIfReady();
@@ -922,7 +972,6 @@ export default class MvAideIdePlugin extends Plugin {
       method: "mv_aide_settings_changed",
       params: {
         reviewOutsideVault: this.settings.dsh.reviewOutsideVault,
-        passiveDelivery: this.settings.dsh.passiveDelivery,
         terminalAwarenessEnhanced: this.settings.dsh.terminalAwarenessEnhanced,
         pushLocation: this.settings.dsh.pushLocation,
         pushSelection: this.settings.dsh.pushSelection,
@@ -949,7 +998,7 @@ export default class MvAideIdePlugin extends Plugin {
   vimLegacyConfigSources(): VimFeatureHost["legacyVimrcSources"] {
     return [
       {
-        filePath: path.join(os.homedir(), ".mv-aide", "vim", ".vimrc"),
+        filePath: legacyVimConfigPath(),
         removeAfterMigration: true,
       },
       {
@@ -1827,23 +1876,15 @@ export default class MvAideIdePlugin extends Plugin {
 
   async restartBridge(): Promise<void> {
     await this.stopBridge();
-    await this.syncLocalServices(true);
+    await this.syncLocalServices();
     this.previousBroadcasts.clear();
     this.scheduleBroadcast();
-  }
-
-  async restoreClaudeSettings(): Promise<void> {
-    const filePath = localClaudeSettingsPath(getVaultRoot(this.app));
-    this.settings = restoreManagedBaseUrl(filePath, this.settings);
-    restoreManagedTerminalHooks(filePath);
-    await this.saveData(this.settings);
   }
 
   private async finishUnload(): Promise<void> {
     const cleanupSteps: Array<[string, () => Promise<unknown>]> = [
       ["Universal MCP", () => this.stopUniversalMcp()],
       ["Codex IDE provider", async () => this.codexIdeProvider?.stop()],
-      ["Claude settings", () => this.restoreClaudeSettings()],
       ["diff views", () => this.closeDiffs()],
       ["bridge", () => this.stopBridge()],
     ];
@@ -1856,10 +1897,6 @@ export default class MvAideIdePlugin extends Plugin {
         }
       }),
     );
-  }
-
-  resolvedUpstream(): ResolvedUpstream {
-    return resolveAnthropicBaseUrl(getVaultRoot(this.app), this.settings);
   }
 
   async retryMcpRegistration(): Promise<void> {
@@ -2117,13 +2154,12 @@ export default class MvAideIdePlugin extends Plugin {
     return (
       this.settings.externalFileOpener.enabled ||
       this.settings.ideIntegrations.claudeCode ||
-      (this.settings.ideIntegrations.codex && this.settings.mcpEnabled) ||
+      this.settings.ideIntegrations.codex ||
       this.dshFeature?.requiresBridge() === true
     );
   }
 
   private async syncLocalServices(
-    notifyClaude = false,
     scheduleCodexMcp = true,
   ): Promise<void> {
     this.claudeIdeError = null;
@@ -2138,7 +2174,7 @@ export default class MvAideIdePlugin extends Plugin {
       await this.stopBridge();
     }
 
-    await this.syncClaudeIntegration(notifyClaude);
+    await this.syncCoreIdeIntegration();
     if (scheduleCodexMcp) {
       this.scheduleCodexMcpRegistration();
     } else {
@@ -2150,9 +2186,14 @@ export default class MvAideIdePlugin extends Plugin {
     this.syncExternalFileOpenerRuntime();
   }
 
-  private async syncClaudeIntegration(notify = false): Promise<void> {
+  async syncDshIdeServices(): Promise<void> {
+    await this.syncLocalServices(false);
+  }
+
+  private async syncCoreIdeIntegration(): Promise<void> {
     const bridgeRequested =
       this.settings.ideIntegrations.claudeCode ||
+      this.settings.ideIntegrations.codex ||
       this.dshFeature?.requiresBridge() === true;
     if (!bridgeRequested || !this.server || !this.port) {
       this.clearScheduledMcpRegistration();
@@ -2160,13 +2201,12 @@ export default class MvAideIdePlugin extends Plugin {
         removeLockFile(this.port, discoveryLockDirectory());
       }
       if (this.bridgeHasClaudeMirror && this.port) {
-        removeLockFile(this.port, claudeCompatibilityLockDirectory());
+        removeClaudeIdeLock(this.port);
       }
       this.bridgeHasDiscoveryLock = false;
       this.bridgeHasClaudeMirror = false;
       if (!this.settings.ideIntegrations.claudeCode) {
         this.mcpStatus = t("Claude Code IDE 已关闭");
-        await this.restoreClaudeSettings();
       }
       return;
     }
@@ -2175,21 +2215,19 @@ export default class MvAideIdePlugin extends Plugin {
     const authToken = this.bridgeAuthToken ?? randomUUID();
     this.bridgeAuthToken = authToken;
     cleanStaleObsidianLocks(discoveryLockDirectory());
-    cleanStaleObsidianLocks(claudeCompatibilityLockDirectory());
+    cleanStaleClaudeIdeLocks();
     if (!this.bridgeHasDiscoveryLock) {
       writeLockFile(this.port, vaultRoot, authToken, discoveryLockDirectory());
       this.bridgeHasDiscoveryLock = true;
     }
     if (this.settings.ideIntegrations.claudeCode && !this.bridgeHasClaudeMirror) {
-      writeLockFile(this.port, vaultRoot, authToken, claudeCompatibilityLockDirectory());
+      writeClaudeIdeLock(this.port, vaultRoot, authToken);
       this.bridgeHasClaudeMirror = true;
     } else if (!this.settings.ideIntegrations.claudeCode && this.bridgeHasClaudeMirror) {
-      removeLockFile(this.port, claudeCompatibilityLockDirectory());
+      removeClaudeIdeLock(this.port);
       this.bridgeHasClaudeMirror = false;
     }
     if (this.settings.ideIntegrations.claudeCode) {
-      await this.applyClaudeSettingsBestEffort(notify);
-      if (!this.unloaded) await this.saveData(this.settings);
       this.scheduleMcpRegistration();
     }
   }
@@ -2203,7 +2241,6 @@ export default class MvAideIdePlugin extends Plugin {
       mcpAuthToken: this.settings.mcpAuthToken,
       vaultRoot,
       settings: () => this.settings,
-      upstreamBaseUrl: () => this.resolvedUpstream().url,
       externalFileOpenerToken: () =>
         this.settings.externalFileOpener.openerToken,
       onExternalFileOpen: async (request) => {
@@ -2225,8 +2262,14 @@ export default class MvAideIdePlugin extends Plugin {
         this.handleRequest(request, "ide", context),
       onMcpMessage: (request, context) =>
         this.handleRequest(request, "mcp", context),
+      onIdeContextSnapshot: async (workspaceRoot) => {
+        if (!this.settings.ideIntegrations.codex) return null;
+        const snapshot = await this.codexIdeContextSnapshot();
+        return isPathInside(workspaceRoot, snapshot.vaultRoot)
+          ? snapshot
+          : null;
+      },
       onClientContextChanged: () => {
-        this.terminalTracker?.scan();
         this.scheduleBroadcast();
       },
       onLog: (message) => console.error("[mv-aide]", message),
@@ -2243,43 +2286,9 @@ export default class MvAideIdePlugin extends Plugin {
     await this.server?.stop();
     this.server = null;
     if (port && this.bridgeHasDiscoveryLock) removeLockFile(port, discoveryLockDirectory());
-    if (port && this.bridgeHasClaudeMirror) removeLockFile(port, claudeCompatibilityLockDirectory());
+    if (port && this.bridgeHasClaudeMirror) removeClaudeIdeLock(port);
     this.bridgeHasDiscoveryLock = false;
     this.bridgeHasClaudeMirror = false;
-  }
-
-  private async applyClaudeSettings(): Promise<void> {
-    const filePath = localClaudeSettingsPath(getVaultRoot(this.app));
-    if (this.settings.activityTracking.supportAllActivePages) {
-      applyManagedTerminalHooks(filePath);
-    } else {
-      restoreManagedTerminalHooks(filePath);
-    }
-    if (
-      this.settings.upstreamMode === "compatibility" &&
-      this.settings.autoManageClaudeSettings &&
-      this.resolvedUpstream().url &&
-      this.port
-    ) {
-      this.settings = applyManagedBaseUrl(
-        filePath,
-        `http://127.0.0.1:${this.port}`,
-        this.settings,
-      );
-    } else {
-      this.settings = restoreManagedBaseUrl(filePath, this.settings);
-    }
-  }
-
-  private async applyClaudeSettingsBestEffort(notify = false): Promise<void> {
-    try {
-      await this.applyClaudeSettings();
-    } catch (error) {
-      console.warn("[mv-aide] Claude settings sync failed", error);
-      if (notify) {
-        new Notice(t("Claude 设置同步失败，但插件已继续运行。详情见控制台。"));
-      }
-    }
   }
 
   private async handleRequest(
@@ -2310,7 +2319,6 @@ export default class MvAideIdePlugin extends Plugin {
               version: this.manifest.version,
             },
             reviewOutsideVault: this.settings.dsh.reviewOutsideVault,
-            passiveDelivery: this.settings.dsh.passiveDelivery,
             terminalAwarenessEnhanced: this.settings.dsh.terminalAwarenessEnhanced,
             pushLocation: this.settings.dsh.pushLocation,
             pushSelection: this.settings.dsh.pushSelection,
@@ -2584,8 +2592,7 @@ export default class MvAideIdePlugin extends Plugin {
     // 运行时生成物不得写入插件安装目录（官方行为检查会将"写自身插件
     // 目录"判为自更新，且插件更新/同步会覆盖该目录），放系统临时目录。
     return path.join(
-      os.tmpdir(),
-      `mv-aide-universal-mcp-${stablePortSeed(getVaultRoot(this.app))}`,
+      mvAideRuntimeDirectory(`universal-mcp/${stablePortSeed(getVaultRoot(this.app))}`),
       "runtime.json",
     );
   }
@@ -2915,16 +2922,6 @@ export default class MvAideIdePlugin extends Plugin {
     else delete state.headingBreadcrumb;
   }
 
-  private codexRuntimeDir(): string {
-    return path.join(
-      getVaultRoot(this.app),
-      this.app.vault.configDir,
-      "plugins",
-      this.manifest.id,
-      "tmp",
-    );
-  }
-
   private schedulePostLayoutStartup(): void {
     this.postLayoutStartup?.cancel();
     this.postLayoutStartup = schedulePostLayoutStartup({
@@ -2945,12 +2942,20 @@ export default class MvAideIdePlugin extends Plugin {
     const endPostLayoutTiming = this.startupPerformance.begin("post-layout.total");
     try {
       this.universalMcpLayoutReady = true;
-      this.startupPerformance.measureSync("post-layout.codex-cache-cleanup", () => {
-        this.cleanupCodexRuntimeCacheBestEffort();
-      });
+      await this.startupPerformance.measure("post-layout.codex-artifact-migration", () =>
+        migrateLegacyCodexArtifacts(path.join(
+          getVaultRoot(this.app),
+          this.app.vault.configDir,
+          "plugins",
+          this.manifest.id,
+        )),
+      );
       await this.startupPerformance.measure("post-layout.dsh-install-cleanup", () =>
         this.dshFeature?.cleanupInstallArtifactsBestEffort() ?? Promise.resolve(),
       );
+      await this.startupPerformance.measure("post-layout.dsh-ide-reconcile", async () => {
+        await this.dshFeature?.reconcileIdeIntegration({ restartRunningDsh: false });
+      });
       await this.startupPerformance.measure("post-layout.codex-provider", () =>
         this.syncCodexIdeProvider(),
       );
@@ -2960,7 +2965,7 @@ export default class MvAideIdePlugin extends Plugin {
       );
       if (this.unloaded) return;
       await this.startupPerformance.measure("post-layout.local-services", () =>
-        this.syncLocalServices(false, false),
+        this.syncLocalServices(false),
       );
       if (this.unloaded) return;
       this.startWindowsFileOpenerMigration();
@@ -3049,33 +3054,17 @@ export default class MvAideIdePlugin extends Plugin {
     this.scheduleCodexMcpRegistration();
   }
 
-  private cleanupCodexRuntimeCacheBestEffort(): void {
-    void fs.promises
-      .rm(path.join(this.codexRuntimeDir(), "node-compile-cache"), {
-        recursive: true,
-        force: true,
-      })
-      .catch((error) => {
-        console.warn("[mv-aide] Codex runtime cache cleanup failed", error);
-      });
-  }
-
   private async syncCodexIdeProvider(): Promise<void> {
     if (!this.codexIdeProvider) return;
     this.codexIdeError = null;
     if (!this.settings.ideIntegrations.codex) {
       await this.codexIdeProvider.stop();
-      await removeCodexShellAlias();
+      await removeLegacyCodexShellAlias();
       return;
     }
     try {
       await this.codexIdeProvider.start();
-      if (process.platform !== "win32") {
-        await ensureCodexShellAlias(
-          this.codexRuntimeDir(),
-          this.settings.codexExecutable || "codex",
-        );
-      }
+      await removeLegacyCodexShellAlias();
     } catch (error) {
       const code = (error as NodeJS.ErrnoException | undefined)?.code;
       this.codexIdeError =
@@ -3085,7 +3074,7 @@ export default class MvAideIdePlugin extends Plugin {
             ? error.message
             : String(error);
       console.error("[mv-aide] Codex IDE provider failed", error);
-      await removeCodexShellAlias();
+      await removeLegacyCodexShellAlias();
     }
   }
 
@@ -3097,7 +3086,6 @@ export default class MvAideIdePlugin extends Plugin {
       this.currentSelectionState();
     if (generation !== this.broadcastGeneration) return;
     if (activeState) await this.attachHeadingBreadcrumb(activeState);
-    this.terminalTracker?.scan();
     if (
       leaf?.view.getViewType() === "webviewer" &&
       activeState?.resourceType === "web"
@@ -3202,10 +3190,8 @@ export default class MvAideIdePlugin extends Plugin {
         : this.fallbackContext(context);
     }
 
-    if (this.terminalTracker?.isTerminalLeaf(leaf)) {
-      const ownLeaf = this.terminalTracker.leafForSession(context?.sessionId);
-      if (!ownLeaf || ownLeaf === leaf) return this.fallbackContext(context);
-    }
+    if (leaf && !isAllPagesPassiveViewType(leaf.view.getViewType()))
+      return this.fallbackContext(context);
     return activeState ?? this.fallbackContext(context);
   }
 

@@ -2,17 +2,20 @@
 //
 // mv-AIDE exposes a local server (127.0.0.1, port 47000 + stablePortSeed(vaultRoot) % 1500)
 // that speaks `initialize` / `tools/list` / `tools/call` JSON-RPC 2.0. It is
-// discovered through lock files in the unified registry
-// `~/.mv-aide/ide/<port>.lock` (with a legacy/Claude-compatible fallback to
-// `~/.claude/ide`), which carry the WebSocket auth token. The header name
-// reuses Claude Code's convention so CC can also connect; the protocol itself
-// is mv-AIDE's own.
+// discovered through lock files in the mv-AIDE registry
+// `~/.mv-aide/ide/<port>.lock`, which carry the WebSocket auth token. The
+// transport header remains compatible with existing IDE clients; discovery
+// ownership itself is exclusively mv-AIDE's.
 
 import { promises as fs } from 'node:fs';
 import { randomUUID } from 'node:crypto';
-import os from 'node:os';
 import path from 'node:path';
 import WebSocket from 'ws';
+import {
+  dshBridgeSelectionPath,
+  legacyDshBridgeSelectionPath,
+  mvAideIdeDirectory,
+} from './paths.js';
 
 export const IDE_NAME = 'Obsidian';
 
@@ -23,12 +26,9 @@ export const RECONNECT_POLICY = {
   maxAttempts: 10,
 };
 
-/** Canonical mv-AIDE bridge registry plus legacy/Claude-compatible locations. */
+/** Canonical mv-AIDE bridge registry. */
 export function discoveryDirectories() {
-  return [
-    path.join(os.homedir(), '.mv-aide', 'ide'),
-    path.join(os.homedir(), '.claude', 'ide'),
-  ];
+  return [mvAideIdeDirectory()];
 }
 
 /** Backward-compatible alias for older callers/tests. */
@@ -295,7 +295,7 @@ export function sessionKeyOf(agent) {
 
 /** Per-session bridge selection persistence file. */
 export function bridgeSelectionPath() {
-  return path.join(os.homedir(), '.mv-aide', 'dsh-bridge-selection.json');
+  return dshBridgeSelectionPath();
 }
 
 const selectionWriteQueues = new Map();
@@ -340,7 +340,7 @@ function deriveWorkspaceSelections(sessions) {
   return workspaces;
 }
 
-async function readBridgeSelectionState(file = bridgeSelectionPath()) {
+async function readBridgeSelectionStateFile(file) {
   try {
     const raw = JSON.parse(await fs.readFile(file, 'utf8'));
     if (!raw || typeof raw !== 'object' || !raw.sessions || typeof raw.sessions !== 'object') {
@@ -366,6 +366,31 @@ async function readBridgeSelectionState(file = bridgeSelectionPath()) {
   } catch {
     return { valid: false, version: 0, sessions: {}, workspaces: {} };
   }
+}
+
+async function migrateLegacyBridgeSelectionPath(file) {
+  if (file !== bridgeSelectionPath()) return;
+  try {
+    await fs.access(file);
+    return;
+  } catch {
+    // Canonical file is absent; only then is the legacy root-level file eligible.
+  }
+
+  const legacyFile = legacyDshBridgeSelectionPath();
+  const legacyState = await readBridgeSelectionStateFile(legacyFile);
+  if (!legacyState.valid) return;
+  await writeBridgeSelectionState(file, legacyState);
+  const verified = await readBridgeSelectionStateFile(file);
+  if (!verified.valid || verified.version !== 3) {
+    throw new Error('DSH bridge selection migration verification failed.');
+  }
+  await fs.unlink(legacyFile);
+}
+
+async function readBridgeSelectionState(file = bridgeSelectionPath()) {
+  await migrateLegacyBridgeSelectionPath(file);
+  return readBridgeSelectionStateFile(file);
 }
 
 async function writeBridgeSelectionState(file, state) {
@@ -503,8 +528,6 @@ export class BridgeClient {
     this.closedByUser = false;
     /** Server-side diff-review setting (see mv-AIDE "使用 Obsidian 审阅仓库外 diff"). */
     this.reviewOutsideVault = false;
-    /** Server-side passive-delivery mode: 'live' | 'on-send'. */
-    this.passiveDelivery = 'live';
     /** Whether mv-agent should replace getTerminalOutput with native terminal tools. */
     this.terminalAwarenessEnhanced = true;
     /** 状态栏「打开」勾选框：是否推送位置信息。 */
@@ -624,7 +647,6 @@ export class BridgeClient {
     // mv-AIDE (recent) echoes its settings back with the result; older
     // builds omit them, leaving the defaults.
     this.reviewOutsideVault = result?.reviewOutsideVault === true;
-    this.passiveDelivery = result?.passiveDelivery === 'on-send' ? 'on-send' : 'live';
     this.terminalAwarenessEnhanced = result?.terminalAwarenessEnhanced !== false;
     this.pushLocation = result?.pushLocation !== false;
     this.pushSelection = result?.pushSelection !== false;
@@ -725,8 +747,6 @@ export class BridgeSupervisor {
     this.workspaceFolders = [];
     /** Mirrors the mv-agent setting `reviewOutsideVault` on the live bridge. */
     this.reviewOutsideVault = false;
-    /** Mirrors the mv-agent setting `passiveDelivery` ('live' | 'on-send'). */
-    this.passiveDelivery = 'live';
     /** Mirrors the mv-agent setting `terminalAwarenessEnhanced`. */
     this.terminalAwarenessEnhanced = true;
     /** Mirrors the mv-agent status-bar checkbox `pushLocation`. */
@@ -830,8 +850,6 @@ export class BridgeSupervisor {
         if (notification?.method === 'mv_aide_settings_changed') {
           const next = notification?.params?.reviewOutsideVault;
           if (typeof next === 'boolean') this.reviewOutsideVault = next;
-          const mode = notification?.params?.passiveDelivery;
-          if (mode === 'live' || mode === 'on-send') this.passiveDelivery = mode;
           const terminalAwarenessEnhanced = notification?.params?.terminalAwarenessEnhanced;
           if (typeof terminalAwarenessEnhanced === 'boolean') {
             this.terminalAwarenessEnhanced = terminalAwarenessEnhanced;
@@ -853,7 +871,6 @@ export class BridgeSupervisor {
       await client.connect();
       await client.initialize();
       this.reviewOutsideVault = client.reviewOutsideVault === true;
-      this.passiveDelivery = client.passiveDelivery === 'on-send' ? 'on-send' : 'live';
       this.terminalAwarenessEnhanced = client.terminalAwarenessEnhanced !== false;
       this.pushLocation = client.pushLocation !== false;
       this.pushSelection = client.pushSelection !== false;

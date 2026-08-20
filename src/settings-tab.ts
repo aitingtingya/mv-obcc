@@ -40,7 +40,7 @@ import { t } from "./i18n";
 import { renderLintSetting } from "./lint/lint-settings-ui";
 import { renderMvRunSetting } from "./terminal/mv-run-settings-ui";
 import { renderRegexScopeSetting } from "./regex-replace/regex-replace-settings-ui";
-import { EXTERNAL_FILE_MIRROR_FOLDER } from "./vault-storage-paths";
+import { EXTERNAL_FILE_MIRROR_FOLDER } from "./storage/vault-paths";
 import type {
   DefaultOpenerOperationResult,
   ExternalFileOpenerOwner,
@@ -81,26 +81,17 @@ import {
   probePythonModule,
   resolvePythonCommand,
 } from "./terminal/terminal-process";
+import { createRememberedSettingsSubsection } from "./settings-subsection";
 
 type MainSettingsSectionId =
   | "ide"
-  | "llm"
-  | "inline-completion"
+  | "in-document-ai"
   | "terminal"
   | "source-assist"
   | "vim"
   | "external-file-opener"
   | "filesystem-browser"
   | "mv-agent";
-
-const SOURCE_LABELS = {
-  manual: "手动覆盖",
-  "vault-local": "当前仓库 .claude/settings.local.json",
-  "vault-project": "当前仓库 .claude/settings.json",
-  user: "用户 ~/.claude/settings.json",
-  environment: "Obsidian 进程环境变量",
-  none: "未找到",
-} as const;
 
 class SourceAssistExtensionModal extends Modal {
   private inputEl!: HTMLInputElement;
@@ -837,6 +828,7 @@ function createCollapsibleSettingsSection(
 export class MvAideIdeSettingTab extends PluginSettingTab {
   private readonly openSettingsSections = new Set<MainSettingsSectionId>();
   private readonly openIdeSubsectionIds = new Set<string>();
+  private readonly openInDocumentAiSubsectionIds = new Set<string>();
   private readonly openSourceAssistProfileIds = new Set<string>();
   private readonly openVimSourceProfileExtensions = new Set<string>();
   private readonly sourceAssistSnippetEditors: EditorView[] = [];
@@ -874,11 +866,10 @@ export class MvAideIdeSettingTab extends PluginSettingTab {
     this.plugin.dshFeature?.renderSection(mvAgentEl, () =>
       this.rerenderSettings("mv-agent"),
     );
-    const llmEl = this.createSettingsSection(rootEl, "llm", t("划词助手"));
-    const inlineCompletionEl = this.createSettingsSection(
+    const inDocumentAiEl = this.createSettingsSection(
       rootEl,
-      "inline-completion",
-      t("行内补全"),
+      "in-document-ai",
+      t("文件内AI助手"),
     );
     const terminalEl = this.createSettingsSection(rootEl, "terminal", t("终端"));
     const sourceAssistEl = this.createSettingsSection(
@@ -914,7 +905,6 @@ export class MvAideIdeSettingTab extends PluginSettingTab {
     this.plugin.dshFeature?.renderAgentEntry(agentsEl, () =>
       this.rerenderSettings("ide"),
     );
-    this.renderIdeUpstreamSettings(agentsEl);
     this.renderIdeClaudeSettings(agentsEl);
     this.renderIdeCodexSettings(agentsEl);
 
@@ -947,7 +937,12 @@ export class MvAideIdeSettingTab extends PluginSettingTab {
     containerEl = filesystemBrowserEl;
     this.renderFilesystemBrowserSettings(containerEl);
 
-    containerEl = llmEl;
+    containerEl = createRememberedSettingsSubsection(
+      inDocumentAiEl,
+      "providers",
+      t("API提供商"),
+      this.openInDocumentAiSubsectionIds,
+    );
     containerEl.createEl("div", {
       text: t("🤖 API 提供商（划词助手与行内补全共用）"),
       cls: "mv-aide-section-title setting-item-name",
@@ -961,14 +956,12 @@ export class MvAideIdeSettingTab extends PluginSettingTab {
     }
     this.renderProviders(containerEl);
 
-    containerEl = inlineCompletionEl;
-    containerEl.createEl("div", {
-      text: t("⌨️ 行内补全（Markdown 续写）"),
-      cls: "mv-aide-section-title setting-item-name",
-    });
-    this.renderInlineCompletion(containerEl);
-
-    containerEl = llmEl;
+    containerEl = createRememberedSettingsSubsection(
+      inDocumentAiEl,
+      "selection-assistant",
+      t("划词助手"),
+      this.openInDocumentAiSubsectionIds,
+    );
     containerEl.createEl("div", {
       text: t("✍️ 划词助手（选词调用 LLM）"),
       cls: "mv-aide-section-title setting-item-name",
@@ -987,7 +980,7 @@ export class MvAideIdeSettingTab extends PluginSettingTab {
             this.plugin.settings.llm.enabled = value;
             await this.plugin.saveData(this.plugin.settings);
             this.plugin.refreshLlmFeature();
-            this.rerenderSettings("llm");
+            this.rerenderSettings("in-document-ai");
           }),
       );
 
@@ -1077,10 +1070,22 @@ export class MvAideIdeSettingTab extends PluginSettingTab {
             };
             this.plugin.settings.llm.templates.push(next);
             await this.plugin.saveData(this.plugin.settings);
-            this.rerenderSettings("llm");
+            this.rerenderSettings("in-document-ai");
           }),
       );
     }
+
+    containerEl = createRememberedSettingsSubsection(
+      inDocumentAiEl,
+      "inline-completion",
+      t("行内补全"),
+      this.openInDocumentAiSubsectionIds,
+    );
+    containerEl.createEl("div", {
+      text: t("⌨️ 行内补全（Markdown 续写）"),
+      cls: "mv-aide-section-title setting-item-name",
+    });
+    this.renderInlineCompletion(containerEl);
 
     // ---- 💻 终端设置 ----
     containerEl = terminalEl;
@@ -1474,72 +1479,11 @@ export class MvAideIdeSettingTab extends PluginSettingTab {
     }
   }
 
-  private renderIdeUpstreamSettings(containerEl: HTMLElement): void {
-    addHeading(containerEl, t("上游兼容"));
-    new Setting(containerEl)
-      .setName(t("上游模式"))
-      .setDesc(
-        t("原生模式不改请求；兼容模式会把 IDE system 上下文移动到对应 user 消息中，不会复制两份。"),
-      )
-      .addDropdown((dropdown) =>
-        dropdown
-          .addOption("native", t("原生"))
-          .addOption("compatibility", t("兼容"))
-          .setValue(this.plugin.settings.upstreamMode)
-          .onChange(async (value) => {
-            this.plugin.settings.upstreamMode =
-              value === "compatibility" ? "compatibility" : "native";
-            await this.plugin.saveAndApplySettings();
-            this.rerenderSettings("ide");
-          }),
-      );
-
-    if (this.plugin.settings.upstreamMode === "compatibility") {
-      const resolved = this.plugin.resolvedUpstream();
-      new Setting(containerEl)
-        .setName(t("Anthropic 上游地址（可选）"))
-        .setDesc(
-          t("留空时自动读取 Claude 配置。只有需要覆盖自动结果时才填写。"),
-        )
-        .addText((text) =>
-          text
-            .setPlaceholder(t("留空以自动读取"))
-            .setValue(this.plugin.settings.upstreamBaseUrl)
-            .onChange(async (value) => {
-              this.plugin.settings.upstreamBaseUrl = value.trim();
-              await this.plugin.saveAndApplySettings();
-            }),
-        );
-
-      new Setting(containerEl)
-        .setName(t("当前识别的上游"))
-        .setDesc(t("来源：{source}", { source: t(SOURCE_LABELS[resolved.source]) }))
-        .addText((text) =>
-          text.setValue(resolved.url || t("未找到 ANTHROPIC_BASE_URL")).setDisabled(true),
-        );
-
-      new Setting(containerEl)
-        .setName(t("自动管理当前仓库的 Claude 设置"))
-        .setDesc(
-          t("仅把当前仓库的 ANTHROPIC_BASE_URL 指向本地兼容端点；关闭时恢复插件接管前的值。"),
-        )
-        .addToggle((toggle) =>
-          toggle
-            .setValue(this.plugin.settings.autoManageClaudeSettings)
-            .onChange(async (value) => {
-              this.plugin.settings.autoManageClaudeSettings = value;
-              await this.plugin.saveAndApplySettings();
-              this.rerenderSettings("ide");
-            }),
-        );
-    }
-  }
-
   private renderIdeClaudeSettings(containerEl: HTMLElement): void {
     addHeading(containerEl, t("Claude Code"));
     const claudeSetting = new Setting(containerEl)
       .setName(t("启用 Claude Code IDE 功能"))
-      .setDesc(t("默认开启。关闭后不写统一 discovery lock（~/.mv-aide/ide，Claude 兼容镜像也不写）、不注册 Claude MCP、不接管 Claude 设置。"))
+      .setDesc(t("默认开启。关闭后不写统一 discovery lock（~/.mv-aide/ide，Claude 兼容镜像也不写）、不注册 Claude MCP。"))
       .addToggle((toggle) =>
         toggle
           .setValue(this.plugin.settings.ideIntegrations.claudeCode)
@@ -1697,7 +1641,7 @@ export class MvAideIdeSettingTab extends PluginSettingTab {
     new Setting(containerEl)
       .setName(t("支持所有活动页面"))
       .setDesc(
-        t("默认关闭。开启后追踪任意 Obsidian 标签，并通过 Claude 会话 PID 和终端标题标记精确忽略该会话自己的终端；改变后请重新启动 Claude Code。"),
+        t("默认关闭。开启后追踪任意非终端 Obsidian 标签；终端始终排除，被动上下文保留最近一次合法页面。"),
       )
       .addToggle((toggle) =>
         toggle
@@ -1802,16 +1746,6 @@ export class MvAideIdeSettingTab extends PluginSettingTab {
         }),
       );
 
-    new Setting(containerEl)
-      .setName(t("恢复插件管理的 Claude 设置"))
-      .setDesc(t("只恢复本插件替换过的 ANTHROPIC_BASE_URL，不改其他配置。"))
-      .addButton((button) =>
-        button.setButtonText(t("恢复")).onClick(async () => {
-          await this.plugin.restoreClaudeSettings();
-          new Notice(t("已恢复 mv-AIDE 管理的 Claude 设置。"));
-          this.rerenderSettings("ide");
-        }),
-      );
   }
 
   private renderIdeMcpToolSettings(containerEl: HTMLElement): void {
@@ -3230,7 +3164,7 @@ export class MvAideIdeSettingTab extends PluginSettingTab {
             cfg.armed = false;
           }
           await this.saveInlineCompletionSettings();
-          this.rerenderSettings("inline-completion");
+          this.rerenderSettings("in-document-ai");
         }),
       );
 
@@ -3253,7 +3187,7 @@ export class MvAideIdeSettingTab extends PluginSettingTab {
             cfg.modelId = null;
           }
           await this.saveInlineCompletionSettings();
-          this.rerenderSettings("inline-completion");
+          this.rerenderSettings("in-document-ai");
         });
       })
       .addDropdown((dropdown) => {
@@ -3294,7 +3228,7 @@ export class MvAideIdeSettingTab extends PluginSettingTab {
           .onChange(async (value) => {
             cfg.thinkingMode = value as LlmThinkingMode;
             await this.saveInlineCompletionSettings();
-            this.rerenderSettings("inline-completion");
+            this.rerenderSettings("in-document-ai");
           });
       })
       .addText((text) => {
@@ -3330,7 +3264,7 @@ export class MvAideIdeSettingTab extends PluginSettingTab {
         btn.setButtonText(t("恢复默认")).onClick(async () => {
           cfg.systemPromptBody = DEFAULT_INLINE_SYSTEM_PROMPT_BODY;
           await this.saveInlineCompletionSettings();
-          this.rerenderSettings("inline-completion");
+          this.rerenderSettings("in-document-ai");
         }),
       );
 
@@ -3373,7 +3307,7 @@ export class MvAideIdeSettingTab extends PluginSettingTab {
         btn.setButtonText(t("恢复默认")).onClick(async () => {
           cfg.noCompletionPrompt = DEFAULT_INLINE_NO_COMPLETION_PROMPT;
           await this.saveInlineCompletionSettings();
-          this.rerenderSettings("inline-completion");
+          this.rerenderSettings("in-document-ai");
         }),
       );
 
@@ -3397,7 +3331,7 @@ export class MvAideIdeSettingTab extends PluginSettingTab {
         btn.setButtonText(t("恢复默认")).onClick(async () => {
           cfg.rejectPrompt = DEFAULT_INLINE_REJECT_PROMPT;
           await this.saveInlineCompletionSettings();
-          this.rerenderSettings("inline-completion");
+          this.rerenderSettings("in-document-ai");
         }),
       );
 
@@ -3647,7 +3581,7 @@ export class MvAideIdeSettingTab extends PluginSettingTab {
           };
           this.plugin.settings.llm.providers.push(next);
           await this.plugin.saveData(this.plugin.settings);
-          this.rerenderSettings("llm");
+          this.rerenderSettings("in-document-ai");
         }),
     );
   }
@@ -3712,7 +3646,7 @@ export class MvAideIdeSettingTab extends PluginSettingTab {
           this.plugin.settings.llm.providers.splice(idx, 1);
           await this.plugin.saveData(this.plugin.settings);
           this.plugin.refreshInlineCompletion();
-          this.rerenderSettings("llm");
+          this.rerenderSettings("in-document-ai");
         }),
     );
 
@@ -3764,7 +3698,7 @@ export class MvAideIdeSettingTab extends PluginSettingTab {
             if (!target) return;
             target.useProxy = value;
             await this.plugin.saveData(this.plugin.settings);
-            this.rerenderSettings("llm");
+            this.rerenderSettings("in-document-ai");
           }),
       );
 
@@ -3818,7 +3752,7 @@ export class MvAideIdeSettingTab extends PluginSettingTab {
         }
         await this.plugin.saveData(this.plugin.settings);
         this.plugin.refreshInlineCompletion();
-        this.rerenderSettings("llm");
+        this.rerenderSettings("in-document-ai");
       });
     }
     void modelsHeading; // label rendered above
@@ -3835,7 +3769,7 @@ export class MvAideIdeSettingTab extends PluginSettingTab {
       };
       p.models.push(entry);
       await this.plugin.saveData(this.plugin.settings);
-      this.rerenderSettings("llm");
+      this.rerenderSettings("in-document-ai");
     });
   }
 
@@ -4027,7 +3961,7 @@ export class MvAideIdeSettingTab extends PluginSettingTab {
           }
           await this.plugin.saveData(this.plugin.settings);
           this.plugin.refreshLlmFeature();
-          this.rerenderSettings("llm");
+          this.rerenderSettings("in-document-ai");
         }),
     );
   }

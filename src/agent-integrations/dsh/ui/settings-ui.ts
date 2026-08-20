@@ -1,13 +1,13 @@
 import { Modal, Notice, Setting, type App, type ButtonComponent } from "obsidian";
-import type MvAideIdePlugin from "../../main";
-import { t } from "../i18n";
-import type { DshAutoOpenRegion, DshInstallTarget } from "./dsh-settings";
+import type MvAideIdePlugin from "../../../../main";
+import { t } from "../../../i18n";
+import type { DshAutoOpenRegion, DshInstallTarget } from "../settings";
 import {
   DSH_ACTIVE_CHANNELS,
   DSH_PASSIVE_DIFF_CHANNELS,
   DSH_PASSIVE_STATE_CHANNELS,
   type DshScopeChannel,
-} from "./dsh-outside-policy";
+} from "../ide/outside-policy";
 import {
   combinedNodeStatus,
   combinedToolStatus,
@@ -15,10 +15,11 @@ import {
   toolIsInstalled,
   type DshInstallLayer,
   type DshLayerStatus,
-} from "./dsh-environment";
-import { renderDshPluginManager } from "./dsh-plugin-manager-ui";
-import { renderDshSkillManager } from "./dsh-skill-manager-ui";
-import { renderDshPresetManager } from "./dsh-preset-manager-ui";
+  type RuntimeUpdateStatus,
+} from "../runtime/environment";
+import { renderDshPluginManager } from "../management/plugin-manager-ui";
+import { renderDshSkillManager } from "../management/skill-manager-ui";
+import { renderDshPresetManager } from "../management/preset-manager-ui";
 
 function heading(containerEl: HTMLElement, text: string): void {
   new Setting(containerEl).setName(text).setHeading();
@@ -88,6 +89,10 @@ function layerStatusText(status: DshLayerStatus): string {
       return status.version ? t("● 已就绪（{version}）", { version: status.version }) : t("● 已就绪");
     case "missing":
       return t("● 未安装");
+    case "broken-link":
+      return t("● 需要修复");
+    case "occupied":
+      return t("● 路径被占用");
     case "incompatible":
       return t("● 版本不兼容");
     case "blocked":
@@ -101,10 +106,34 @@ function layerStatusText(status: DshLayerStatus): string {
   }
 }
 
+function runtimeStatusText(status: DshLayerStatus, update: RuntimeUpdateStatus): string {
+  const base = layerStatusText(status);
+  if (!update.checked) return base;
+  if (update.error) return `${base} · ${t("更新检查失败")}`;
+  if (!update.targetVersion) return base;
+  if (update.relation === "older" || status.state === "missing") {
+    return `${base} · ${t("最新 {version}", { version: update.targetVersion })}`;
+  }
+  if (update.relation === "newer") {
+    return `${base} · ${t("发布通道目标 {version}", { version: update.targetVersion })}`;
+  }
+  return base;
+}
+
+function runtimeActionLabel(installed: boolean, update: RuntimeUpdateStatus): string {
+  if (!installed) return t("安装");
+  if (update.checked && (update.relation === "current" || update.relation === "newer")) {
+    return t("重装");
+  }
+  return t("升级");
+}
+
 function layerStatusClass(status: DshLayerStatus): string {
   if (status.state === "ready") return "mv-aide-status-success";
   if (
     status.state === "missing"
+    || status.state === "broken-link"
+    || status.state === "occupied"
     || status.state === "incompatible"
     || status.state === "error"
     || status.state === "partial"
@@ -193,21 +222,27 @@ export function renderDshAgentEntry(
       toggle
         .setValue(plugin.settings.dsh.enabled)
         .onChange(async (value) => {
-          plugin.settings.dsh.enabled = value;
-          await plugin.saveAndApplySettings();
+          await dshFeature.setIdeEnabled(value);
           rerender();
         }),
     );
 
+  const ideState = dshFeature.ideIntegrationState();
   if (!plugin.settings.dsh.enabled) {
     statusSpan(enabledSetting.settingEl, t("状态：已禁用"), "mv-aide-status-muted");
+  } else if (ideState.state === "blocked" || ideState.state === "error") {
+    statusSpan(
+      enabledSetting.settingEl,
+      t("● 启动失败: {error}", { error: ideState.detail }),
+      "mv-aide-status-error",
+    );
   } else if (plugin.claudeIdeError) {
     statusSpan(
       enabledSetting.settingEl,
       t("● 启动失败: {error}", { error: plugin.claudeIdeError }),
       "mv-aide-status-error",
     );
-  } else if (plugin.port) {
+  } else if (ideState.state === "ready" && plugin.port) {
     statusSpan(
       enabledSetting.settingEl,
       t("● 运行中（端口 {port}）", { port: plugin.port }),
@@ -297,35 +332,43 @@ export function renderDshSection(
   const nodeInstalled = preferredNodeLocation(environment.node) !== null;
   const nodeSetting = new Setting(installEl)
     .setName("Node.js")
-    .setDesc(nodeStatus.detail || t("点击“检测”刷新实际状态。"))
+    .setDesc(environment.updates.node.error || nodeStatus.detail || t("点击“检测”刷新实际状态。"))
     .addButton((button) => {
       environmentButtons.push(button);
       button
-        .setButtonText(nodeInstalled ? t("升级") : t("安装"))
+        .setButtonText(runtimeActionLabel(nodeInstalled, environment.updates.node))
         .setDisabled(dshFeature.isEnvironmentBusy())
         .onClick(() => runLayer("node"));
     });
-  statusSpan(nodeSetting.settingEl, layerStatusText(nodeStatus), layerStatusClass(nodeStatus));
+  statusSpan(
+    nodeSetting.settingEl,
+    runtimeStatusText(nodeStatus, environment.updates.node),
+    layerStatusClass(nodeStatus),
+  );
 
   for (const [layer, name, locations] of [
     ["dsh", "DSH", environment.dsh],
     ["pnpm", "pnpm", environment.pnpm],
   ] as const) {
     const status = combinedToolStatus(locations);
+    const update = environment.updates[layer];
     const setting = new Setting(installEl)
       .setName(name)
-      .setDesc(status.detail || t("点击“检测”刷新实际状态。"))
+      .setDesc(update.error || status.detail || t("点击“检测”刷新实际状态。"))
       .addButton((button) => {
         environmentButtons.push(button);
+        const actionLabel = status.state === "broken-link" && status.binaryIssue?.repairable
+          ? t("修复")
+          : runtimeActionLabel(toolIsInstalled(locations), update);
         button
-          .setButtonText(toolIsInstalled(locations) ? t("升级") : t("安装"))
+          .setButtonText(actionLabel)
           .setDisabled(dshFeature.isEnvironmentBusy())
           .onClick(() => runLayer(layer));
       });
-    statusSpan(setting.settingEl, layerStatusText(status), layerStatusClass(status));
+    statusSpan(setting.settingEl, runtimeStatusText(status, update), layerStatusClass(status));
   }
 
-  const pluginStatus = environment.plugin;
+  const pluginStatus = environment.plugins.full;
   const pluginAction = pluginStatus.state === "ready"
     ? t("更新")
     : pluginStatus.state === "partial" || pluginStatus.state === "error"
@@ -432,22 +475,6 @@ export function renderDshSection(
     openSubsectionIds.has("passive"),
     toggleSubsection,
   );
-  new Setting(passiveEl)
-    .setName(t("被动推送"))
-    .setDesc(
-      t("「实时跟踪」：选区每次稳定变化都会注入 dsh 会话（自动去重、替换旧注入，不重复计费 token）。「仅发送时推送」：平时只记录最新选区，在你向 dsh 发送消息的瞬间推送一次，agent 工作期间不再注入；@提及仍会唤醒 agent。"),
-    )
-    .addDropdown((dropdown) =>
-      dropdown
-        .addOption("live", t("实时跟踪活动轨迹"))
-        .addOption("on-send", t("仅发送消息时推送一次"))
-        .setValue(plugin.settings.dsh.passiveDelivery)
-        .onChange(async (value) => {
-          plugin.settings.dsh.passiveDelivery =
-            value === "on-send" ? "on-send" : "live";
-          await plugin.saveAndApplySettings();
-        }),
-    );
   for (const channel of DSH_PASSIVE_STATE_CHANNELS) {
     if (channel === DSH_PASSIVE_STATE_CHANNELS[0]) heading(passiveEl, t("状态感知"));
     outsideChannelRow(plugin, passiveEl, channel);

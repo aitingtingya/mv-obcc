@@ -1,4 +1,4 @@
-import { runProcess } from "../process-runner";
+import { runProcess } from "../../../process-runner";
 
 /** One DSH-looking process plus its platform-level identity. */
 export interface DshProcessInfo {
@@ -7,6 +7,8 @@ export interface DshProcessInfo {
   /** Listening port parsed from `--port`, or null when it is not present. */
   port: number | null;
   command: string;
+  /** Native executable path when the platform can report it. */
+  executable?: string;
 }
 
 /**
@@ -16,6 +18,11 @@ export interface DshProcessInfo {
  */
 export interface DshProcessDiscoveryAdapter {
   listDshProcesses(): Promise<DshProcessInfo[]>;
+  /**
+   * Fail-closed process enumeration used before mutating the Windows DSH
+   * package. Normal discovery may stay best-effort for UI/runtime probing.
+   */
+  listDshProcessesStrict?(): Promise<DshProcessInfo[]>;
   processInfo(pid: number): Promise<DshProcessInfo | null>;
   listenerPid(port: number): Promise<number | null>;
   killProcessTree(pid: number): Promise<boolean>;
@@ -29,6 +36,7 @@ interface RawProcessLine {
   pid: number;
   ppid: number;
   command: string;
+  executable?: string;
 }
 
 function parsePort(command: string): number | null {
@@ -62,13 +70,15 @@ function parseJsonProcesses(output: string): RawProcessLine[] {
     const record = item as {
       ProcessId?: unknown;
       ParentProcessId?: unknown;
+      ExecutablePath?: unknown;
       CommandLine?: unknown;
     };
     const pid = Number(record.ProcessId);
     const ppid = Number(record.ParentProcessId);
     const command = String(record.CommandLine ?? "").trim();
     if (Number.isInteger(pid) && Number.isInteger(ppid) && command.length > 0) {
-      result.push({ pid, ppid, command });
+      const executable = String(record.ExecutablePath ?? "").trim();
+      result.push({ pid, ppid, command, ...(executable ? { executable } : {}) });
     }
   }
   return result;
@@ -100,12 +110,41 @@ function isDshCommand(command: string): boolean {
   return /\bdsh(?:\.exe)?\s+web(?:\s|$)/iu.test(command);
 }
 
+/**
+ * Strong Windows classifier for a process that is executing DSH runtime code.
+ * Merely mentioning `dsh` (for example npm install/view or an editor filename)
+ * is intentionally insufficient.
+ */
+export function isDshRuntimeProcess(
+  info: Pick<DshProcessInfo, "command" | "executable">,
+): boolean {
+  const executable = (info.executable ?? "").replace(/\\/gu, "/").toLowerCase();
+  const executableBase = executable.split("/").at(-1) ?? "";
+  if (executableBase === "dsh" || executableBase === "dsh.exe") return true;
+
+  const firstToken = /^\s*(?:"([^"]+)"|'([^']+)'|(\S+))/u.exec(info.command);
+  const invoked = (firstToken?.[1] ?? firstToken?.[2] ?? firstToken?.[3] ?? "")
+    .replace(/\\/gu, "/")
+    .toLowerCase()
+    .split("/")
+    .at(-1) ?? "";
+  if (invoked === "dsh" || invoked === "dsh.exe" || invoked === "dsh.cmd") return true;
+
+  const command = info.command.replace(/\\/gu, "/").toLowerCase();
+  // npm itself only contains a package spec (`@deepseek-ai/dsh@x.y.z`). A live
+  // DSH process is Node executing code from the installed package directory.
+  const nodeHost = executableBase === "node" || executableBase === "node.exe"
+    || invoked === "node" || invoked === "node.exe";
+  return nodeHost && /\/node_modules\/@deepseek-ai\/dsh(?:\/|$)/u.test(command);
+}
+
 function toProcessInfo(line: RawProcessLine): DshProcessInfo {
   return {
     pid: line.pid,
     ppid: line.ppid,
     command: line.command,
     port: parsePort(line.command),
+    ...(line.executable ? { executable: line.executable } : {}),
   };
 }
 
@@ -187,15 +226,35 @@ async function windowsPowerShell(run: typeof runProcess, script: string): Promis
   return result.code === 0 ? result.stdout : null;
 }
 
-async function windowsDshProcesses(run = runProcess): Promise<RawProcessLine[]> {
-  const output = await windowsPowerShell(
-    run,
-    "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match 'dsh' } | Select-Object ProcessId,ParentProcessId,CommandLine | ConvertTo-Json -Compress",
+const WINDOWS_DSH_PROCESS_SCRIPT = [
+  "$ErrorActionPreference = 'Stop';",
+  "Get-CimInstance Win32_Process",
+  "| Where-Object { $_.CommandLine -and $_.CommandLine -match '(?i)dsh' }",
+  "| Select-Object ProcessId,ParentProcessId,ExecutablePath,CommandLine",
+  "| ConvertTo-Json -Compress",
+].join(" ");
+
+async function windowsDshProcesses(
+  run = runProcess,
+  strict = false,
+): Promise<RawProcessLine[]> {
+  const result = await run(
+    "powershell",
+    ["-NoProfile", "-NonInteractive", "-Command", WINDOWS_DSH_PROCESS_SCRIPT],
+    { timeoutMs: 8000 },
   );
-  if (!output) return [];
+  if (result.code !== 0) {
+    if (strict) {
+      throw new Error(result.stderr || result.stdout || "Windows DSH process enumeration failed.");
+    }
+    return [];
+  }
+  if (!result.stdout.trim()) return [];
   try {
-    return parseJsonProcesses(output).filter((line) => isDshCommand(line.command));
-  } catch {
+    return parseJsonProcesses(result.stdout).filter((line) =>
+      isDshRuntimeProcess(toProcessInfo(line)));
+  } catch (error) {
+    if (strict) throw error;
     return [];
   }
 }
@@ -203,7 +262,7 @@ async function windowsDshProcesses(run = runProcess): Promise<RawProcessLine[]> 
 async function windowsProcessInfo(pid: number, run = runProcess): Promise<DshProcessInfo | null> {
   const output = await windowsPowerShell(
     run,
-    `Get-CimInstance Win32_Process -Filter "ProcessId=${pid}" | Select-Object ProcessId,ParentProcessId,CommandLine | ConvertTo-Json -Compress`,
+    `Get-CimInstance Win32_Process -Filter "ProcessId=${pid}" | Select-Object ProcessId,ParentProcessId,ExecutablePath,CommandLine | ConvertTo-Json -Compress`,
   );
   if (!output) return null;
   try {
@@ -244,6 +303,8 @@ export function createDefaultDshProcessDiscoveryAdapter(
     return {
       listDshProcesses: async () =>
         (await windowsDshProcesses(run)).map(toProcessInfo),
+      listDshProcessesStrict: async () =>
+        (await windowsDshProcesses(run, true)).map(toProcessInfo),
       processInfo: (pid) => windowsProcessInfo(pid, run),
       listenerPid: (port) => windowsListenerPid(port, run),
       killProcessTree: (pid) => windowsKillProcessTree(pid, run),

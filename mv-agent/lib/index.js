@@ -2,9 +2,8 @@
 //
 // - Registers the `/mv-aide` slash command for status, bridge selection, and
 //   direct bridge calls.
-// - Discovers mv-AIDE's own IDE bridges from the unified registry
-//   `~/.mv-aide/ide` (with a legacy/Claude-compatible fallback to
-//   `~/.claude/ide`) and registers each IDE tool as a native tool under
+// - Discovers mv-AIDE's own IDE bridges exclusively from
+//   `~/.mv-aide/ide` and registers each IDE tool as a native tool under
 //   `mv_aide__<name>`, so the model can use Obsidian context (selection, open
 //   editors, links, tags, …).
 // - Bridge selection is per dsh conversation: each conversation keeps its
@@ -12,9 +11,9 @@
 //   New conversations auto-prefer the bridge for their dsh workspace, then
 //   the workspace's most recent manual bridge choice, and stay disconnected
 //   when neither exists.
-// - Passively delivers mv-AIDE bridge notifications: `selection_changed` is
-//   injected into the agent's inbox as context (no wake-up), and the
-//   user-triggered `at_mentioned` steering wakes the agent to act on it.
+// - Maintains the latest mv-AIDE passive snapshot: `selection_changed` only
+//   updates buffered context, which is injected once when the user starts the
+//   next turn; user-triggered `at_mentioned` steering still wakes the agent.
 //
 // This is a static Cordis plugin: `name`, `inject`, and `apply` are the only
 // exports the loader consumes.
@@ -626,27 +625,12 @@ export function apply(ctx, config = {}) {
     if (decision === 'drop') return;
     state.lastSelectionFile = pending.filePath;
     state.lastSelectionSignature = pending.signature;
-    if (decision === 'clear') {
-      state.bufferedSelection = pending;
-      state.bufferedAt = pending.at;
-      return;
-    }
-    if (supervisor.passiveDelivery === 'on-send') {
-      state.bufferedSelection = pending;
-      state.bufferedAt = pending.at;
-      return;
-    }
-    deliverToMatches(
-      supervisor,
-      'selection',
-      (agent) => sessionKeyOf(agent) === supervisor.sessionKey && selectionDeliveryAllowed(agent, pending.viewType, supervisor),
-      (agent) => pushSelectionToAgent(agent, pending, supervisor),
-    );
+    state.bufferedSelection = pending;
+    state.bufferedAt = pending.at;
   }
 
-  /** 'on-send' mode: push the buffered snapshot once, at the turn start. */
+  /** Push the buffered snapshot once at the next user turn start. */
   function injectBufferedIfNewer(agent, supervisor) {
-    if (supervisor.passiveDelivery !== 'on-send') return;
     const state = passiveStateFor(supervisor);
     const buffered = state.bufferedSelection;
     if (!buffered) return;
@@ -658,17 +642,16 @@ export function apply(ctx, config = {}) {
   }
 
   /**
-   * 'on-send' backup trigger: a queued next-turn message means the user has
-   * sent something; push the buffered snapshot then. (The primary trigger is
-   * the agent/status listener registered below.)
+   * Backup trigger: a queued next-turn message means the user has sent
+   * something; push the buffered snapshot then. (The primary trigger is the
+   * agent/status listener registered below.)
    */
-  function tryOnSendBackup(supervisor) {
-    if (supervisor.passiveDelivery !== 'on-send') return;
+  function tryBufferedSendBackup(supervisor) {
     const state = passiveStateFor(supervisor);
     const buffered = state.bufferedSelection;
     deliverToMatches(
       supervisor,
-      'on-send backup',
+      'buffered snapshot backup',
       (agent) =>
         buffered &&
         sessionKeyOf(agent) === supervisor.sessionKey &&
@@ -719,7 +702,7 @@ export function apply(ctx, config = {}) {
       };
       if (state.selectionTimer !== null) clearTimeout(state.selectionTimer);
       state.selectionTimer = setTimeout(() => flushSelection(supervisor), SELECTION_DEBOUNCE_MS);
-      tryOnSendBackup(supervisor);
+      tryBufferedSendBackup(supervisor);
     } else if (method === 'at_mentioned') {
       const params = notification.params ?? {};
       const signature = mentionSignature(params);
@@ -986,8 +969,8 @@ export function apply(ctx, config = {}) {
     }
   }
 
-  // 'on-send' primary trigger: the moment an agent's turn starts (the user
-  // sent a message), push the buffered selection snapshot once. The payload
+  // Primary buffered-snapshot trigger: when an agent turn starts after the
+  // user sends a message, push the latest selection snapshot once. The payload
   // carries { agent, status }; a running status that is not a real turn
   // start (e.g. a steer wake) still counts as a send moment — acceptable.
   ctx.on('agent/status', (payload) => {

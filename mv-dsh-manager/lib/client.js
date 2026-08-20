@@ -530,7 +530,7 @@ window.__ModuleLoader__.load({
     }
 
     async function executeLine(sessionId, line, ctx) {
-      const result = await ctx.remote.commands.execute(sessionId, line);
+      const result = await ctx.remote.commands.execute(sessionId, line, []);
       if (!result || result.ok === false) {
         const detail = result && result.error && result.error.message ? result.error.message : '未知错误';
         throw new Error(`命令执行失败：${detail}`);

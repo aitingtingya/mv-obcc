@@ -43,6 +43,24 @@ export function resolveVaultPath(
   };
 }
 
+export function isPathInside(
+  candidate: string,
+  parent: string,
+  platform = process.platform,
+): boolean {
+  const pathApi = platform === "win32" ? path.win32 : path.posix;
+  const resolvedCandidate = pathApi.resolve(candidate);
+  const resolvedParent = pathApi.resolve(parent);
+  const relative = pathApi.relative(resolvedParent, resolvedCandidate);
+  return (
+    relative === "" ||
+    (!!relative &&
+      relative !== ".." &&
+      !relative.startsWith(`..${pathApi.sep}`) &&
+      !pathApi.isAbsolute(relative))
+  );
+}
+
 export function fileUrl(filePath: string): string {
   const normalized = filePath.replace(/\\/g, "/");
   return normalized.startsWith("/")

@@ -6,17 +6,14 @@
 // through the `/mv-aide connect` host command; this service never connects.
 
 import { promises as fs } from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
+import { mvAideIdeDirectory } from './paths.js';
 
 export const IDE_NAME = 'Obsidian';
 
-/** Canonical registry first, then legacy/Claude-compatible fallback. */
+/** Canonical mv-AIDE bridge registry. */
 export function discoveryDirectories() {
-  return [
-    path.join(os.homedir(), '.mv-aide', 'ide'),
-    path.join(os.homedir(), '.claude', 'ide'),
-  ];
+  return [mvAideIdeDirectory()];
 }
 
 export function sortBridges(bridges) {

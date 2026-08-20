@@ -29,6 +29,9 @@
   ],
   "author": "mv-AIDE",
   "license": "MIT",
+  "scripts": {
+    "test": "node --test"
+  },
   "dependencies": {
     "yaml": "^2.9.0"
   }

@@ -1,8 +1,4 @@
 import type { ActivityTrackingSettings, SelectionState } from "./types";
-import { TERMINAL_MARKER_PREFIX } from "./constants";
-
-const SESSION_ID_PATTERN =
-  /mv-aide:([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i;
 
 export function isSelectedPageType(
   state: SelectionState,
@@ -30,14 +26,8 @@ export function isTerminalViewType(viewType: string): boolean {
   );
 }
 
-export function terminalMarker(sessionId: string): string {
-  return `${TERMINAL_MARKER_PREFIX}${sessionId}`;
+/** All-pages passive tracking keeps every non-terminal Obsidian view. */
+export function isAllPagesPassiveViewType(viewType: string): boolean {
+  return !isTerminalViewType(viewType);
 }
 
-export function parseTerminalMarker(values: readonly string[]): string | null {
-  for (const value of values) {
-    const match = SESSION_ID_PATTERN.exec(value);
-    if (match?.[1]) return match[1].toLowerCase();
-  }
-  return null;
-}

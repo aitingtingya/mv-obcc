@@ -1,10 +1,10 @@
-import { runProcess } from "../process-runner";
+import { runProcess } from "../../../process-runner";
 import {
   createDefaultDshProcessDiscoveryAdapter,
   type DshProcessDiscoveryAdapter,
   type DshProcessInfo,
-} from "./dsh-process-discovery";
-import { dshWebUrl, probeDshWeb, type DshWebProbeFn } from "./dsh-process";
+} from "../runtime/process-discovery";
+import { dshWebUrl, probeDshWeb, type DshWebProbeFn } from "../runtime/process";
 
 export interface DshBridgeStatusRequest {
   dshPort: number;

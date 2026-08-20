@@ -1,6 +1,6 @@
 import { Modal, Notice, Setting, setIcon, type App } from "obsidian";
-import type MvAideIdePlugin from "../../main";
-import { t } from "../i18n";
+import type MvAideIdePlugin from "../../../../main";
+import { t } from "../../../i18n";
 
 interface DshPluginEntry {
   id: string;
@@ -87,7 +87,7 @@ class ConfirmDisablePmModal extends Modal {
     this.setTitle(t("停用插件管理器确认"));
     this.contentEl.createEl("p", {
       cls: "setting-item-description",
-      text: t("警告：停用 mv-plugin-manager 插件管理器将导致无法在 Web UI 及此处继续进行插件启停管理。确定要停用吗？"),
+      text: t("警告：停用 mv-dsh-manager 插件管理器将导致无法在 Web UI 及此处继续进行插件启停管理。确定要停用吗？"),
     });
 
     new Setting(this.contentEl)

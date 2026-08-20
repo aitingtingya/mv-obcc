@@ -1,11 +1,10 @@
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { Modal, Notice, Setting, type TFile } from "obsidian";
 import type MvAideIdePlugin from "../../main";
 import { t } from "../i18n";
-import { stablePortSeed } from "../path-utils";
 import { getVaultRoot } from "../selection";
+import { mvAideVaultTempDirectory } from "../storage/temp-paths";
 import {
   applyRegexReplace,
   buildRegex,
@@ -349,11 +348,9 @@ export class RegexReplaceModal extends Modal {
   // ---------- 备份 ----------
 
   private backupRoot(): string {
-    // 备份是批量替换的唯一安全网，不得写入插件安装目录（规范三红线，且
-    // 插件更新/同步会整体覆盖该目录）——放系统临时目录，按 vault 哈希隔离。
-    return path.join(
-      os.tmpdir(),
-      `mv-aide-regex-backups-${stablePortSeed(getVaultRoot(this.app))}`,
+    return mvAideVaultTempDirectory(
+      getVaultRoot(this.app),
+      "regex-replace/backups",
     );
   }
 

@@ -10,25 +10,42 @@ function executableNames(name: string, platform: NodeJS.Platform): string[] {
   return extensions.map((extension) => `${name}${extension.toLowerCase()}`);
 }
 
+/**
+ * Enumerate PATH candidates without deciding whether each filesystem entry is
+ * currently runnable. DSH uses this separately from executable resolution so a
+ * dangling symlink can be reported as an occupied/broken path instead of being
+ * silently collapsed into "missing".
+ */
+export function systemExecutableCandidates(
+  name: string,
+  platform: NodeJS.Platform = process.platform,
+  environment: NodeJS.ProcessEnv = process.env,
+): string[] {
+  const pathApi = platform === "win32" ? path.win32 : path.posix;
+  const pathEntries = (environment.PATH || "").split(pathApi.delimiter).filter(Boolean);
+  if (platform !== "win32") {
+    pathEntries.push("/usr/local/bin", "/opt/homebrew/bin", "/usr/bin");
+  }
+  const candidates: string[] = [];
+  for (const directory of [...new Set(pathEntries)]) {
+    for (const executable of executableNames(name, platform)) {
+      candidates.push(pathApi.join(directory, executable));
+    }
+  }
+  return [...new Set(candidates)];
+}
+
 /** Resolve an executable from PATH without spawning a blocking probe. */
 export function findSystemExecutable(
   name: string,
   platform: NodeJS.Platform = process.platform,
   environment: NodeJS.ProcessEnv = process.env,
 ): string | null {
-  const pathApi = platform === "win32" ? path.win32 : path.posix;
-  const pathEntries = (environment.PATH || "").split(pathApi.delimiter).filter(Boolean);
-  if (platform !== "win32") {
-    pathEntries.push("/usr/local/bin", "/opt/homebrew/bin", "/usr/bin");
-  }
-  for (const directory of [...new Set(pathEntries)]) {
-    for (const executable of executableNames(name, platform)) {
-      const candidate = pathApi.join(directory, executable);
-      try {
-        if (fs.existsSync(candidate) && fs.statSync(candidate).isFile()) return candidate;
-      } catch {
-        /* inaccessible PATH entry */
-      }
+  for (const candidate of systemExecutableCandidates(name, platform, environment)) {
+    try {
+      if (fs.existsSync(candidate) && fs.statSync(candidate).isFile()) return candidate;
+    } catch {
+      /* inaccessible PATH entry */
     }
   }
   return null;

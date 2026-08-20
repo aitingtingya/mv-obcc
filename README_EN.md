@@ -18,15 +18,15 @@ Claude Code, Codex CLI, and any MCP agent can read active tabs, selections, diag
 
 ### AI becomes part of the editor
 
-Selection Assistant handles explicit local tasks while Inline Completion quietly continues the text at the cursor. Both use configurable OpenAI-compatible or Anthropic providers, with separate switches and deterministic input priority.
+**In-file AI assistant** groups API Providers, Selection Assistant, and Inline Completion. The two assistants share providers while keeping independent switches and runtime lifecycles.
 
 ### One workflow from prose to source code and desktop files
 
 Edit TeX and other source types, run a real terminal, use an independent Vim engine, browse the filesystem, and open external files in a chosen Obsidian vault. Every module can be disabled independently.
 
-## Nine Workflows
+## Eight Settings Sections
 
-The order below matches **Settings → mv-AIDE**. See the [complete feature guide](docs/features-en.md) for settings, defaults, platform boundaries, and troubleshooting.
+The order below matches **Settings → mv-AIDE**. See the [complete feature guide](docs/features-en.md) for defaults, platform boundaries, and troubleshooting.
 
 ### 1. IDE Bridge
 
@@ -38,11 +38,21 @@ The active file, selection, and editor state are passively synchronized with the
 
 ### 2. mv-agent (DSH-powered)
 
-mv-agent embeds DeepSeek Harness (DSH) directly into Obsidian: a custom view hosts the DSH web UI, with a bottom status bar showing the number of connected agents and the latest selection snapshot; the command palette provides **Open / Close / Restart mv-agent**. Settings split the runtime into four layers — Node.js, DSH, pnpm, and plugin injection — each detected independently with one-click install, upgrade, or repair, either into the vault's `mv-aide/dsh/` or globally (system authorization is requested for protected locations and never falls back to the vault). Once injected, dsh gains the `/mv-aide` command and `mv_aide__*` IDE tools; an agent's file-write permission confirmation can become an editable Obsidian diff (accepting it performs the write). Tools and passive push for projects outside the vault default to off and are opened per channel in settings.
+mv-agent embeds DeepSeek Harness (DSH) directly into Obsidian: a custom view hosts the DSH web UI, with a bottom status bar showing the number of connected agents and the latest selection snapshot; the command palette provides **Open / Stop / Restart mv-agent**. Settings split the runtime into four layers — Node.js, DSH, pnpm, and plugin injection — each detected independently with one-click install, upgrade, or repair, either into the vault's `mv-aide/dsh/` or globally (system authorization is requested for protected locations and never falls back to the vault). Once injected, dsh gains the `/mv-aide` command and `mv_aide__*` IDE tools; an agent's file-write permission confirmation can become an editable Obsidian diff (accepting it performs the write). Tools and passive push for projects outside the vault default to off and are opened per channel in settings.
+
+![Real DSH answers from the current selection and expands the live mv-agent status](media/readme/mv-agent.gif)
 
 [mv-agent details](docs/features-en.md#mv-agent)
 
-### 3. Selection Assistant
+### 3. In-file AI assistant
+
+Expanding it shows three default-collapsed subsections in this order: **API Providers**, **Selection Assistant**, and **Inline Completion**. Expansion state is remembered only for the current settings-page session and adds no persisted setting.
+
+#### API Providers
+
+Manage OpenAI-compatible or Anthropic endpoints, keys, and models shared by both assistants.
+
+#### Selection Assistant
 
 Select text in Markdown, PDF, or Web Viewer, invoke a prompt template, then edit, insert, or replace from the streamed result. The demo translates a selection from an English PDF through DeepSeek.
 
@@ -50,7 +60,7 @@ Select text in Markdown, PDF, or Web Viewer, invoke a prompt template, then edit
 
 [Selection Assistant settings](docs/features-en.md#selection-assistant)
 
-### 4. Inline Completion
+#### Inline Completion
 
 Generate dimmed ghost text while writing Markdown. It enters the document only after Tab acceptance; it can also be canceled or rejected to request another version.
 
@@ -58,7 +68,7 @@ Generate dimmed ghost text while writing Markdown. It enters the document only a
 
 [Inline Completion parameters](docs/features-en.md#inline-completion)
 
-### 5. Terminal
+### 4. Terminal
 
 Run a real system terminal in the main area, a sidebar, or a bottom split, keeping the command line and editor in one workspace. Terminal settings control open position independently from the new-terminal mode (split or new tab): sidebar splits stack vertically, main-area splits are left/right, and the bottom location first creates a lower pane before later terminals become tabs or left/right splits inside it. `mv-run: <command>` targets the most recently active mv-AIDE terminal (creating one when needed), while `mv-run -n: <command>` always creates a new terminal first.
 
@@ -66,7 +76,7 @@ Run a real system terminal in the main area, a sidebar, or a bottom split, keepi
 
 [Terminal support](docs/features-en.md#terminal)
 
-### 6. Source Assist
+### 5. Source Assist
 
 Register non-Markdown source extensions and configure highlighting, linting, regex replacement, `mv-run`, Code Suite, and optional enhanced TeX math rendering.
 
@@ -74,7 +84,7 @@ Register non-Markdown source extensions and configure highlighting, linting, reg
 
 [Source profiles and Code Suite](docs/features-en.md#source-assist)
 
-### 7. Vim Enhancement
+### 6. Vim Enhancement
 
 The independently implemented Vim core supports the major modes, motions, operators, text objects, registers, macros, search, Ex commands, and a vault-level `.vimrc`.
 
@@ -84,7 +94,7 @@ The independently implemented Vim core supports the major modes, motions, operat
 
 [Vim capability reference](docs/features-en.md#vim)
 
-### 8. Default File Opener
+### 7. Default File Opener
 
 Route Markdown and selected source extensions to a specific Obsidian vault. Double-clicking an external file can wake Obsidian and open the target vault even when it was closed.
 
@@ -92,7 +102,7 @@ Route Markdown and selected source extensions to a specific Obsidian vault. Doub
 
 [Platform limits and data model](docs/features-en.md#default-opener)
 
-### 9. Filesystem & Browser
+### 8. Filesystem & Browser
 
 Browse arbitrary directories, open downloaded files, and add Downloads and History entry points to Obsidian's built-in Web Viewer.
 
@@ -137,8 +147,8 @@ npm run deploy:local
 
 - The IDE bridge, universal MCP endpoint, and default-opener service listen on `127.0.0.1` only.
 - API keys are stored as plain text in `data.json` inside the current vault's plugin directory. Protect the vault and its backups accordingly.
-- Vim configuration, external-file mirrors, and other vault-level data live under `mv-aide/` in the current vault. mv-AIDE system state that must be discovered across processes or while Obsidian is closed lives under `~/.mv-aide/`, including IDE discovery, dsh bridge selection, and default-opener state.
-- mv-agent environment installation accesses the network only after the user clicks an action. Vault-installed Node.js, DSH, pnpm, and bridge files live under `<vault>/mv-aide/dsh/`; downloads, npm caches, and installer scripts use an operation-scoped temporary workspace that is removed when the action ends. Global installation or in-place upgrade uses a native administrator prompt and never silently falls back to the vault.
+- Vim configuration, external-file mirrors, and other vault-level data live under `mv-aide/` in the current vault. Cross-process state lives under `~/.mv-aide/`: IDE discovery under `ide/`, dsh bridge selection under `dsh/`, and the current default-opener authority under `file-opener/` (with failure-safe legacy compatibility during upgrade).
+- mv-agent environment installation accesses the network only after the user clicks an action. Vault-installed Node.js, DSH, and pnpm runtimes live under `<vault>/mv-aide/dsh/`; bridge and management plugins live in the DSH web profile. Downloads, npm caches, and installer scripts use an operation-scoped temporary workspace that is removed when the action ends. Global installation or in-place upgrade uses a native administrator prompt and never silently falls back to the vault.
 - Windows default-app confirmation must be completed by the user. The plugin writes only to the current user's registry, requests no administrator privileges, and never modifies the protected `UserChoice`.
 - Modules have independent switches. When Vim is disabled for every extension, its runtime, listeners, and editor extensions are not loaded.
 
@@ -148,8 +158,6 @@ See [Data and network boundaries](docs/features-en.md#storage-network) and the [
 
 - [Complete Feature Guide](docs/features-en.md)
 - [完整功能手册](docs/features.md)
-- [Windows Validation](WINDOWS-VALIDATION.md)
-- [Vim implementation and provenance](docs/vim-engine-provenance.md)
 - [Third-party notices](THIRD_PARTY_NOTICES.md)
 - [License](LICENSE)
 
@@ -157,4 +165,4 @@ See [Data and network boundaries](docs/features-en.md#storage-network) and the [
 
 The CodeMirror architecture of Inline Completion was informed by the public design of [obsidian-github-copilot](https://github.com/Pierrad/obsidian-github-copilot), and the terminal process bridge by [obsidian-claude-sidebar](https://github.com/derek-larson14/obsidian-claude-sidebar). Source Assist's Code Suite kernel is based on [obsidian-latex-suite](https://github.com/artisticat1/obsidian-latex-suite) `1.11.5` with its MIT notice preserved. Vim compatibility targets and configuration UX were informed by the public documentation and user-visible ideas of [obsidian-vimrc-support](https://github.com/esm7/obsidian-vimrc-support) and [Vim Motions](https://github.com/saberzero1/motions); mv-AIDE's core engine is independently implemented against Vim/Neovim behavior and CodeMirror 6 APIs.
 
-See [Third-party notices](THIRD_PARTY_NOTICES.md) and [Vim provenance](docs/vim-engine-provenance.md) for the exact boundaries.
+See [Third-party notices](THIRD_PARTY_NOTICES.md) and the [license](LICENSE) for the exact boundaries.
