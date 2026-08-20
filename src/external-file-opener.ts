@@ -43,6 +43,10 @@ import type {
   ExternalFileMapping,
   ExternalFileOpenerExtensionMode,
 } from "./types";
+import type {
+  ExternalFileEphemeralAdapter,
+  ExternalFileEphemeralLease,
+} from "./external-file-ephemeral-adapter";
 
 export interface ExternalFileOpenResult {
   success: boolean;
@@ -100,6 +104,7 @@ interface ExternalFileOpenerOptions {
   focusObsidianApp?: () => Promise<void>;
   managedCopyFallbackEnabled?: () => boolean;
   getManagedCopyHostId?: () => string;
+  ephemeralAdapter?: ExternalFileEphemeralAdapter;
   onManagedCopyConflict?: (
     conflict: ManagedCopyConflict,
     resolve: (
@@ -682,6 +687,11 @@ export class ExternalFileOpenerFeature {
       this.layoutReadyTimer = null;
     }
     this.stopManagedCopyRuntime();
+    try {
+      this.options.ephemeralAdapter?.dispose();
+    } catch (error) {
+      console.warn("[mv-aide] Failed to dispose an ephemeral external-file adapter.", error);
+    }
   }
 
   /** Stop restartable runtime work without permanently disposing the feature. */
@@ -817,6 +827,7 @@ export class ExternalFileOpenerFeature {
     options: { makeFrontmost?: boolean } = {},
   ): Promise<ExternalFileOpenResult> {
     let externalPath = "";
+    let ephemeralLease: ExternalFileEphemeralLease | null = null;
     try {
       const settings = this.options.getSettings();
       if (!settings.externalFileOpener.enabled) {
@@ -842,9 +853,18 @@ export class ExternalFileOpenerFeature {
         this.options.getVaultRoot(),
         externalPath,
       );
-      const vaultPath = directVaultPath ??
-        (await this.linkExternalFile(externalPath)).vaultPath;
-      if (!directVaultPath) await this.options.saveSettings();
+      let vaultPath: string;
+      if (directVaultPath) {
+        vaultPath = directVaultPath;
+      } else {
+        ephemeralLease = await this.options.ephemeralAdapter?.prepare(externalPath) ?? null;
+        if (ephemeralLease) {
+          vaultPath = ephemeralLease.vaultPath;
+        } else {
+          vaultPath = (await this.linkExternalFile(externalPath)).vaultPath;
+          await this.options.saveSettings();
+        }
+      }
 
       const file = await this.waitForIndexedFile(vaultPath);
       if (!file) {
@@ -859,6 +879,7 @@ export class ExternalFileOpenerFeature {
       // 已打开则聚焦已有标签，避免同一文件出现重复标签。
       const existingLeaf = this.findOpenFileLeaf(file);
       if (existingLeaf) {
+        ephemeralLease?.commitOpened();
         if (makeFrontmost) {
           this.options.app.workspace.setActiveLeaf(existingLeaf, {
             focus: true,
@@ -875,6 +896,7 @@ export class ExternalFileOpenerFeature {
       // 默认打开器一律新开标签，严禁覆盖用户当前正在查看的标签页。
       const leaf = this.options.app.workspace.getLeaf("tab");
       await leaf.openFile(file, { active: makeFrontmost });
+      ephemeralLease?.commitOpened();
       if (makeFrontmost) {
         await this.revealLeaf(leaf);
         await this.focusObsidianAppBestEffort();
@@ -885,6 +907,11 @@ export class ExternalFileOpenerFeature {
         vaultPath,
       };
     } catch (error) {
+      try {
+        await ephemeralLease?.abort();
+      } catch (cleanupError) {
+        console.warn("[mv-aide] Failed to clean up an ephemeral external file.", cleanupError);
+      }
       const fallbackRequired =
         error instanceof ExternalFileSymlinkFallbackRequiredError;
       return {

@@ -182,6 +182,7 @@ import {
 import {
   openExternalFileWithFallbackConsent as runExternalFileFallbackConsent,
 } from "./src/external-file-fallback-orchestrator";
+import { WindowsPdfEphemeralMirror } from "./src/windows-pdf-ephemeral-mirror";
 import {
   requestExternalFileSymlinkFallbackDecision,
   type ExternalFileSymlinkFallbackDecision,
@@ -692,6 +693,10 @@ export default class MvAideIdePlugin extends Plugin {
       getSettings: () => this.settings,
       getVaultRoot: () => getVaultRoot(this.app),
       saveSettings: () => this.saveData(this.settings),
+      ephemeralAdapter: new WindowsPdfEphemeralMirror({
+        app: this.app,
+        getVaultRoot: () => getVaultRoot(this.app),
+      }),
       managedCopyFallbackEnabled: () =>
         this.externalFileOpenerSystem.managedCopyFallbackEnabled(
           getVaultRoot(this.app),

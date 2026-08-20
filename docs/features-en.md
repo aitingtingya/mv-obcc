@@ -482,14 +482,21 @@ Status checks distinguish exactly:
 
 ### External Files and Mirrors
 
-External files are not copied into normal note folders. mv-AIDE creates tracked entries under `<vault>/mv-aide/external-files/mirror`:
+External files are not copied into normal note folders. Except for external PDFs on Windows, mv-AIDE continues to use the existing persistent mirror model under `<vault>/mv-aide/external-files/mirror`:
 
 1. Always attempt and verify a real symbolic link first.
 2. Use an isolated managed copy with bidirectional synchronization only after the platform/filesystem proves links unavailable and the user explicitly consents.
 3. “Retry and migrate to symbolic links” acts only on safely converged managed copies.
 4. Host/mapping state lives under `<vault>/mv-aide/external-files/hosts`.
 
-When a legacy mirror directory is detected, settings offers an explicit migration. Startup never silently moves old data.
+External PDFs on Windows use a separate short-lived mirror under `<vault>/mv-aide/external-files/pdf-ephemeral` and do not enter the persistent mapping above:
+
+1. Prefer a normal-file hard link; fall back to an asynchronous copy only when the filesystem cannot create the hard link, including cross-volume cases.
+2. Copies are first written to an isolated `.mv-aide-part-*` file and atomically renamed to `.pdf` only after completion checks, so the PDF viewer never indexes an incomplete copy.
+3. Reopening the same PDF during one run reuses its temporary mirror. Cleanup starts when the last matching tab closes, with short retries when Windows still holds the file handle.
+4. Temporary PDFs left by an abnormal exit are handled after the workspace layout is restored on the next launch; files still referenced by restored tabs or owned by another live process are preserved.
+
+When a legacy persistent mirror directory is detected, settings still offers only the existing explicit migration. Startup never silently moves old data.
 
 The receiver must not live under `.obsidian`, and Obsidian startup must never scan vault files and send them through the system default opener. These constraints prevent startup recursion and infinite loops.
 

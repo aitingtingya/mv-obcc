@@ -96,7 +96,7 @@ mv-agent 把 DeepSeek Harness（DSH）内嵌进 Obsidian：自定义视图承载
 
 ### 7. 默认文件打开器
 
-把 Markdown 及选定源码后缀交给指定 Obsidian 仓库。即使 Obsidian 已关闭，双击库外文件也能唤醒目标仓库并打开它。
+把 Markdown、PDF 及选定源码后缀交给指定 Obsidian 仓库。即使 Obsidian 已关闭，双击库外文件也能唤醒目标仓库并打开它；Windows 上的库外 PDF 会使用短生命周期镜像，关闭最后一个对应标签后自动清理。
 
 ![Finder 双击库外文件并由目标 Obsidian 仓库打开](media/readme/default-opener.gif)
 

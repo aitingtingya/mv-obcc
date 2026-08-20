@@ -96,7 +96,7 @@ The independently implemented Vim core supports the major modes, motions, operat
 
 ### 7. Default File Opener
 
-Route Markdown and selected source extensions to a specific Obsidian vault. Double-clicking an external file can wake Obsidian and open the target vault even when it was closed.
+Route Markdown, PDF, and selected source extensions to a specific Obsidian vault. Double-clicking an external file can wake Obsidian and open the target vault even when it was closed; on Windows, external PDFs use a short-lived mirror that is cleaned after the last matching tab closes.
 
 ![Finder opens an external file in the selected Obsidian vault](media/readme/default-opener.gif)
 
