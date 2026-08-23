@@ -104,11 +104,19 @@ The row accepts one optional field:
     - id: mv-agent
       name: '@mv-aide/mv-agent'
       config:
-        workspace: '/absolute/path/to/vault'   # pin which vault's bridge to use (optional)
+        workspace: '/absolute/path/to/workspace' # override the DSH workspace used for automatic matching (optional)
 ```
 
-Bridge selection is persisted in the v3 `~/.mv-aide/dsh/bridge-selection.json` store with explicit per-session and per-workspace records. An opened session first reuses its own target. A new session then chooses the outermost Obsidian vault that equals or contains its DSH workspace, or falls back to the DSH workspace's last attempted target. Manual and automatic choices both become the session target and update the workspace target. When neither exists, no supervisor or retry loop is created.
+Bridge history is persisted in the v4 `~/.mv-aide/dsh/bridge-selection.json` store with independent per-session and per-workspace records. The optional `workspace` config overrides the DSH session cwd used by automatic matching; it does not pin a bridge port. Automatic resolution tries, in order:
+
+1. this conversation's last **successful** vault connection;
+2. the last successful vault connection in the same DSH workspace;
+3. discovered vaults that equal or contain that workspace, ordered from the outermost containing vault to the most specific.
+
+Vault path is the durable identity and the port is replaceable endpoint data. Every candidate must complete WebSocket authentication, `initialize`, and `tools/list`; stale locks, bad tokens, and vanished listeners fall through to the next tier. Only a complete handshake updates session and workspace history. The v4 writer is atomic, serializes concurrent updates within the process, migrates recognized v1-v3 data, and keeps conversations independent: one conversation owns one bridge at a time, while multiple conversations may use different vaults or the same vault concurrently.
+
+`/mv-aide connect <selector>` switches transactionally: the old live bridge remains until the selected endpoint completes the full handshake, and failure neither disconnects it nor records a target. `/mv-aide connect auto` clears only that conversation's history before running the automatic resolver; it does not clear another conversation or the workspace-level history.
 
 ## Reconnection
 
-Only currently opened sessions own independent bridge connections. A selected target that is temporarily unavailable is re-scanned with exponential backoff (500 ms → 30 s) while that session remains open, and is never silently replaced by another vault. Closing or switching away from the session closes its bridge and cancels retry immediately. After a DSH restart the browser control channel reconnects and reports the restored current session, so only that opened session resumes its persisted target.
+Only currently opened sessions own independent bridge supervisors and connections. An opened session creates its supervisor even when no matching bridge is currently discoverable, then retries the full automatic candidate chain with exponential backoff (500 ms → 30 s). A remembered endpoint that is down may therefore fall through to that workspace's last successful vault or a containing vault, but never to an unrelated arbitrary port. Closing or switching away from the session closes only its bridge and cancels its retry; other conversations are unaffected. After a DSH restart or browser-module reload, each still-open frontend reports its current session again and restores that session's supervisor and history.

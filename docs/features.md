@@ -2,7 +2,7 @@
 
 [返回 README](../README.md) | [English](features-en.md)
 
-本文档对应 mv-AIDE `0.9.10`，以设置页顺序记录功能、默认值、边界和故障处理。README 负责快速了解产品；本文档是功能行为的完整参考。
+本文档对应 mv-AIDE `0.9.13`，以设置页顺序记录功能、默认值、边界和故障处理。README 负责快速了解产品；本文档是功能行为的完整参考。
 
 ## 目录
 
@@ -167,7 +167,7 @@ IDE 桥接不再改写 Agent 请求，也不提供任意上游代理；被动上
 
 dsh 是第四个已适配 Agent。开启「启用 dsh IDE 功能」后，插件启动 IDE 桥接并把权威 discovery lock 写入 `~/.mv-aide/ide`，dsh 中安装的 `@mv-aide/mv-agent` 会扫描该 lock 文件，用与 Claude Code 相同的本地 JSON-RPC 协议连接本仓库（`127.0.0.1`、端口 `47000 + 仓库种子 % 1500`）。连接后 dsh 侧出现：
 
-- `/mv-aide` 命令：`status`（本会话连接状态与桥信息）、`bridges`（列出所有 IDE 桥）、`connect <序号|端口|路径|auto>`（单会话手动选择/切回自动）、`tools`（列出 IDE 工具）、`selection`（读取当前选区）、`call <name> [json]`（调用任意桥接工具）。桥接选择按 dsh 会话独立持久化，重启 dsh 后仍恢复。自动解析依次尝试：本对话最后成功连接的 Vault、同一 DSH 工作区最后成功连接的 Vault、包含该工作区的在线 Vault；全部不可连接时保持未连接，不会随意选择其它端口。每个候选都必须完成 WebSocket 鉴权、`initialize` 和 `tools/list`，stale lock 或错误 token 会自动落到下一候选。在 `/` 菜单选中 `mv-aide` 后会先把命令补全进输入框（`/mv-aide `，选 `connect` 后为 `/mv-aide connect `），再继续弹出二级字段（`connect` 再弹桥列表、`call` 再弹工具列表），选中叶子才执行；选择器自身的错误以中文显示。
+- `/mv-aide` 命令：`status`（本会话连接状态与桥信息）、`bridges`（列出所有 IDE 桥）、`connect <序号|端口|路径|auto>`（单会话手动选择/切回自动）、`tools`（列出 IDE 工具）、`selection`（读取当前选区）、`call <name> [json]`（调用任意桥接工具）。桥接选择按 DSH 会话独立持久化，重启 DSH 后仍恢复。自动解析依次尝试：本对话最后成功连接的 Vault、同一 DSH 工作区最后成功连接的 Vault、包含该工作区的可连接 Vault；全部失败时保持未连接，不会随意选择其它端口。每个候选都必须完成 WebSocket 鉴权、`initialize` 和 `tools/list`，stale lock、错误 token 或失效监听会自动落到下一候选。手动 `connect` 采用事务式切换：新桥完整握手成功后才替换旧桥并记录历史，失败不会产生假成功或破坏旧连接；`connect auto` 只清除当前对话历史，再按同一优先级解析。在 `/` 菜单选中 `mv-aide` 后会先把命令补全进输入框（`/mv-aide `，选 `connect` 后为 `/mv-aide connect `），再继续弹出二级字段（`connect` 再弹桥列表、`call` 再弹工具列表），选中叶子才执行；选择器自身的错误以中文显示。
 - **多 Vault / 多对话**：一个 DSH 对话同一时刻只连接一个 Vault；不同对话可以分别连接不同 Vault，也可以同时连接同一个 Vault。每个对话有独立连接、重连和历史，切换或关闭其中一个不会影响其它对话。Vault 路径是身份，端口变化后仍按路径恢复；`connect auto` 只清除当前对话的历史。
 - `mv_aide__*` 原生工具（如 `mv_aide__getLatestSelection`、`mv_aide__openFile`），与本章「上下文与工具」的公共工具一一对应，遵守同一组工具开关。
 - 被动上下文通知与 Diff 审核：dsh Agent 获得与 Claude Code 相同的选区推送和 `openDiff` 审核通道。
@@ -182,7 +182,7 @@ mv-agent 把 DeepSeek Harness（DSH）内嵌进 Obsidian：直接使用 DSH Web 
 ### 目的与启用方式
 
 - **总开关**位于 IDE 桥接分区的「已适配 agent」区域（「启用 dsh IDE 功能」，默认关）。关闭后桥接不启动、不写 lock 文件，mv-agent 分区的其余设置保留但不生效。
-- **视图**：命令面板提供「打开 mv-agent」「停止 mv-agent」「重启 mv-agent」，快捷键可在 Obsidian 快捷键设置中绑定。「停止 mv-agent」会关闭所有已打开的 mv-agent 界面并停止对应的 DSH 后台。视图是一个自定义 Obsidian 视图：上方 iframe 直接嵌入 DSH Web 界面（无浏览器工具栏），底部是 Obsidian 侧状态栏。连接球直接根据当前视图 DSH 端点到本 Vault bridge 的真实 TCP 连接显示：检查中为灰色，已连接为绿色，确认断开为红色；不依赖本 Vault 是否启动了该共享 DSH。
+- **视图**：命令面板提供「打开 mv-agent」「停止 mv-agent」「重启 mv-agent」，快捷键可在 Obsidian 快捷键设置中绑定。「停止 mv-agent」会关闭所有已打开的 mv-agent 界面并停止对应的 DSH 后台。视图是一个自定义 Obsidian 视图：上方 iframe 直接嵌入 DSH Web 界面（无浏览器工具栏），底部是 Obsidian 侧状态栏。状态栏显示连接球、当前页面或文件、选区、端口和展开入口；展开后可查看 DSH 地址、桥接状态、选区范围与正文，并进入插件、技能、子 Agent 管理或外部浏览器。位置与选区勾选框分别控制下次消息是否携带对应快照。连接球直接根据当前视图 DSH 端点到本 Vault bridge 的真实 TCP 连接显示：检查中为灰色，已连接为绿色，确认断开为红色；每个视图独立探测，不依赖本 Vault 是否启动了共享 DSH，也不依赖环境检测缓存。
 - **打开分区**：可选左/右/下，默认右侧。「重启 mv-agent」会重启插件托管的 `dsh web` 进程并刷新所有已打开视图。
 - **终端感知增强**：默认关闭，只影响 mv-agent / DSH。开启时 mv-agent 不注册基础 `mv_aide__getTerminalOutput`，改为注册 `list/read/send/run/open/focus/close` 七个 mv-AIDE 原生终端工具；关闭时七个增强工具撤销并恢复原来的 `getTerminalOutput`。`sendTerminalInput` 是原始输入通道，用于 Ctrl+C、TUI/REPL 和可选 Enter；`runInTerminal` 是可靠的 shell 命令通道，保真处理引号、`!`、空格、Unicode 和多行，`cd`/`export` 仍作用于同一终端。Obsidian 重启后的 deferred 标签只启动全新 shell，`readTerminal` 会等新提示符真正写入 xterm，不恢复旧输出；`closeTerminal` 必须给定 ID，直接关闭 Obsidian 终端标签及其 PTY，deferred 标签不会被唤醒。切换立即刷新工具，不重启 DSH，也不改变其它 IDE 客户端的公共 `tools/list`。库外权限继续复用 `getTerminalOutput` 的范围设置。
 - **自动适应图片大小**：默认开启。图片在发送并写入 DSH 历史前处理，最长边超过 2000px 时等比缩到 2000px；小图保持原字节，原始本地文件不修改。关闭后恢复 DSH 原生尺寸限制。
@@ -223,7 +223,9 @@ mv-agent 把 DeepSeek Harness（DSH）内嵌进 Obsidian：直接使用 DSH Web 
 
 ### 图片上传
 
-开启「自动适应图片大小」后，mv-agent 在 DSH 生成上传 payload 和写入历史之前统一预处理普通消息、Queue/Steer 发送及允许图片的 slash command。PNG、JPEG、WebP、GIF 保持原格式；透明度、方向和动画帧语义保留。已确认开启但处理失败时，输入框和草稿图片保留，并显示错误，不会继续发送超限原图。每个 session 使用其当前已完成桥接握手的 Vault 设置：两个会话可以采用相反开关；没有可确定设置 authority 时保持 DSH 原生行为。模型请求阶段仍会保护旧历史里的超限图片，但新上传不依赖该补救层。
+开启「自动适应图片大小」后，mv-agent 在 DSH 生成上传 payload 和写入历史之前统一预处理普通消息、Queue/Steer 发送及允许图片的 slash command。最长边大于 2000px 时等比缩到 2000px；不超限时沿用原字节，且始终不修改本地原文件。PNG、JPEG、WebP、GIF 保持原格式，透明度、EXIF 方向和动画帧语义均保留。预处理入口最多接收 16 MiB 的单张图片，并限制解码像素以防异常图片耗尽内存。
+
+每个 session 使用其当前已完成桥接握手的 Vault 设置，因此两个会话可以采用相反开关。开关关闭、没有可确定设置 authority，或当前 DSH 运行环境没有可加载的图像处理模块时，接口返回“不处理”并保留 DSH 原生上传与尺寸限制；这不是缩放成功。已进入预处理但解码、缩放或编码失败时，输入框和草稿图片保留，界面显示错误，超限原图不会继续发送。模型请求阶段仍会尽力适配旧历史中的超限图片；该兼容层失败时保留原请求，因此新上传的尺寸保证只来自上传前处理。
 
 ### DSH 模型能力设置
 
@@ -231,7 +233,15 @@ mv-dsh-manager 会在 DSH 原生「模型目录」中每个模型的容量展开
 
 - 多模态模型选择「文本＋图片」后写入 `input: ['text', 'image']`，下一次模型解析和请求立即读取；该值是用户对端点能力的声明，供应商仍会拒绝错误声明。
 - 思考能力可继承、显式关闭或配置多级映射；`off` 可不发送值，其它等级必须填写供应商参数。默认思考等级仍由会话模型选择或提供方配置决定。
-- 专家区提供 DSH 当前 schema 的完整模型级 `compat`，包括推理格式、请求/流、工具严格模式、缓存/Anthropic 开关和类型化 `chatTemplateKwargs`；每个布尔项都可恢复继承。
+- 专家区提供 DSH 当前 schema 的完整模型级 `compat`；布尔项都是「继承 / 是 / 否」三态，枚举项可恢复继承：
+
+| 类别 | 字段与取值 |
+| --- | --- |
+| 推理 | `supportsReasoningEffort`、`thinkingFormat`（`openai/deepseek/openrouter/together/zai/qwen/chat-template/qwen-chat-template/string-thinking/ant-ling`）、`requiresThinkingAsText`、`requiresReasoningContentOnAssistantMessages` |
+| 请求与流 | `supportsStore`、`supportsDeveloperRole`、`supportsUsageInStreaming`、`maxTokensField`（`max_completion_tokens/max_tokens`） |
+| 工具 | `requiresToolResultName`、`requiresAssistantAfterToolResult`、`supportsStrictMode`、`supportsStrictTools`、`supportsEagerToolInputStreaming` |
+| 缓存及 Anthropic 兼容 | `cacheControlFormat`（`anthropic`）、`supportsLongCacheRetention`、`supportsCacheControlOnTools`、`supportsTemperature`、`forceAdaptiveThinking`、`allowEmptySignature` |
+| Chat template | `chatTemplateKwargs` 键值可为字符串、数字、布尔或 `null`，也可引用 `thinking.enabled` / `thinking.effort`；动态值可设 `omitWhenOff` |
 - 内置模型显示风险提示并只为目标模型创建 `modelOverrides`，不会修改或复制整个内置目录；清空最后一个字段会删除空覆盖并恢复目录默认值。
 - 能力草稿复用原生模型卡片的「保存」按钮。原生模型、容量和凭据先保存，编辑器成功关闭后再在最新 revision 上原子写入能力；取消或原生失败不会写能力。第二阶段失败会明确显示「基础模型已保存、模型能力未保存」并提供重试。
 - 设置由独立 host/client 模块实现，只读写 `llm-pi-ai` 的白名单模型字段并保留其它模型、未知字段及未来 compat 字段。旧 DSH 缺少相应 schema 时界面只报告版本不支持。
@@ -377,6 +387,22 @@ AI 建议可见时优先消费接受/取消键。Vim Insert 模式中的完整�
 - 双击或 Ctrl+点击可识别的文件路径时，插件尝试在 Obsidian 中打开并定位。
 
 `getTerminalOutput` 只返回用户请求的最近行数，不持续把终端内容发送到网络。终端进程本身的联网行为由用户运行的命令决定。
+
+### mv-agent / DSH 终端感知增强
+
+该开关位于 mv-agent 分区，默认关闭，只改变注入 DSH 的 mv-agent 工具集。开启时基础 `mv_aide__getTerminalOutput` 被以下七个工具替代；这些调用通过仅对已识别 mv-agent 客户端开放的私有本地 RPC 完成，不加入其它 IDE/MCP 客户端看到的公共 `tools/list`。
+
+| 工具 | 参数与精确行为 |
+| --- | --- |
+| `listTerminals` | 无参数；列出 mv-AIDE 终端运行时 ID，以及 `active`、`recent`、`deferred` 状态 |
+| `readTerminal` | `terminalId` 可省略并使用 recent；省略 `lastN` 时返回最多 50 行已使用内容并跳过视口尾部填充，显式 `lastN=1..500` 时读取字面物理尾行；`waitMs=0..5000` 只在首次读取为空时等待额外输出 |
+| `sendTerminalInput` | `input` 必填，`terminalId` 可省略，`submit` 默认 `false`；逐字节发送，适合 Ctrl+C、TUI、REPL 和人工输入。`submit:true` 只追加 Enter，不转义 `!`、引号或其它 shell 元字符 |
+| `runInTerminal` | `command` 必填；可指定 `terminalId`，或用 `newTerminal:true` 强制新建。POSIX shell、fish 和 PowerShell 使用 UTF-8 安全载荷后在当前 shell 求值，cmd.exe 保持原生命令路径；引号、`!`、空白、Unicode、多行及 `cd`/`export` 状态均保留 |
+| `openTerminal` | 无参数；创建并等待一个新 mv-AIDE 终端可输入，返回运行时 ID |
+| `focusTerminal` | `terminalId` 必填；显示并聚焦目标终端 |
+| `closeTerminal` | `terminalId` 必填；关闭真实 Obsidian 终端标签并停止其 PTY，不等同于向 shell 输入 `exit` |
+
+Obsidian 重启只恢复终端 leaf，不恢复旧 PTY、cwd 或 scrollback；运行时 ID 也可能重新编号。对 deferred 标签执行 read/send/run/focus 会先唤醒并启动全新 shell，其中 `readTerminal` 会等待新提示符实际提交到 xterm 后再读取；`closeTerminal` 可直接关闭 deferred 标签而不启动 shell。终端在等待或投递期间被关闭、进程退出或队列拒绝输入时，调用返回错误，不报告假成功。库外 DSH 会话仍受 `getTerminalOutput` 对应的库外工具策略约束。
 
 <a id="source-assist"></a>
 ## 5. 源码编写辅助
@@ -616,7 +642,7 @@ mv-agent 与 IDE 桥接共享同一条本地桥接服务、同一组公共工具
 
 - 将当前选区发送给 Claude/Agent。
 - 打开系统终端。
-- 打开、关闭、重启 mv-agent。
+- 打开、停止、重启 mv-agent。
 - 运行当前文件 `mv-run`。
 - 新建已注册的非 Markdown 源码文件。
 - 打开库外文件、按路径打开、清理失效库外链接。

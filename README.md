@@ -4,7 +4,7 @@
 
 **把 Obsidian 变成面向写作、研究与开发的 AI IDE。** mv-AIDE 让 Agent 感知你正在阅读和编辑的内容，并把 AI 编辑、源码工具、终端、Vim 与桌面文件工作流放进同一个界面。
 
-> 仅支持桌面端，要求 Obsidian 1.7.2 及以上。
+> 当前版本：**0.9.13**。仅支持桌面端，要求 Obsidian 1.7.2 及以上。
 
 [GitHub 仓库](https://github.com/aitingtingya/mv-obcc)
 
@@ -24,21 +24,34 @@ Claude Code、Codex CLI 和任意 MCP Agent 可以读取当前标签、选区、
 
 同一插件内可以编辑 TeX 等源码、运行终端、使用独立 Vim 引擎、浏览电脑文件，并让库外文件由指定 Obsidian 仓库打开。每个模块都能单独关闭。
 
+## 0.9.13 更新重点
+
+- **DSH 多仓库连接更可靠**：每个对话独立选择并恢复一个 Vault；不同对话可以连接不同 Vault，也可以同时连接同一个 Vault。
+- **源码版 DSH 可被完整管理**：支持自动识别正在运行的源码仓库，也可手动指定仓库根目录或 `apps/cli`，检测、启停、更新与插件注入共用同一来源。
+- **模型与图片能力补齐**：DSH 模型目录可声明图片输入、思考等级映射和专家兼容参数；超限图片可在写入 DSH 历史前等比缩放。
+- **终端增强形成闭环**：mv-agent 可列出、读取、输入、可靠运行命令、新建、聚焦并真正关闭终端标签；重启后唤醒的标签会等待新 shell 提示符可读。
+
 ## 八个设置分区
 
 以下顺序与 **设置 → mv-AIDE** 一致。具体默认值、平台边界和排障见[完整功能手册](docs/features.md)。
 
 ### 1. IDE 桥接
 
-当前文件、选区和编辑器状态会被动同步给 Agent：选中文字后直接提问即可，不需要先要求 Agent 调用工具读取现场。支持 Claude Code、Codex CLI、通用 MCP 客户端和 DeepSeek Harness（dsh）；演示中 Claude Code 就运行在 mv-AIDE 的终端里，并自动收到 Obsidian 选区后直接回答。开启「启用 dsh IDE 功能」后，dsh 内的 mv-AIDE 插件经同一本地桥接获得现场上下文、IDE 工具、被动通知与 Diff 审核。
-
-![Claude Code 自然提问时自动收到当前文件与选区并回答](media/readme/ide-bridge.gif)
+当前文件、选区和编辑器状态会被动同步给 Agent：选中文字后直接提问即可，不需要先要求 Agent 调用工具读取现场。支持 Claude Code、Codex CLI、通用 MCP 客户端和 DeepSeek Harness（DSH）。开启「启用 dsh IDE 功能」后，DSH 内的 mv-AIDE 插件经同一本地桥接获得现场上下文、IDE 工具、被动通知与 Diff 审核。
 
 [查看 IDE 桥接边界](docs/features.md#ide-bridge)
 
 ### 2. mv-agent
 
-mv-agent 把 DeepSeek Harness（DSH）内嵌进 Obsidian：自定义视图承载 DSH Web 界面，底部状态栏显示已连接 Agent 数与最新选区快照；命令面板提供「打开 / 停止 / 重启 mv-agent」。设置页把运行环境拆成 Node.js、DSH、pnpm 和插件注入四层，每层独立检测并可一键安装、升级或修复——可装入仓库的 `mv-aide/dsh/`，或选择全局安装（写受保护目录时会请求系统授权，拒绝后不降级）。注入后 dsh 获得 `/mv-aide` 命令与 `mv_aide__*` IDE 工具；Agent 写文件的权限确认可改为 Obsidian 内可编辑 Diff（接受即写入）。对库外项目的工具与被动推送默认全部关闭，可按通道在设置中开放。
+mv-agent 把 DSH Web 界面直接放进 Obsidian。视图底部状态栏显示真实桥接状态、当前页面或文件、选区、端口和可展开的现场详情；命令面板提供「打开 / 停止 / 重启 mv-agent」。
+
+设置页按 Node.js、DSH、pnpm、插件注入四层检测环境，可安装到当前 Vault 或全局位置，也能识别、验证并管理 DeepSeek Harness 源码仓库。注入后 DSH 获得 `/mv-aide` 命令和 `mv_aide__*` IDE 工具，并支持：
+
+- 每个 DSH 对话独立选择、记忆和恢复 Vault；
+- 用 Obsidian 可编辑 Diff 审核需要权限的文件写入；
+- 七个可选终端增强工具，包括可靠命令执行和关闭真实终端标签；
+- 上传前图片缩放，以及模型图片输入、思考等级和兼容参数设置；
+- 默认关闭、可按通道开放的库外工具与被动上下文。
 
 ![真实 DSH 根据当前选区回答并展开 mv-agent 现场状态](media/readme/mv-agent.gif)
 
@@ -70,7 +83,7 @@ mv-agent 把 DeepSeek Harness（DSH）内嵌进 Obsidian：自定义视图承载
 
 ### 4. 终端
 
-在 Obsidian 的主栏、侧栏或底部分栏运行真实系统终端，让命令行和编辑器保持在同一个工作区。终端设置把“打开位置”和“新终端打开方式（分屏 / 新建标签页）”分开控制：左右侧栏分屏为上下，中间主栏分屏为左右；底部首次从主栏上下拆出底栏，之后按设置在底栏中新建标签页或左右分屏。`mv-run: <命令>` 会发送到最近活跃的 mv-AIDE 终端（没有时自动新建），`mv-run -n: <命令>` 则始终新建终端执行。
+在 Obsidian 的主栏、侧栏或底部分栏运行真实系统终端，让命令行和编辑器保持在同一个工作区。终端设置把“打开位置”和“新终端打开方式（分屏 / 新建标签页）”分开控制。`mv-run: <命令>` 会发送到最近活跃的 mv-AIDE 终端（没有时自动新建），`mv-run -n: <命令>` 则始终新建终端执行。开启 mv-agent 的「终端感知增强」后，DSH 还能按终端 ID 读取、输入、运行命令、聚焦或关闭标签。
 
 ![Obsidian 编辑器与 mv-AIDE 真实系统终端](media/readme/terminal.png)
 

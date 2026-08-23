@@ -4,7 +4,7 @@
 
 **Turn Obsidian into an AI IDE for writing, research, and development.** mv-AIDE gives agents access to the material you are actively reading and editing, then brings AI editing, source tools, a terminal, Vim, and desktop file workflows into one interface.
 
-> Desktop only. Requires Obsidian 1.7.2 or later.
+> Current version: **0.9.13**. Desktop only; requires Obsidian 1.7.2 or later.
 
 [GitHub repository](https://github.com/aitingtingya/mv-obcc)
 
@@ -24,21 +24,34 @@ Claude Code, Codex CLI, and any MCP agent can read active tabs, selections, diag
 
 Edit TeX and other source types, run a real terminal, use an independent Vim engine, browse the filesystem, and open external files in a chosen Obsidian vault. Every module can be disabled independently.
 
+## What's New in 0.9.13
+
+- **Reliable multi-vault DSH connections**: each conversation independently selects and restores one vault; different conversations may use different vaults or share the same one.
+- **Full source-checkout management**: mv-AIDE can discover a running DeepSeek Harness checkout or use a manually selected repository root or `apps/cli`, then keep detection, lifecycle, updates, and injection on that source.
+- **Complete model and image declarations**: DSH's model catalog can expose image input, reasoning-level mappings, and expert compatibility fields; oversized uploads can be resized before DSH history is written.
+- **A closed-loop terminal toolset**: mv-agent can list, read, send, reliably run, open, focus, and truly close terminal tabs; restored tabs wait for the fresh shell prompt before reads proceed.
+
 ## Eight Settings Sections
 
 The order below matches **Settings → mv-AIDE**. See the [complete feature guide](docs/features-en.md) for defaults, platform boundaries, and troubleshooting.
 
 ### 1. IDE Bridge
 
-The active file, selection, and editor state are passively synchronized with the agent. Select text and ask naturally; there is no preliminary instruction to call a context-reading tool. Claude Code, Codex CLI, general MCP clients, and DeepSeek Harness (DSH) are supported. The demo runs Claude Code inside mv-AIDE's terminal, where it automatically receives the Obsidian selection and answers directly. With **Enable DSH IDE features** turned on, the mv-AIDE plugin inside dsh connects through the same local bridge for live context, IDE tools, passive notifications, and diff review.
-
-![Claude Code automatically receives the active Obsidian selection and answers a natural question](media/readme/ide-bridge.gif)
+The active file, selection, and editor state are passively synchronized with the agent. Select text and ask naturally; there is no preliminary instruction to call a context-reading tool. Claude Code, Codex CLI, general MCP clients, and DeepSeek Harness (DSH) are supported. With **Enable DSH IDE features** turned on, the mv-AIDE plugin inside DSH connects through the same local bridge for live context, IDE tools, passive notifications, and diff review.
 
 [IDE Bridge details](docs/features-en.md#ide-bridge)
 
 ### 2. mv-agent (DSH-powered)
 
-mv-agent embeds DeepSeek Harness (DSH) directly into Obsidian: a custom view hosts the DSH web UI, with a bottom status bar showing the number of connected agents and the latest selection snapshot; the command palette provides **Open / Stop / Restart mv-agent**. Settings split the runtime into four layers — Node.js, DSH, pnpm, and plugin injection — each detected independently with one-click install, upgrade, or repair, either into the vault's `mv-aide/dsh/` or globally (system authorization is requested for protected locations and never falls back to the vault). Once injected, dsh gains the `/mv-aide` command and `mv_aide__*` IDE tools; an agent's file-write permission confirmation can become an editable Obsidian diff (accepting it performs the write). Tools and passive push for projects outside the vault default to off and are opened per channel in settings.
+mv-agent puts the DSH web interface directly inside Obsidian. Its bottom status bar shows the real bridge state, current page or file, selection, port, and expandable live details; the command palette provides **Open / Stop / Restart mv-agent**.
+
+Settings inspect Node.js, DSH, pnpm, and plugin injection as four separate layers. They support vault or global installations as well as verified DeepSeek Harness source checkouts. Once injected, DSH gains the `/mv-aide` command and `mv_aide__*` IDE tools, including:
+
+- per-conversation vault selection, history, and recovery;
+- editable Obsidian diff review for file writes that require permission;
+- seven optional enhanced terminal tools, including reliable command execution and true tab closing;
+- pre-upload image fitting plus image-input, reasoning-level, and compatibility declarations for models;
+- out-of-vault tools and passive context that remain off by default and can be opened per channel.
 
 ![Real DSH answers from the current selection and expands the live mv-agent status](media/readme/mv-agent.gif)
 
@@ -70,7 +83,7 @@ Generate dimmed ghost text while writing Markdown. It enters the document only a
 
 ### 4. Terminal
 
-Run a real system terminal in the main area, a sidebar, or a bottom split, keeping the command line and editor in one workspace. Terminal settings control open position independently from the new-terminal mode (split or new tab): sidebar splits stack vertically, main-area splits are left/right, and the bottom location first creates a lower pane before later terminals become tabs or left/right splits inside it. `mv-run: <command>` targets the most recently active mv-AIDE terminal (creating one when needed), while `mv-run -n: <command>` always creates a new terminal first.
+Run a real system terminal in the main area, a sidebar, or a bottom split, keeping the command line and editor in one workspace. Terminal settings control open position independently from the new-terminal mode (split or new tab). `mv-run: <command>` targets the most recently active mv-AIDE terminal (creating one when needed), while `mv-run -n: <command>` always creates a new terminal first. With mv-agent's **Enhanced terminal awareness** enabled, DSH can also read, send, run, focus, or close a terminal by id.
 
 ![Obsidian editor and the real mv-AIDE system terminal](media/readme/terminal.png)
 

@@ -2,7 +2,7 @@
 
 [Back to README](../README_EN.md) | [中文](features.md)
 
-This guide describes mv-AIDE `0.9.10` in the same order as its settings page, including behavior, defaults, boundaries, and recovery procedures. The README is the visual introduction; this document is the complete behavioral reference.
+This guide describes mv-AIDE `0.9.13` in the same order as its settings page, including behavior, defaults, boundaries, and recovery procedures. The README is the visual introduction; this document is the complete behavioral reference.
 
 ## Contents
 
@@ -167,7 +167,7 @@ If the bridge fails, the editor, Selection Assistant, Inline Completion, Termina
 
 DSH is the fourth adapted agent. With **Enable DSH IDE support** turned on, the plugin starts the IDE bridge and writes the authoritative discovery lock to `~/.mv-aide/ide`; the installed `@mv-aide/mv-agent` scans that lock file and connects to this vault over the same local JSON-RPC protocol as Claude Code (`127.0.0.1`, port `47000 + vault seed % 1500`). Once connected, dsh gains:
 
-- The `/mv-aide` command: `status` (per-session connection state and bridge info), `bridges` (list all IDE bridges), `connect <index|port|path|auto>` (per-session manual selection / back to auto), `tools` (list IDE tools), `selection` (read the current selection), and `call <name> [json]` (invoke any bridge tool). Bridge selection is persisted per dsh session and restored after dsh restarts. Automatic resolution tries, in order: the current conversation's last successful vault, the same DSH workspace's last successful vault, then a live vault containing that workspace. If none is connectable it remains disconnected; it never chooses an unrelated port. Every candidate must pass WebSocket authentication, `initialize`, and `tools/list`, so a stale lock or bad token falls through to the next candidate. Picking `mv-aide` from the `/` menu first completes the command into the composer (`/mv-aide `, then `/mv-aide connect ` for `connect`) before opening each recursive popup (`connect` shows the bridge list, `call` shows the tool list) and executes only when a leaf is selected; errors raised by the picker itself are shown in Chinese.
+- The `/mv-aide` command: `status` (per-session connection state and bridge info), `bridges` (list all IDE bridges), `connect <index|port|path|auto>` (per-session manual selection / back to auto), `tools` (list IDE tools), `selection` (read the current selection), and `call <name> [json]` (invoke any bridge tool). Bridge selection is persisted per DSH session and restored after DSH restarts. Automatic resolution tries, in order: the current conversation's last successful vault, the same DSH workspace's last successful vault, then a connectable vault containing that workspace. If all attempts fail, it remains disconnected and never chooses an unrelated port. Every candidate must pass WebSocket authentication, `initialize`, and `tools/list`, so a stale lock, bad token, or vanished listener falls through to the next candidate. Manual `connect` is transactional: the old bridge remains until the new bridge completes the full handshake, and a failure neither reports success nor records history. `connect auto` clears only this conversation's history before running the same resolver. Picking `mv-aide` from the `/` menu first completes the command into the composer (`/mv-aide `, then `/mv-aide connect ` for `connect`) before opening each recursive popup (`connect` shows the bridge list, `call` shows the tool list) and executes only when a leaf is selected; errors raised by the picker itself are shown in Chinese.
 - **Multiple vaults and conversations**: one DSH conversation connects to one vault at a time. Different conversations may connect to different vaults or to the same vault concurrently. Each conversation owns its connection, reconnect loop, and history; switching or closing one never affects another. The vault path is the identity, so a changed port is recovered by path. `connect auto` clears only the current conversation's history.
 - Native `mv_aide__*` tools (e.g. `mv_aide__getLatestSelection`, `mv_aide__openFile`), matching the public tools in “Context and Tools” and obeying the same switches.
 - Passive context notifications and diff review: dsh agents receive the same selection pushes and `openDiff` review channel as Claude Code.
@@ -182,7 +182,7 @@ mv-agent embeds DeepSeek Harness (DSH) directly into Obsidian: use the DSH web U
 ### Purpose and Enablement
 
 - The **master switch** lives in the “Adapted agents” area of IDE Bridge (**Enable DSH IDE support**, off by default). When off, the bridge does not start and no lock file is written; the rest of the mv-agent section is preserved but inactive.
-- **View**: the command palette provides **Open mv-agent**, **Stop mv-agent**, and **Restart mv-agent**; hotkeys can be bound in Obsidian's hotkey settings. **Stop mv-agent** closes every open mv-agent view and stops its DSH backend. The custom Obsidian view embeds the DSH web UI directly in an iframe (no browser toolbar), with an Obsidian-side status bar below it. Its connection dot reads the real TCP relationship between that view's DSH endpoint and the current Vault bridge: gray while checking, green when connected, and red only after a confirmed disconnect. It does not depend on whether this Vault originally started the shared DSH instance.
+- **View**: the command palette provides **Open mv-agent**, **Stop mv-agent**, and **Restart mv-agent**; hotkeys can be bound in Obsidian's hotkey settings. **Stop mv-agent** closes every open mv-agent view and stops its DSH backend. The custom Obsidian view embeds the DSH web UI directly in an iframe (no browser toolbar), with an Obsidian-side status bar below it. The bar shows a connection dot, current page or file, selection, port, and a disclosure; expanded details include the DSH URL, bridge state, selection range and text, plus entries for plugin, skill, subagent, and browser management. Location and Selection checkboxes independently control which snapshot fields accompany the next message. The connection dot reads the real TCP relationship between that view's DSH endpoint and the current Vault bridge: gray while checking, green when connected, and red only after a confirmed disconnect. Every view probes independently; the result does not depend on the Vault that started the shared DSH instance or on runtime-environment detection caches.
 - **Open region**: left, right, or bottom; right by default. “Restart mv-agent” restarts the plugin-managed `dsh web` process and refreshes every open view.
 - **Enhanced terminal awareness**: off by default and scoped to mv-agent / DSH only. When enabled, mv-agent does not register the basic `mv_aide__getTerminalOutput`; it registers seven native mv-AIDE terminal tools for list/read/send/run/open/focus/close instead. When disabled, those seven disappear and the original `getTerminalOutput` returns. `sendTerminalInput` is the raw path for Ctrl+C, TUI/REPL input, and optional Enter; `runInTerminal` is the reliable shell-command path and preserves quotes, `!`, whitespace, Unicode, multiline commands, and same-shell `cd`/`export` effects. Deferred tabs restored after an Obsidian restart start a fresh shell only: `readTerminal` waits for its new prompt to be committed to xterm and never restores old output. `closeTerminal` requires an explicit id and closes the Obsidian tab and its PTY without waking a deferred tab. Switching refreshes tools live without restarting DSH and never changes the public `tools/list` seen by other IDE clients. Outside-vault access continues to reuse the existing `getTerminalOutput` scope setting.
 - **Automatically fit image size**: on by default. Images are processed before they are sent and written into DSH history. A longest edge above 2000px is proportionally reduced to 2000px; smaller image bytes and the original local file are left unchanged. Turning it off restores DSH's native size limit.
@@ -223,7 +223,9 @@ Once injected (capability details in Chapter 1, “DSH Support”):
 
 ### Image Uploads
 
-With **Automatically fit image size** enabled, mv-agent preprocesses ordinary messages, Queue/Steer sends, and image-capable slash commands through one path before DSH creates the upload payload or writes history. PNG, JPEG, WebP, and GIF keep their formats, including transparency, orientation, and animation semantics. If confirmed preprocessing fails, the composer and draft images remain in place, an explicit error is shown, and the oversized original is not sent. Each session follows the setting from the vault whose bridge handshake it completed, so two sessions may use opposite settings; when no setting authority is known, native DSH behavior is preserved. The request-time guard remains for oversized images already present in old history, but new uploads no longer rely on that fallback.
+With **Automatically fit image size** enabled, mv-agent preprocesses ordinary messages, Queue/Steer sends, and image-capable slash commands through one path before DSH creates the upload payload or writes history. An image whose longest edge exceeds 2000px is resized proportionally to 2000px; an in-range image keeps its original bytes, and the local source file is never modified. PNG, JPEG, WebP, and GIF keep their formats, including transparency, EXIF orientation, and animation semantics. The endpoint accepts at most 16 MiB per image and applies a decode-pixel ceiling against malformed inputs.
+
+Each session follows the setting from the vault whose bridge handshake it completed, so two sessions may use opposite settings. If the switch is off, no settings authority is known, or the current DSH runtime cannot load the image-processing module, the endpoint reports “not processed” and preserves DSH's native upload and size limits; this is not a successful resize. Once preprocessing starts, a decode, resize, or encode failure keeps the composer and draft images in place, shows an explicit error, and does not send the oversized original. The request-time guard still makes a best effort for oversized images already present in old history; it preserves the original request if adaptation fails, so only pre-upload processing guarantees new-upload dimensions.
 
 ### DSH Model Capability Settings
 
@@ -231,7 +233,15 @@ mv-dsh-manager appends **Model capabilities** inside the capacity disclosure of 
 
 - Selecting Text + Image stores `input: ['text', 'image']`; the next model resolution and request sees it immediately. This is a user declaration about the endpoint, so a provider can still reject an incorrect declaration.
 - Reasoning may inherit, be explicitly disabled, or map several levels. `off` may omit its wire value; every other level requires one. The default reasoning level remains session- or provider-owned.
-- The collapsed expert area covers DSH's current model-level `compat`: reasoning formats, request/stream behavior, strict tools, cache/Anthropic switches, and typed `chatTemplateKwargs`. Every boolean can return to inheritance.
+- The collapsed expert area covers DSH's complete current model-level `compat`. Booleans are three-state Inherit / Yes / No controls, and enums can return to inheritance:
+
+| Category | Fields and values |
+| --- | --- |
+| Reasoning | `supportsReasoningEffort`; `thinkingFormat` (`openai/deepseek/openrouter/together/zai/qwen/chat-template/qwen-chat-template/string-thinking/ant-ling`); `requiresThinkingAsText`; `requiresReasoningContentOnAssistantMessages` |
+| Request and stream | `supportsStore`; `supportsDeveloperRole`; `supportsUsageInStreaming`; `maxTokensField` (`max_completion_tokens/max_tokens`) |
+| Tools | `requiresToolResultName`; `requiresAssistantAfterToolResult`; `supportsStrictMode`; `supportsStrictTools`; `supportsEagerToolInputStreaming` |
+| Cache and Anthropic compatibility | `cacheControlFormat` (`anthropic`); `supportsLongCacheRetention`; `supportsCacheControlOnTools`; `supportsTemperature`; `forceAdaptiveThinking`; `allowEmptySignature` |
+| Chat template | `chatTemplateKwargs` values may be string, number, boolean, or `null`, or refer to `thinking.enabled` / `thinking.effort`; dynamic values may set `omitWhenOff` |
 - Editing a built-in model shows a warning and creates only that model's `modelOverrides`; it never changes or copies the installed catalog. Clearing the last field removes the empty override and restores catalog defaults.
 - Capability drafts share the native provider card's Save action. DSH first saves the native model, capacity, credential, and provider fields; only after that editor closes successfully are capabilities committed atomically against a fresh revision. Cancel or native failure writes nothing. A second-stage failure explicitly reports that the base model was saved while capabilities were not and offers a retry.
 - Independent host/client modules implement the feature. The host accepts only whitelisted `llm-pi-ai` model fields and preserves other models, unknown fields, and future compat keys. Older DSH schemas are reported as unsupported and are never guessed into.
@@ -377,6 +387,22 @@ Multiple terminals can coexist in main, side, and bottom areas. Closing a termin
 - Double-clicking or Ctrl-clicking a recognized path attempts to open and locate it in Obsidian.
 
 `getTerminalOutput` returns only the requested recent lines and does not continuously transmit terminal content. Network activity by commands inside the shell remains the user's responsibility.
+
+### mv-agent / DSH Enhanced Terminal Awareness
+
+This switch lives under mv-agent, is off by default, and changes only the tool set injected into DSH. When enabled, the basic `mv_aide__getTerminalOutput` is replaced by the following seven tools. Calls use private local RPC methods available only to an identified mv-agent client; they never enter the public `tools/list` seen by other IDE or MCP clients.
+
+| Tool | Parameters and exact behavior |
+| --- | --- |
+| `listTerminals` | No parameters; lists mv-AIDE terminal runtime ids and `active`, `recent`, and `deferred` state |
+| `readTerminal` | `terminalId` is optional and defaults to recent. Omitting `lastN` returns up to 50 used lines while skipping blank viewport padding; explicit `lastN=1..500` reads the literal physical tail. `waitMs=0..5000` waits for additional output only when the initial result is empty |
+| `sendTerminalInput` | Requires `input`; `terminalId` is optional and `submit` defaults to `false`. Sends byte-verbatim input for Ctrl+C, TUI, REPL, and human-style typing. `submit:true` only appends Enter; it does not escape `!`, quotes, or any shell metacharacter |
+| `runInTerminal` | Requires `command`; accepts `terminalId`, or `newTerminal:true` to force a new terminal. POSIX shells, fish, and PowerShell receive an encoded UTF-8 payload evaluated in the current shell, while cmd.exe retains its native path. Quotes, `!`, whitespace, Unicode, multiline input, and same-shell `cd`/`export` effects are preserved |
+| `openTerminal` | No parameters; creates a new mv-AIDE terminal, waits until it accepts input, and returns its runtime id |
+| `focusTerminal` | Requires `terminalId`; reveals and focuses that terminal |
+| `closeTerminal` | Requires `terminalId`; closes the real Obsidian terminal tab and stops its PTY rather than typing `exit` |
+
+An Obsidian restart restores terminal leaves only, never the old PTY, cwd, or scrollback; runtime ids may also be reassigned. read/send/run/focus against a deferred tab first wakes it and starts a fresh shell, and `readTerminal` waits until the new prompt is actually committed to xterm before reading. `closeTerminal` can remove a deferred tab without starting a shell. Closing the tab, process exit, queue refusal, or delivery failure during an operation returns an error instead of false success. Out-of-vault DSH sessions remain governed by the `getTerminalOutput` entry in the out-of-vault tool policy.
 
 <a id="source-assist"></a>
 ## 5. Source Assist
@@ -616,7 +642,7 @@ Command names are localized with the interface language. Major groups include:
 
 - Send the current selection to Claude/an agent.
 - Open System Terminal.
-- Open, close, and restart mv-agent.
+- Open, stop, and restart mv-agent.
 - Run `mv-run` for the current file.
 - Create a registered non-Markdown source file.
 - Open an external file, open by path, and prune broken external links.
