@@ -81,6 +81,9 @@ export interface DshCommand {
   executable: string;
   argsPrefix: string[];
   env?: NodeJS.ProcessEnv;
+  cwd?: string;
+  origin?: "vault" | "global" | "custom-manual" | "custom-discovered";
+  sourceRoot?: string;
 }
 
 export type DshCommandProvider = () => Promise<DshCommand | null>;
@@ -389,7 +392,7 @@ export class DshProcessManager {
         executable = shell;
       }
       const child = this.spawn(executable, args, {
-        cwd: this.vaultRoot(),
+        cwd: command.cwd ?? this.vaultRoot(),
         env: command.env,
         stdio: ["ignore", "pipe", "pipe"],
       });

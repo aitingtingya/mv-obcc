@@ -13,7 +13,8 @@
   "dsh": {
     "client": {
       "inject": [
-        "@deepseek-ai/dsh-client-runtime"
+        "@deepseek-ai/dsh-client-runtime",
+        "@deepseek-ai/dsh-client-ui-conversation"
       ],
       "platform": "web"
     }
@@ -31,6 +32,12 @@
     "@deepseek-ai/cordis": "*",
     "@deepseek-ai/dsh-commands": "*",
     "@deepseek-ai/dsh-llm": "*",
-    "@deepseek-ai/dsh-tools": "*"
+    "@deepseek-ai/dsh-tools": "*",
+    "sharp": "*"
+  },
+  "peerDependenciesMeta": {
+    "sharp": {
+      "optional": true
+    }
   }
 }

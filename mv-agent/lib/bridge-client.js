@@ -9,6 +9,7 @@
 
 import { promises as fs } from 'node:fs';
 import { randomUUID } from 'node:crypto';
+import { clearTimeout as clearNodeTimeout, setTimeout as setNodeTimeout } from 'node:timers';
 import path from 'node:path';
 import WebSocket from 'ws';
 import {
@@ -25,6 +26,19 @@ export const RECONNECT_POLICY = {
   maxDelayMs: 30000,
   maxAttempts: 10,
 };
+
+const HANDSHAKE_STEP_TIMEOUT_MS = 7000;
+
+function handshakeStep(promise, timeoutMs, label) {
+  let timer;
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      timer = setNodeTimeout(() => reject(new Error(`${label} timed out after ${timeoutMs}ms`)), timeoutMs);
+      timer.unref?.();
+    }),
+  ]).finally(() => clearNodeTimeout(timer));
+}
 
 /** Canonical mv-AIDE bridge registry. */
 export function discoveryDirectories() {
@@ -130,14 +144,20 @@ export function bridgeMatchesSelection(bridge, selection) {
  * otherwise the lowest port is deterministic.
  */
 export function selectBridgeForSelection(bridges, selection) {
+  return selectBridgesForSelection(bridges, selection)[0];
+}
+
+/** Every endpoint for a remembered vault, with its last successful port first. */
+export function selectBridgesForSelection(bridges, selection) {
   const sorted = sortBridges(bridges);
   const matches = sorted.filter((bridge) => bridgeMatchesSelection(bridge, selection));
-  if (matches.length === 0) return undefined;
+  if (matches.length === 0) return [];
   if (selection && typeof selection.port === 'number') {
-    const samePort = matches.find((bridge) => bridge.port === selection.port);
-    if (samePort) return samePort;
+    matches.sort((left, right) =>
+      Number(right.port === selection.port) - Number(left.port === selection.port) || left.port - right.port,
+    );
   }
-  return matches[0];
+  return matches;
 }
 
 /** Canonical key for a DSH workspace path. */
@@ -177,8 +197,17 @@ function pathDepth(value) {
  * Segment depth wins, then path length and port make ties deterministic.
  */
 export function selectBridgeForWorkspace(bridges, workspace) {
+  return selectBridgesForWorkspace(bridges, workspace)[0];
+}
+
+/**
+ * Return every live bridge containing `workspace`, ordered from the outermost
+ * vault to the most specific vault. Keeping the complete ordered set lets the
+ * supervisor continue when a discovery lock exists but its endpoint is stale.
+ */
+export function selectBridgesForWorkspace(bridges, workspace) {
   const key = workspaceKeyOf(workspace);
-  if (!key) return undefined;
+  if (!key) return [];
   const candidates = [];
   for (const bridge of bridges ?? []) {
     for (const folder of bridgeFoldersOf(bridge)) {
@@ -195,32 +224,68 @@ export function selectBridgeForWorkspace(bridges, workspace) {
     left.length - right.length ||
     left.bridge.port - right.bridge.port,
   );
-  return candidates[0]?.bridge;
+  const seen = new Set();
+  return candidates
+    .filter(({ bridge }) => {
+      const identity = bridgeEndpointIdentity(bridge);
+      if (seen.has(identity)) return false;
+      seen.add(identity);
+      return true;
+    })
+    .map(({ bridge }) => bridge);
+}
+
+function bridgeIdentity(bridge) {
+  const folders = bridgeFoldersOf(bridge).map(normalizePath).sort();
+  return folders.length > 0 ? `vault:${folders.join('\u0000')}` : `port:${bridge?.port ?? ''}`;
+}
+
+/** A discovery endpoint identity. Multiple ports may legitimately represent the same vault. */
+function bridgeEndpointIdentity(bridge) {
+  return `${bridgeIdentity(bridge)}\u0000port:${bridge?.port ?? ''}`;
+}
+
+/** Ordered automatic candidates. Locks establish identity, not availability. */
+export function resolveBridgeCandidates(bridges, options = {}) {
+  const sorted = sortBridges(bridges);
+  const candidates = [];
+  const seen = new Set();
+  const append = (bridge, source) => {
+    if (!bridge) return;
+    const identity = bridgeEndpointIdentity(bridge);
+    if (seen.has(identity)) return;
+    seen.add(identity);
+    candidates.push({ bridge, source });
+  };
+
+  if (options?.selection) {
+    for (const bridge of selectBridgesForSelection(sorted, options.selection)) append(bridge, 'session');
+  }
+  if (options?.workspaceSelection) {
+    for (const bridge of selectBridgesForSelection(sorted, options.workspaceSelection)) {
+      append(bridge, 'workspace-last');
+    }
+  }
+  if (typeof options?.workspace === 'string' && options.workspace.length > 0) {
+    for (const bridge of selectBridgesForWorkspace(sorted, options.workspace)) {
+      append(bridge, 'workspace');
+    }
+  }
+  return candidates;
 }
 
 /**
  * Pure target resolver used by the supervisor:
- *  1. persisted conversation selection;
- *  2. bridge whose vault equals the DSH workspace;
- *  3. last selection made by any conversation in the same DSH workspace.
+ *  1. this conversation's last successful bridge connection;
+ *  2. the last successful bridge connection in the same DSH workspace;
+ *  3. a live bridge whose vault contains the DSH workspace.
+ *
+ * An unavailable remembered connection falls through to the next tier. The
+ * supervisor still has to prove endpoint availability with the full protocol.
  * Returns undefined when nothing matches — never an arbitrary lowest port.
  */
 export function resolveBridgeTarget(bridges, options = {}) {
-  const sorted = sortBridges(bridges);
-  const selection = options && options.selection ? options.selection : null;
-  if (selection) {
-    const bridge = selectBridgeForSelection(sorted, selection);
-    return bridge ? { bridge, source: 'session' } : undefined;
-  }
-  if (typeof options?.workspace === 'string' && options.workspace.length > 0) {
-    const hit = selectBridgeForWorkspace(sorted, options.workspace);
-    if (hit) return { bridge: hit, source: 'workspace' };
-  }
-  if (options && options.workspaceSelection) {
-    const bridge = selectBridgeForSelection(sorted, options.workspaceSelection);
-    if (bridge) return { bridge, source: 'workspace-last' };
-  }
-  return undefined;
+  return resolveBridgeCandidates(bridges, options)[0];
 }
 
 /**
@@ -311,10 +376,19 @@ function selectionFromEntry(entry) {
   if (typeof entry.workspace === 'string' && entry.workspace.length > 0) {
     selection.workspace = entry.workspace;
   }
-  if (['manual', 'workspace', 'workspace-last'].includes(entry.source)) {
-    selection.source = entry.source;
-  }
   return selection;
+}
+
+function cleanHistoryEntry(entry, includeSessionKey = false) {
+  const selection = selectionFromEntry(entry);
+  if (!selection) return null;
+  return {
+    ...selection,
+    ...(includeSessionKey && typeof entry.sessionKey === 'string'
+      ? { sessionKey: entry.sessionKey }
+      : {}),
+    updatedAt: typeof entry.updatedAt === 'number' ? entry.updatedAt : 0,
+  };
 }
 
 function deriveWorkspaceSelections(sessions) {
@@ -330,9 +404,6 @@ function deriveWorkspaceSelections(sessions) {
         ...entry,
         workspace: key,
         sessionKey,
-        source: ['manual', 'workspace', 'workspace-last'].includes(entry.source)
-          ? entry.source
-          : 'manual',
         updatedAt,
       };
     }
@@ -346,17 +417,24 @@ async function readBridgeSelectionStateFile(file) {
     if (!raw || typeof raw !== 'object' || !raw.sessions || typeof raw.sessions !== 'object') {
       return { valid: false, version: 0, sessions: {}, workspaces: {} };
     }
-    const sessions = Object.fromEntries(Object.entries(raw.sessions).map(([sessionKey, entry]) => {
-      if (!selectionFromEntry(entry) || ['manual', 'workspace', 'workspace-last'].includes(entry.source)) {
-        return [sessionKey, entry];
+    // v3 recorded how a target was selected. v4 strips that field entirely:
+    // every successful IDE connection has identical persistence semantics
+    // regardless of how its target was found.
+    const sessions = {};
+    for (const [sessionKey, entry] of Object.entries(raw.sessions)) {
+      const clean = cleanHistoryEntry(entry);
+      if (clean) sessions[sessionKey] = clean;
+    }
+    let workspaces;
+    if (raw.version >= 3 && raw.workspaces && typeof raw.workspaces === 'object') {
+      workspaces = {};
+      for (const [workspaceKey, entry] of Object.entries(raw.workspaces)) {
+        const clean = cleanHistoryEntry(entry, true);
+        if (clean) workspaces[workspaceKey] = clean;
       }
-      // Before v3 only explicit `/connect` choices were persisted, so their
-      // missing source is unambiguously manual.
-      return [sessionKey, { ...entry, source: 'manual' }];
-    }));
-    const workspaces = raw.version === 3 && raw.workspaces && typeof raw.workspaces === 'object'
-      ? { ...raw.workspaces }
-      : deriveWorkspaceSelections(sessions);
+    } else {
+      workspaces = deriveWorkspaceSelections(sessions);
+    }
     return {
       valid: true,
       version: typeof raw.version === 'number' ? raw.version : 1,
@@ -382,7 +460,7 @@ async function migrateLegacyBridgeSelectionPath(file) {
   if (!legacyState.valid) return;
   await writeBridgeSelectionState(file, legacyState);
   const verified = await readBridgeSelectionStateFile(file);
-  if (!verified.valid || verified.version !== 3) {
+  if (!verified.valid || verified.version !== 4) {
     throw new Error('DSH bridge selection migration verification failed.');
   }
   await fs.unlink(legacyFile);
@@ -394,7 +472,7 @@ async function readBridgeSelectionState(file = bridgeSelectionPath()) {
 }
 
 async function writeBridgeSelectionState(file, state) {
-  const data = { version: 3, sessions: state.sessions, workspaces: state.workspaces };
+  const data = { version: 4, sessions: state.sessions, workspaces: state.workspaces };
   await fs.mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
   const temporary = `${file}.${process.pid}.${randomUUID()}.tmp`;
   try {
@@ -416,12 +494,14 @@ function withSelectionWrite(file, operation) {
 }
 
 /**
- * Update one session's selection in the shared map; null removes the key.
+ * Record one session's successful bridge connection; null removes only that
+ * conversation's history entry. Every connection path calls this same writer
+ * after connect + initialize + tools/list has succeeded.
  * `options` accepts either a legacy file path string or
  * `{ workspace, file }`. `workspace` is the DSH workspace cwd and powers the
- * per-workspace last-selected fallback.
+ * per-workspace last-connected fallback.
  */
-export async function updateBridgeSelection(sessionKey, selection, options = {}) {
+export async function recordBridgeConnection(sessionKey, selection, options = {}) {
   const file = typeof options === 'string' ? options : (options?.file ?? bridgeSelectionPath());
   const requestedWorkspace = typeof options === 'string' ? undefined : options?.workspace;
   return withSelectionWrite(file, async () => {
@@ -436,16 +516,12 @@ export async function updateBridgeSelection(sessionKey, selection, options = {})
       : typeof selection.workspace === 'string' && selection.workspace.length > 0
         ? normalizePath(selection.workspace)
         : undefined;
-    const source = ['manual', 'workspace', 'workspace-last'].includes(selection.source)
-      ? selection.source
-      : 'manual';
     const entry = {
       port: selection.port,
       workspaceFolders: Array.isArray(selection.workspaceFolders)
         ? [...selection.workspaceFolders]
         : [],
       ...(workspace ? { workspace } : {}),
-      source,
       updatedAt: Date.now(),
     };
     state.sessions[sessionKey] = entry;
@@ -459,10 +535,25 @@ export async function updateBridgeSelection(sessionKey, selection, options = {})
   });
 }
 
+/** Backward-compatible name retained for older callers. */
+export async function updateBridgeSelection(sessionKey, selection, options = {}) {
+  return recordBridgeConnection(sessionKey, selection, options);
+}
+
+/** Remove only this conversation's remembered bridge connection. */
+export async function clearBridgeConnection(sessionKey, options = {}) {
+  return recordBridgeConnection(sessionKey, null, options);
+}
+
 /** Read one session's persisted selection, or null when absent/corrupt. */
 export async function loadBridgeSelection(sessionKey, file = bridgeSelectionPath()) {
   const state = await readBridgeSelectionState(file);
   return selectionFromEntry(state.sessions[sessionKey]);
+}
+
+/** Preferred semantic alias: this conversation's last successful connection. */
+export async function loadBridgeConnection(sessionKey, file = bridgeSelectionPath()) {
+  return loadBridgeSelection(sessionKey, file);
 }
 
 /**
@@ -484,11 +575,16 @@ export async function loadLatestBridgeSelectionForWorkspace(workspace, file = br
   };
 }
 
-/** Upgrade a recognized v1/v2 store to the explicit v3 sessions/workspaces shape. */
+/** Preferred semantic alias: this workspace's last successful connection. */
+export async function loadLatestBridgeConnectionForWorkspace(workspace, file = bridgeSelectionPath()) {
+  return loadLatestBridgeSelectionForWorkspace(workspace, file);
+}
+
+/** Upgrade a recognized older store to the source-neutral v4 history shape. */
 export async function migrateBridgeSelectionStore(file = bridgeSelectionPath()) {
   return withSelectionWrite(file, async () => {
     const state = await readBridgeSelectionState(file);
-    if (!state.valid || state.version === 3) return false;
+    if (!state.valid || state.version === 4) return false;
     await writeBridgeSelectionState(file, state);
     return true;
   });
@@ -530,6 +626,8 @@ export class BridgeClient {
     this.reviewOutsideVault = false;
     /** Whether mv-agent should replace getTerminalOutput with native terminal tools. */
     this.terminalAwarenessEnhanced = true;
+    /** Whether request images should be constrained to a 2000px longest edge. */
+    this.autoFitImageSize = true;
     /** 状态栏「打开」勾选框：是否推送位置信息。 */
     this.pushLocation = true;
     /** 状态栏「选中」勾选框：是否推送选中文本。 */
@@ -648,6 +746,7 @@ export class BridgeClient {
     // builds omit them, leaving the defaults.
     this.reviewOutsideVault = result?.reviewOutsideVault === true;
     this.terminalAwarenessEnhanced = result?.terminalAwarenessEnhanced !== false;
+    this.autoFitImageSize = result?.autoFitImageSize !== false;
     this.pushLocation = result?.pushLocation !== false;
     this.pushSelection = result?.pushSelection !== false;
     this.outsideToolPolicy = normalizeOutsideToolPolicy(result?.outsideToolPolicy);
@@ -694,6 +793,10 @@ export class BridgeClient {
     return this.rpc('dsh/terminal/focus', args ?? {}, signal);
   }
 
+  async closeTerminal(args, signal) {
+    return this.rpc('dsh/terminal/close', args ?? {}, signal);
+  }
+
   close(reason = 'bridge closed') {
     this.closedByUser = true;
     this.rejectAll(new Error(reason));
@@ -719,24 +822,32 @@ export class BridgeSupervisor {
    *   Called with the connected client and its tools after each successful sync,
    *   and with (null, []) after a lost connection / exhausted reconnect budget.
    * @param {()=>Promise<string|undefined>} [opts.resolveWorkspace] async current workspace folder.
+   * @param {(connection:{port:number,workspaceFolders:string[]})=>Promise<void>|void} [opts.onConnected]
+   *   Called after connect + initialize + tools/list succeeds. Every successful
+   *   connection path reaches this exact callback.
+   * @param {()=>Promise<Array>} [opts.discover] discovery override for tests.
+   * @param {(options:object)=>BridgeClient} [opts.createClient] client factory override for tests.
    * @param {(message:string)=>void} [opts.onLog]
    * @param {(notification: {method:string, params?:Record<string, unknown>})=>void} [opts.onNotification]
    *   Passive bridge notifications (selection_changed, at_mentioned, …).
+   * @param {number} [opts.handshakeTimeoutMs] timeout for each connect/protocol step.
    */
   constructor(opts) {
     this.onGeneration = opts.onGeneration;
     this.resolveWorkspace = opts.resolveWorkspace ?? (async () => undefined);
+    this.onConnected = opts.onConnected ?? (async () => {});
+    this.discover = opts.discover ?? (() => discoverBridges());
+    this.createClient = opts.createClient ?? ((options) => new BridgeClient(options));
     this.onLog = opts.onLog ?? (() => {});
     this.onNotification = opts.onNotification ?? (() => {});
+    this.handshakeTimeoutMs = opts.handshakeTimeoutMs ?? HANDSHAKE_STEP_TIMEOUT_MS;
     this.client = null;
     this.disposed = false;
     this.attempts = 0;
     this.delay = RECONNECT_POLICY.initialDelayMs;
     this.timer = null;
-    /** Persisted logical selection for this session, or null before resolution. */
+    /** Last successful/explicit logical target for this session, or null before resolution. */
     this.selection = opts.selection ?? null;
-    /** Where the active target came from: 'session' | 'workspace' | 'workspace-last' | null. */
-    this.targetSource = this.selection?.source ?? (this.selection ? 'session' : null);
     /** Guards overlapping connect attempts for this session. */
     this.connecting = null;
     /** Invalidates stale onClose callbacks after a manual switch. */
@@ -749,6 +860,8 @@ export class BridgeSupervisor {
     this.reviewOutsideVault = false;
     /** Mirrors the mv-agent setting `terminalAwarenessEnhanced`. */
     this.terminalAwarenessEnhanced = true;
+    /** Mirrors the mv-agent setting `autoFitImageSize`. */
+    this.autoFitImageSize = true;
     /** Mirrors the mv-agent status-bar checkbox `pushLocation`. */
     this.pushLocation = true;
     /** Mirrors the mv-agent status-bar checkbox `pushSelection`. */
@@ -766,140 +879,176 @@ export class BridgeSupervisor {
     void this.connectOnce();
   }
 
-  /** Switch this session to a manual target (null = auto) and reconnect. */
+  /**
+   * Transactionally switch this session. An explicit target replaces the live
+   * client only after the complete protocol handshake succeeds. `null` returns
+   * to automatic resolution and disconnects when no automatic candidate works.
+   */
   async setTarget(selection) {
-    if (this.disposed) return;
+    if (this.disposed) return { ok: false, error: 'bridge supervisor is disposed' };
     if (this.connecting) {
       await this.connecting.catch(() => {});
     }
-    if (this.disposed) return;
-    this.selection = selection ?? null;
-    this.targetSource = selection?.source ?? (selection ? 'session' : null);
+    if (this.disposed) return { ok: false, error: 'bridge supervisor is disposed' };
     this.switchToken += 1;
     if (this.timer !== null) {
       clearTimeout(this.timer);
       this.timer = null;
     }
-    if (this.client) {
-      const old = this.client;
-      this.client = null;
-      old.close('bridge target changed');
-      this.onGeneration(null, []);
-    }
     this.attempts = 0;
     this.delay = RECONNECT_POLICY.initialDelayMs;
-    void this.connectOnce();
+    if (selection === null) this.selection = null;
+    const automatic = selection === null;
+    this.connecting = this.connectAttempt({
+      explicitSelection: automatic ? undefined : selection,
+      scheduleRetry: automatic,
+    });
+    let result;
+    try {
+      result = await this.connecting;
+    } finally {
+      this.connecting = null;
+    }
+    if (automatic && !result?.ok && this.client) {
+      const old = this.client;
+      this.client = null;
+      this.workspaceFolders = [];
+      old.close('automatic bridge target unavailable');
+      this.onGeneration(null, []);
+    }
+    return result;
   }
 
   async connectOnce() {
     if (this.disposed) return;
     if (this.connecting) return this.connecting;
-    this.connecting = this.connectAttempt();
+    this.connecting = this.connectAttempt({ scheduleRetry: true });
     try {
-      await this.connecting;
+      return await this.connecting;
     } finally {
       this.connecting = null;
     }
   }
 
-  async connectAttempt() {
+  async connectAttempt(options = {}) {
     const token = this.switchToken;
     const workspace = await this.resolveWorkspace().catch(() => undefined);
-    const bridges = await discoverBridges().catch(() => []);
-    let resolved;
-    if (this.selection) {
-      // A persisted conversation choice is the strongest signal and must not
-      // silently downgrade to a workspace default when its vault is offline.
-      resolved = resolveBridgeTarget(bridges, { selection: this.selection });
-      if (!resolved) {
-        this.lastError = `manual bridge not found (vault ${this.selection.workspaceFolders?.join(' | ') || 'unknown'}, last port ${this.selection.port ?? '?'})`;
-        this.onLog(`mv-aide bridge: ${this.lastError}`);
-        this.scheduleRetry(this.lastError);
-        return;
-      }
-    } else {
-      let workspaceSelection = null;
-      if (typeof workspace === 'string' && workspace.length > 0) {
-        workspaceSelection = await loadLatestBridgeSelectionForWorkspace(workspace).catch(() => null);
-      }
-      resolved = resolveBridgeTarget(bridges, { workspace, workspaceSelection });
+    const bridges = await this.discover().catch(() => []);
+    let workspaceSelection = null;
+    if (typeof workspace === 'string' && workspace.length > 0) {
+      workspaceSelection = await loadLatestBridgeSelectionForWorkspace(workspace).catch(() => null);
     }
-    if (!resolved) {
-      this.lastError = this.selection
-        ? `manual bridge not found (vault ${this.selection.workspaceFolders?.join(' | ') || 'unknown'}, last port ${this.selection.port ?? '?'})`
-        : 'no matching mv-AIDE bridge for this session (use /mv-aide connect to choose one)';
+    const explicitSelection = options.explicitSelection;
+    const candidates = explicitSelection
+      ? resolveBridgeCandidates(bridges, { selection: explicitSelection })
+      : resolveBridgeCandidates(bridges, {
+          selection: this.selection,
+          workspaceSelection,
+          workspace,
+        });
+    if (candidates.length === 0) {
+      const remembered = explicitSelection ?? this.selection ?? workspaceSelection;
+      this.lastError = remembered
+        ? `remembered bridge is not discoverable (vault ${remembered.workspaceFolders?.join(' | ') || 'unknown'}, last port ${remembered.port ?? '?'})`
+        : 'no matching mv-AIDE bridge for this session yet';
       this.onLog(`mv-aide bridge: ${this.lastError}`);
-      if (this.selection) this.scheduleRetry(this.lastError);
-      return;
+      if (options.scheduleRetry === true) this.scheduleRetry(this.lastError);
+      return { ok: false, error: this.lastError };
     }
-    const target = resolved.bridge;
-    this.lastError = null;
-    this.targetSource = this.selection?.source ?? resolved.source;
-    this.workspaceFolders = target.workspaceFolders ?? [];
+    const failures = [];
+    for (const candidate of candidates) {
+      if (this.disposed || token !== this.switchToken) {
+        return { ok: false, error: 'bridge target changed' };
+      }
+      const result = await this.dialCandidate(candidate.bridge, workspace, token);
+      if (result.ok) return result;
+      failures.push(`port ${candidate.bridge.port}: ${result.error}`);
+    }
+    this.lastError = failures.join('; ') || 'no bridge candidate completed initialization';
+    this.onLog(`mv-aide bridge connect failed: ${this.lastError}`);
+    if (options.scheduleRetry === true) this.scheduleRetry(this.lastError);
+    return { ok: false, error: this.lastError };
+  }
 
-    const client = new BridgeClient({
+  async dialCandidate(target, workspace, token) {
+    const client = this.createClient({
       port: target.port,
       authToken: target.authToken,
       onState: (state, detail) => {
         if (state === 'error') this.onLog(`mv-aide bridge: ${detail}`);
       },
-      onNotification: (notification) => {
-        // Settings pushed by mv-AIDE apply immediately to the running
-        // plugin (diff hook + passive delivery + tool gates) without
-        // reconnecting.
-        if (notification?.method === 'mv_aide_settings_changed') {
-          const next = notification?.params?.reviewOutsideVault;
-          if (typeof next === 'boolean') this.reviewOutsideVault = next;
-          const terminalAwarenessEnhanced = notification?.params?.terminalAwarenessEnhanced;
-          if (typeof terminalAwarenessEnhanced === 'boolean') {
-            this.terminalAwarenessEnhanced = terminalAwarenessEnhanced;
-          }
-          const pushLocation = notification?.params?.pushLocation;
-          if (typeof pushLocation === 'boolean') this.pushLocation = pushLocation;
-          const pushSelection = notification?.params?.pushSelection;
-          if (typeof pushSelection === 'boolean') this.pushSelection = pushSelection;
-          const policy = notification?.params?.outsideToolPolicy;
-          if (policy && typeof policy === 'object') {
-            this.outsideToolPolicy = normalizeOutsideToolPolicy(policy);
-          }
-        }
-        this.onNotification(notification);
-      },
+      onNotification: (notification) => this.handleNotification(notification),
     });
-
     try {
-      await client.connect();
-      await client.initialize();
+      await handshakeStep(client.connect(), this.handshakeTimeoutMs, 'WebSocket connect');
+      await handshakeStep(client.initialize(), this.handshakeTimeoutMs, 'initialize');
+      const tools = await handshakeStep(client.listTools(), this.handshakeTimeoutMs, 'tools/list');
+      if (this.disposed || token !== this.switchToken) {
+        client.close();
+        return { ok: false, error: 'bridge target changed' };
+      }
+      const connection = {
+        port: target.port,
+        workspaceFolders: [...(target.workspaceFolders ?? [])],
+        ...(typeof workspace === 'string' && workspace.length > 0 ? { workspace } : {}),
+        autoFitImageSize: client.autoFitImageSize !== false,
+      };
+      await Promise.resolve(this.onConnected(connection));
+      if (this.disposed || token !== this.switchToken) {
+        client.close();
+        return { ok: false, error: 'bridge target changed' };
+      }
+      const old = this.client;
+      this.selection = connection;
+      this.workspaceFolders = connection.workspaceFolders;
       this.reviewOutsideVault = client.reviewOutsideVault === true;
       this.terminalAwarenessEnhanced = client.terminalAwarenessEnhanced !== false;
+      this.autoFitImageSize = client.autoFitImageSize !== false;
       this.pushLocation = client.pushLocation !== false;
       this.pushSelection = client.pushSelection !== false;
       this.outsideToolPolicy = client.outsideToolPolicy;
-      const tools = await client.listTools();
-      if (this.disposed || token !== this.switchToken) {
-        client.close();
-        return;
-      }
       this.client = client;
+      this.lastError = null;
       this.attempts = 0;
       this.delay = RECONNECT_POLICY.initialDelayMs;
+      old?.close('bridge target changed');
       this.onGeneration(client, tools);
-
-      const onClose = () => {
+      client.socket?.once('close', () => {
         if (this.disposed || token !== this.switchToken) return;
         if (this.client === client) {
           this.client = null;
           this.onGeneration(null, []);
         }
         this.scheduleRetry('bridge disconnected');
-      };
-      client.socket?.once('close', onClose);
+      });
+      return { ok: true, connection };
     } catch (error) {
-      this.lastError = error instanceof Error ? error.message : String(error);
-      this.onLog(`mv-aide bridge connect failed: ${this.lastError}`);
+      const message = error instanceof Error ? error.message : String(error);
       client.close();
-      this.scheduleRetry(this.lastError);
+      return { ok: false, error: message };
     }
+  }
+
+  handleNotification(notification) {
+    if (notification?.method === 'mv_aide_settings_changed') {
+      const next = notification?.params?.reviewOutsideVault;
+      if (typeof next === 'boolean') this.reviewOutsideVault = next;
+      const terminalAwarenessEnhanced = notification?.params?.terminalAwarenessEnhanced;
+      if (typeof terminalAwarenessEnhanced === 'boolean') {
+        this.terminalAwarenessEnhanced = terminalAwarenessEnhanced;
+      }
+      const autoFitImageSize = notification?.params?.autoFitImageSize;
+      if (typeof autoFitImageSize === 'boolean') this.autoFitImageSize = autoFitImageSize;
+      const pushLocation = notification?.params?.pushLocation;
+      if (typeof pushLocation === 'boolean') this.pushLocation = pushLocation;
+      const pushSelection = notification?.params?.pushSelection;
+      if (typeof pushSelection === 'boolean') this.pushSelection = pushSelection;
+      const policy = notification?.params?.outsideToolPolicy;
+      if (policy && typeof policy === 'object') {
+        this.outsideToolPolicy = normalizeOutsideToolPolicy(policy);
+      }
+    }
+    this.onNotification(notification);
   }
 
   scheduleRetry(reason) {
@@ -937,8 +1086,6 @@ export class BridgeSupervisor {
       attempts: this.attempts,
       port: this.client?.port ?? null,
       workspaceFolders: this.workspaceFolders,
-      manual: this.selection?.source === 'manual' || (this.selection !== null && !this.selection.source),
-      source: this.targetSource,
       lastError: this.lastError,
     };
   }
@@ -952,7 +1099,6 @@ export class BridgeSupervisor {
     }
     this.client?.close(reason);
     this.client = null;
-    this.targetSource = null;
     this.onGeneration(null, []);
   }
 }

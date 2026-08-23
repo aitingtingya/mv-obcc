@@ -4,9 +4,10 @@ import path from "node:path";
 
 export const DSH_PLUGIN_BUNDLE_MARKER = ".mv-aide-bundle.json";
 
-interface DshPluginBundleMarker {
-  schema: 1;
+export interface DshPluginBundleMarker {
+  schema: 1 | 2;
   fingerprint: string;
+  mvAideVersion?: string;
 }
 
 export function dshPluginBundleFingerprint(files: Readonly<Record<string, string>>): string {
@@ -24,24 +25,42 @@ export function dshPluginBundleFingerprint(files: Readonly<Record<string, string
 export async function writeDshPluginBundleMarker(
   installedDir: string,
   fingerprint: string,
+  mvAideVersion: string,
 ): Promise<void> {
-  const marker: DshPluginBundleMarker = { schema: 1, fingerprint };
+  const marker: DshPluginBundleMarker = { schema: 2, fingerprint, mvAideVersion };
   const target = path.join(installedDir, DSH_PLUGIN_BUNDLE_MARKER);
-  const temporary = `${target}.tmp-${process.pid}`;
+  const temporary = `${target}.tmp-${process.pid}-${crypto.randomUUID()}`;
   await fs.writeFile(temporary, `${JSON.stringify(marker)}\n`, "utf8");
   await fs.rename(temporary, target);
+}
+
+export async function readDshPluginBundleMarker(
+  installedDir: string,
+): Promise<DshPluginBundleMarker | null> {
+  try {
+    const marker = JSON.parse(
+      await fs.readFile(path.join(installedDir, DSH_PLUGIN_BUNDLE_MARKER), "utf8"),
+    ) as Partial<DshPluginBundleMarker>;
+    if ((marker.schema !== 1 && marker.schema !== 2) || typeof marker.fingerprint !== "string") {
+      return null;
+    }
+    if (marker.schema === 2 && typeof marker.mvAideVersion !== "string") return null;
+    return marker as DshPluginBundleMarker;
+  } catch {
+    return null;
+  }
 }
 
 export async function installedDshPluginBundleMatches(
   installedDir: string,
   expectedFiles: Readonly<Record<string, string>>,
   expectedFingerprint = dshPluginBundleFingerprint(expectedFiles),
+  expectedMvAideVersion?: string,
 ): Promise<boolean> {
   try {
-    const marker = JSON.parse(
-      await fs.readFile(path.join(installedDir, DSH_PLUGIN_BUNDLE_MARKER), "utf8"),
-    ) as Partial<DshPluginBundleMarker>;
-    if (marker.schema !== 1 || marker.fingerprint !== expectedFingerprint) return false;
+    const marker = await readDshPluginBundleMarker(installedDir);
+    if (!marker || marker.fingerprint !== expectedFingerprint) return false;
+    if (expectedMvAideVersion !== undefined && marker.mvAideVersion !== expectedMvAideVersion) return false;
 
     const actualFiles: Record<string, string> = {};
     await Promise.all(Object.keys(expectedFiles).map(async (relativePath) => {

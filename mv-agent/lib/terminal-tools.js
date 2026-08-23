@@ -5,6 +5,7 @@ const TERMINAL_TOOL_NAMES = new Set([
   'runInTerminal',
   'openTerminal',
   'focusTerminal',
+  'closeTerminal',
 ]);
 
 export function isEnhancedTerminalTool(name) {
@@ -37,19 +38,29 @@ export function enhancedTerminalToolDefinitions() {
     },
     {
       name: 'readTerminal',
-      description: 'Read recent lines from an mv-AIDE integrated terminal. Defaults to the recent terminal.',
+      description:
+        'Read recent output from an mv-AIDE integrated terminal. Defaults to the recent terminal. '
+        + 'Omitting lastN reads up to 50 lines of actual content (smart mode: skips blank viewport '
+        + 'padding, so an idle shell reports its prompt). Passing lastN reads exactly that many '
+        + 'trailing physical rows instead. When the tail is still empty (output not flushed yet), '
+        + 'retries for up to waitMs milliseconds before returning. A terminal tab restored after '
+        + 'Obsidian restart starts a fresh shell and waits for its new prompt; old scrollback is not restored.',
       inputSchema: {
         type: 'object',
         properties: {
           terminalId: { type: 'string' },
-          lastN: { type: 'number', minimum: 1, maximum: 500, default: 50 },
+          lastN: { type: 'number', minimum: 1, maximum: 500 },
+          waitMs: { type: 'number', minimum: 0, maximum: 5000, default: 0 },
         },
         additionalProperties: false,
       },
     },
     {
       name: 'sendTerminalInput',
-      description: 'Send raw input to an mv-AIDE integrated terminal; optionally submit it with Enter.',
+      description:
+        'Send byte-verbatim input to an mv-AIDE integrated terminal; optionally append Enter. '
+        + 'Shell metacharacters keep their native meaning; use this for keystrokes, Ctrl+C, TUI, '
+        + 'and REPL input, and use runInTerminal for shell commands that need reliable quoting.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -63,7 +74,10 @@ export function enhancedTerminalToolDefinitions() {
     },
     {
       name: 'runInTerminal',
-      description: 'Run a shell command in an mv-AIDE integrated terminal, optionally forcing a new terminal.',
+      description:
+        'Reliably run a shell command in the current integrated shell, preserving quotes, bangs, '
+        + 'whitespace, Unicode, multiline text, and shell state. This is the command-execution '
+        + 'entry point; optionally force a new terminal.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -96,6 +110,20 @@ export function enhancedTerminalToolDefinitions() {
         additionalProperties: false,
       },
     },
+    {
+      name: 'closeTerminal',
+      description:
+        'Close a specific mv-AIDE terminal tab and stop the PTY owned by that tab. '
+        + 'This closes the Obsidian pane instead of merely sending exit to the shell.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          terminalId: { type: 'string' },
+        },
+        required: ['terminalId'],
+        additionalProperties: false,
+      },
+    },
   ];
 }
 
@@ -113,6 +141,8 @@ export async function callEnhancedTerminalTool(client, name, args, signal) {
       return client.openTerminal(signal);
     case 'focusTerminal':
       return client.focusTerminal(args ?? {}, signal);
+    case 'closeTerminal':
+      return client.closeTerminal(args ?? {}, signal);
     default:
       throw new Error(`Unknown enhanced terminal tool: ${name}`);
   }

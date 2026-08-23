@@ -10,6 +10,8 @@ export interface DshSettings {
   autoOpenRegion: DshAutoOpenRegion;
   /** Pinned port passed to `dsh web --port`; default 3080. */
   port: number;
+  /** Explicit DeepSeek Harness source checkout; empty means automatic detection. */
+  customDirectory: string;
   /** Legacy cache only; UI and operations always inspect the real DSH profile. */
   injected: boolean;
   /**
@@ -22,6 +24,8 @@ export interface DshSettings {
   reviewOutsideVault: boolean;
   /** Use mv-agent's private native terminal control tools instead of getTerminalOutput. */
   terminalAwarenessEnhanced: boolean;
+  /** Downscale DSH request images so their longest edge never exceeds 2000px. */
+  autoFitImageSize: boolean;
   /** 状态栏「打开」勾选框：独立控制文件/页面位置信息的被动推送。 */
   pushLocation: boolean;
   /** 状态栏「选中」勾选框：独立控制选中文本的被动推送。 */
@@ -39,9 +43,11 @@ export const DEFAULT_DSH_SETTINGS: DshSettings = {
   enabled: false,
   autoOpenRegion: "right",
   port: 3080,
+  customDirectory: "",
   injected: false,
   reviewOutsideVault: false,
   terminalAwarenessEnhanced: false,
+  autoFitImageSize: true,
   pushLocation: true,
   pushSelection: true,
   outsideToolPolicy: {},
@@ -85,9 +91,13 @@ export function normalizeDshSettings(raw: unknown): DshSettings {
     enabled: value.enabled === true,
     autoOpenRegion: normalizeRegion(value.autoOpenRegion),
     port: normalizePort(value.port),
+    customDirectory: typeof value.customDirectory === "string"
+      ? value.customDirectory.trim()
+      : "",
     injected: value.injected === true,
     reviewOutsideVault: value.reviewOutsideVault === true,
     terminalAwarenessEnhanced: value.terminalAwarenessEnhanced === true,
+    autoFitImageSize: value.autoFitImageSize !== false,
     pushLocation: value.pushLocation !== false,
     pushSelection: value.pushSelection !== false,
     outsideToolPolicy: normalizeOutsideToolPolicy(value.outsideToolPolicy),

@@ -24,6 +24,7 @@ export interface DshProcessDiscoveryAdapter {
    */
   listDshProcessesStrict?(): Promise<DshProcessInfo[]>;
   processInfo(pid: number): Promise<DshProcessInfo | null>;
+  processCwd?(pid: number): Promise<string | null>;
   listenerPid(port: number): Promise<number | null>;
   killProcessTree(pid: number): Promise<boolean>;
 }
@@ -106,8 +107,10 @@ async function psAll(run = runProcess): Promise<RawProcessLine[]> {
     .filter((item): item is RawProcessLine => item !== null);
 }
 
-function isDshCommand(command: string): boolean {
-  return /\bdsh(?:\.exe)?\s+web(?:\s|$)/iu.test(command);
+export function isDshCommand(command: string): boolean {
+  const normalized = command.replace(/\\/gu, "/");
+  return /\bdsh(?:\.exe)?\s+web(?:\s|$)/iu.test(normalized)
+    || /apps\/cli\/(?:lib\/bin\.js|src\/bin\.ts)(?:["']?)(?:\s+[^\s]+)*\s+web(?:\s|$)/iu.test(normalized);
 }
 
 /**
@@ -135,7 +138,10 @@ export function isDshRuntimeProcess(
   // DSH process is Node executing code from the installed package directory.
   const nodeHost = executableBase === "node" || executableBase === "node.exe"
     || invoked === "node" || invoked === "node.exe";
-  return nodeHost && /\/node_modules\/@deepseek-ai\/dsh(?:\/|$)/u.test(command);
+  return nodeHost && (
+    /\/node_modules\/@deepseek-ai\/dsh(?:\/|$)/u.test(command)
+    || /apps\/cli\/(?:lib\/bin\.js|src\/bin\.ts)(?:["']?)(?:\s+[^\s]+)*\s+web(?:\s|$)/u.test(command)
+  );
 }
 
 function toProcessInfo(line: RawProcessLine): DshProcessInfo {
@@ -184,6 +190,23 @@ async function unixListenerPid(port: number, run = runProcess): Promise<number |
     }
   }
   return null;
+}
+
+async function unixProcessCwd(
+  pid: number,
+  platform: NodeJS.Platform,
+  run = runProcess,
+): Promise<string | null> {
+  if (platform === "linux") {
+    const result = await run("readlink", ["-f", `/proc/${pid}/cwd`], { timeoutMs: 5000 });
+    return result.code === 0 ? result.stdout.trim() || null : null;
+  }
+  const result = await run("lsof", ["-a", "-p", String(pid), "-d", "cwd", "-Fn"], {
+    timeoutMs: 5000,
+  });
+  if (result.code !== 0) return null;
+  const line = result.stdout.split(/\r?\n/u).find((item) => item.startsWith("n"));
+  return line?.slice(1).trim() || null;
 }
 
 async function unixKillProcessTree(pid: number, run = runProcess): Promise<boolean> {
@@ -306,6 +329,7 @@ export function createDefaultDshProcessDiscoveryAdapter(
       listDshProcessesStrict: async () =>
         (await windowsDshProcesses(run, true)).map(toProcessInfo),
       processInfo: (pid) => windowsProcessInfo(pid, run),
+      processCwd: async () => null,
       listenerPid: (port) => windowsListenerPid(port, run),
       killProcessTree: (pid) => windowsKillProcessTree(pid, run),
     };
@@ -332,6 +356,7 @@ export function createDefaultDshProcessDiscoveryAdapter(
       return processes;
     },
     processInfo: (pid) => unixProcessInfo(pid, run),
+    processCwd: (pid) => unixProcessCwd(pid, platform, run),
     listenerPid: (port) => unixListenerPid(port, run),
     killProcessTree: (pid) => unixKillProcessTree(pid, run),
   };

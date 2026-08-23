@@ -6,11 +6,10 @@
 //   `~/.mv-aide/ide` and registers each IDE tool as a native tool under
 //   `mv_aide__<name>`, so the model can use Obsidian context (selection, open
 //   editors, links, tags, …).
-// - Bridge selection is per dsh conversation: each conversation keeps its
-//   own persisted choice (keyed by session id) and survives dsh restarts.
-//   New conversations auto-prefer the bridge for their dsh workspace, then
-//   the workspace's most recent manual bridge choice, and stay disconnected
-//   when neither exists.
+// - Successful IDE connections are remembered per DSH conversation and per
+//   DSH workspace. Reopening a conversation prefers its own last connected
+//   vault, then the workspace's last connected vault, then a live containing
+//   vault. Every connection path has identical persistence consequences.
 // - Maintains the latest mv-AIDE passive snapshot: `selection_changed` only
 //   updates buffered context, which is injected once when the user starts the
 //   next turn; user-triggered `at_mentioned` steering still wakes the agent.
@@ -21,17 +20,17 @@
 import {
   BridgeSupervisor,
   bridgeMatchesSelection,
+  clearBridgeConnection,
   discoverBridges,
-  loadBridgeSelection,
-  loadLatestBridgeSelectionForWorkspace,
+  loadBridgeConnection,
   migrateBridgeSelectionStore,
   parseBridgeSelector,
-  selectBridgeForWorkspace,
+  recordBridgeConnection,
   sessionKeyOf,
-  updateBridgeSelection,
 } from './bridge-client.js';
 import {
   ActiveSessionRegistry,
+  isSessionAuthorized,
   mountActiveSessionControl,
 } from './active-session-control.js';
 import { createDiffHook, isInsideAny, normalizePath } from './diff-hook.js';
@@ -45,6 +44,7 @@ import {
   shouldDeliverSelection,
 } from './passive-state.js';
 import { mountHoverSidebar } from './hover-sidebar.js';
+import { installImageAdapter } from './image-adapter.js';
 import {
   callEnhancedTerminalTool,
   isEnhancedTerminalTool,
@@ -60,7 +60,10 @@ const COMMAND_USAGE =
 
 const PLUGIN_SOURCE = 'mv-aide-dsh';
 const MAX_SELECTION_CHARS = 6000;
-const SESSION_NOT_OPEN_MESSAGE = 'mv-AIDE 仅连接当前打开的 DSH 对话；该对话已不再打开。';
+const SESSION_NOT_OPEN_MESSAGE =
+  'mv-AIDE 仅服务当前打开或正在运行的 DSH 对话；该对话已关闭且不在运行。切回该对话页面即可自动恢复连接。';
+/** How long an idle, unstaged supervisor lingers before cleanup (absorbs rapid idle↔running flaps). */
+const IDLE_SUPERVISOR_GRACE_MS = 5000;
 
 /** Normalize a bridge tool name to the DSH function-name contract. */
 function publicToolName(rawName) {
@@ -99,11 +102,13 @@ export function apply(ctx, config = {}) {
   let toolDisposers = new Map();
   let generationSeq = 0;
   const supervisors = new Map();
-  const selectionsBySession = new Map();
   const activeAgents = new Map();
   const activationGenerations = new Map();
   const enteredVaultKeys = new Set();
+  /** sessionId → pending cleanup timer for idle, unstaged supervisors. */
+  const idleDisposers = new Map();
   let directControlDisposer;
+  const imagePolicyService = installImageAdapter(ctx);
 
   const log = (message) => {
     if (ctx.logger && typeof ctx.logger.warn === 'function') {
@@ -157,9 +162,27 @@ export function apply(ctx, config = {}) {
     return typeof sessionId === 'string' && sessionId.length > 0 ? sessionId : null;
   }
 
+  /** Live, authoritative activity check against the DSH agent registry (covers subagents too). */
+  function isAgentRunning(sessionId) {
+    if (typeof sessionId !== 'string' || sessionId.length === 0) return false;
+    try {
+      return ctx.get('agents')?.get?.(sessionId)?.status === 'running';
+    } catch {
+      return false;
+    }
+  }
+
+  /** Staged = reported by a live DSH frontend as the conversation on screen. */
+  function isStagedSession(sessionId) {
+    return typeof sessionId === 'string' && sessionId.length > 0 && activeSessions.isActive(sessionId);
+  }
+
   function requireOpenAgent(agent) {
     const sessionId = sessionIdOf(agent);
-    if (!sessionId || !activeSessions.isActive(sessionId)) {
+    // Staged (frontend-reported) OR mid-turn running agents — including
+    // background subagents — may use the bridge. Idle + unstaged sessions
+    // still throw.
+    if (!isSessionAuthorized(activeSessions, ctx.get('agents'), sessionId)) {
       throw new Error(SESSION_NOT_OPEN_MESSAGE);
     }
     return sessionId;
@@ -173,6 +196,17 @@ export function apply(ctx, config = {}) {
       (sessionId ? activeAgents.get(sessionId)?.session?.header?.cwd : undefined) ??
       agent?.session?.header?.cwd ??
       (sessionId ? activeSessions.reportFor(sessionId)?.cwd : undefined);
+  }
+
+  function syncImagePolicy(supervisor) {
+    if (!imagePolicyService || typeof imagePolicyService.setSession !== 'function') return;
+    if (typeof supervisor?.sessionId !== 'string' || supervisor.sessionId.length === 0) return;
+    imagePolicyService.setSession(supervisor.sessionId, supervisor.autoFitImageSize !== false);
+  }
+
+  function clearImagePolicy(sessionId) {
+    if (!imagePolicyService || typeof imagePolicyService.deleteSession !== 'function') return;
+    imagePolicyService.deleteSession(sessionId);
   }
 
   function passiveStateFor(supervisor) {
@@ -196,8 +230,19 @@ export function apply(ctx, config = {}) {
     let sv = supervisors.get(key);
     if (sv) return sv;
     sv = new BridgeSupervisor({
-      selection: selection ?? selectionsBySession.get(key) ?? null,
+      selection: selection ?? null,
       resolveWorkspace: async () => workspaceOfAgent(agent),
+      onConnected: async (connection) => {
+        const workspace = workspaceOfAgent(agent);
+        // Only staged (frontend-reported) sessions write connection history.
+        // Lazily created supervisors for running-only sessions (e.g.
+        // background subagents) must not pollute the workspace's remembered
+        // bridge selection — today they can never connect at all.
+        if (isStagedSession(sessionId)) {
+          await recordBridgeConnection(key, connection, { workspace });
+        }
+        imagePolicyService?.setSession?.(sessionId, connection.autoFitImageSize !== false);
+      },
       onLog: log,
       onNotification: (notification) => handleNotification(sv, notification),
       onGeneration: (client, tools) => {
@@ -206,6 +251,7 @@ export function apply(ctx, config = {}) {
           refreshTools();
           void ensureVaultWorkspace(sv);
         } else {
+          clearImagePolicy(sv.sessionId);
           refreshTools();
         }
       },
@@ -241,62 +287,19 @@ export function apply(ctx, config = {}) {
     };
   }
 
-  async function selectTargetForAgent(agent, options = {}) {
-    requireOpenAgent(agent);
-    await migrationPromise;
-    const key = sessionKeyOf(agent);
-    const workspace = workspaceOfAgent(agent);
-    let selection = options.ignoreSession === true
-      ? null
-      : selectionsBySession.get(key) ?? await loadBridgeSelection(key).catch(() => null);
-    if (selection && typeof selection.workspace !== 'string' && typeof workspace === 'string' && workspace.length > 0) {
-      selection = { ...selection, workspace };
-      await updateBridgeSelection(key, selection, { workspace }).catch((error) => {
-        log(`mv-aide: failed to backfill bridge workspace — ${error instanceof Error ? error.message : String(error)}`);
-      });
-    }
-    if (selection) {
-      selectionsBySession.set(key, selection);
-      return selection;
-    }
-    if (typeof workspace !== 'string' || workspace.length === 0) return null;
-
-    const bridges = await discoverBridges().catch(() => []);
-    const matched = selectBridgeForWorkspace(bridges, workspace);
-    if (matched) {
-      selection = {
-        port: matched.port,
-        workspaceFolders: matched.workspaceFolders ?? [],
-        workspace,
-        source: 'workspace',
-      };
-    } else {
-      const workspaceLast = await loadLatestBridgeSelectionForWorkspace(workspace).catch(() => null);
-      if (workspaceLast) {
-        selection = {
-          port: workspaceLast.port,
-          workspaceFolders: workspaceLast.workspaceFolders ?? [],
-          workspace,
-          source: 'workspace-last',
-        };
-      }
-    }
-    if (!selection) return null;
-    await updateBridgeSelection(key, selection, { workspace }).catch((error) => {
-      log(`mv-aide: failed to persist automatic bridge selection — ${error instanceof Error ? error.message : String(error)}`);
-    });
-    selectionsBySession.set(key, selection);
-    return selection;
-  }
-
   async function ensureActiveSupervisor(agent, options = {}) {
     requireOpenAgent(agent);
     const key = sessionKeyOf(agent);
     const existing = supervisors.get(key);
-    if (existing && options.ignoreSession !== true) return existing;
-    const selection = await selectTargetForAgent(agent, options);
+    if (existing) return existing;
+    await migrationPromise;
+    const selection = options.ignoreSession === true
+      ? null
+      : await loadBridgeConnection(key).catch(() => null);
     requireOpenAgent(agent);
-    if (!selection) return null;
+    // An opened conversation always owns a supervisor, even when no IDE is
+    // currently discoverable. The supervisor keeps resolving/retrying so a
+    // later Obsidian start, page refresh, or plugin restart self-heals.
     return supervisorForSync(agent, selection);
   }
 
@@ -306,6 +309,7 @@ export function apply(ctx, config = {}) {
   }
 
   async function activateReportedSession(report) {
+    cancelIdleSupervisorCleanup(report.sessionId);
     const generation = (activationGenerations.get(report.sessionId) ?? 0) + 1;
     activationGenerations.set(report.sessionId, generation);
     const agent = await resolveReportedAgent(report).catch((error) => {
@@ -322,6 +326,7 @@ export function apply(ctx, config = {}) {
   }
 
   function disposeSupervisor(sessionId, reason = SESSION_NOT_OPEN_MESSAGE) {
+    cancelIdleSupervisorCleanup(sessionId);
     const key = `session:${sessionId}`;
     const supervisor = supervisors.get(key);
     if (!supervisor) return;
@@ -331,16 +336,53 @@ export function apply(ctx, config = {}) {
       clearTimeout(state.selectionTimer);
       state.selectionTimer = null;
     }
+    clearImagePolicy(sessionId);
     supervisor.dispose(reason);
   }
 
   function deactivateReportedSession(sessionId) {
     activationGenerations.set(sessionId, (activationGenerations.get(sessionId) ?? 0) + 1);
     activeAgents.delete(sessionId);
+    if (isAgentRunning(sessionId)) {
+      // The conversation is mid-turn (or a background subagent is working):
+      // keep its supervisor so in-flight and subsequent tool calls survive
+      // the frontend switching away. Cleanup happens once it goes idle.
+      scheduleIdleSupervisorCleanup(sessionId);
+      return;
+    }
     disposeSupervisor(sessionId);
   }
 
+  /**
+   * Lazily created supervisors for running-only sessions (and supervisors
+   * kept alive across a mid-turn unstage) are cleaned up shortly after the
+   * agent goes idle. Authorization never depends on this timer — tool calls
+   * check the live agent status — so the grace only avoids churn between
+   * rapid consecutive turns.
+   */
+  function scheduleIdleSupervisorCleanup(sessionId) {
+    if (typeof sessionId !== 'string' || sessionId.length === 0) return;
+    if (isStagedSession(sessionId)) return;
+    if (idleDisposers.has(sessionId)) return;
+    const timer = setTimeout(() => {
+      idleDisposers.delete(sessionId);
+      if (!isStagedSession(sessionId) && !isAgentRunning(sessionId)) {
+        disposeSupervisor(sessionId, 'session went idle while unstaged');
+      }
+    }, IDLE_SUPERVISOR_GRACE_MS);
+    idleDisposers.set(sessionId, timer);
+  }
+
+  function cancelIdleSupervisorCleanup(sessionId) {
+    const timer = idleDisposers.get(sessionId);
+    if (timer === undefined) return;
+    clearTimeout(timer);
+    idleDisposers.delete(sessionId);
+  }
+
   function disposeAllSupervisors() {
+    for (const timer of idleDisposers.values()) clearTimeout(timer);
+    idleDisposers.clear();
     for (const sv of supervisors.values()) {
       for (const state of [sv.passiveState]) {
         if (state?.selectionTimer !== null && state?.selectionTimer !== undefined) {
@@ -348,6 +390,7 @@ export function apply(ctx, config = {}) {
           state.selectionTimer = null;
         }
       }
+      clearImagePolicy(sv.sessionId);
       sv.dispose();
     }
     supervisors.clear();
@@ -655,6 +698,9 @@ export function apply(ctx, config = {}) {
       (agent) =>
         buffered &&
         sessionKeyOf(agent) === supervisor.sessionKey &&
+        // Passive context stays staged-only: running-only sessions (e.g.
+        // background subagents) must not start receiving selection pushes.
+        isStagedSession(sessionIdOf(agent)) &&
         selectionDeliveryAllowed(agent, buffered.viewType, supervisor),
       (agent) => {
         const nextTurn = agent?.inbox?.nextTurn;
@@ -669,6 +715,9 @@ export function apply(ctx, config = {}) {
     if (method === 'mv_aide_settings_changed') {
       if (typeof notification?.params?.terminalAwarenessEnhanced === 'boolean') {
         refreshTools();
+      }
+      if (typeof notification?.params?.autoFitImageSize === 'boolean') {
+        syncImagePolicy(supervisor);
       }
       return;
     }
@@ -713,7 +762,11 @@ export function apply(ctx, config = {}) {
       deliverToMatches(
         supervisor,
         'mention',
-        (agent) => sessionKeyOf(agent) === supervisor.sessionKey && selectionDeliveryAllowed(agent, undefined, supervisor),
+        // Passive context stays staged-only (see tryBufferedSendBackup).
+        (agent) =>
+          sessionKeyOf(agent) === supervisor.sessionKey &&
+          isStagedSession(sessionIdOf(agent)) &&
+          selectionDeliveryAllowed(agent, undefined, supervisor),
         (agent) => {
           if (typeof agent.steer !== 'function') return;
           agent.steer(
@@ -841,9 +894,8 @@ export function apply(ctx, config = {}) {
           connected: false,
           port: null,
           workspaceFolders: [],
-          manual: false,
           toolCount: 0,
-          lastError: 'no bridge target selected for this opened conversation',
+          lastError: 'bridge supervisor is not available for this opened conversation',
         };
         const folder = status.workspaceFolders?.[0] ?? '';
         return {
@@ -852,7 +904,6 @@ export function apply(ctx, config = {}) {
             'mv-AIDE bridge',
             `Connected: ${status.connected ? 'yes' : 'no'}`,
             `Bridge: ${status.port ? `${status.port}${folder ? ` (${folder})` : ''}` : 'none'}`,
-            `Manual: ${status.manual ? 'yes' : 'no'}`,
             `Tools: ${status.toolCount}`,
             status.lastError ? `Last error: ${status.lastError}` : '',
             '',
@@ -880,18 +931,24 @@ export function apply(ctx, config = {}) {
           return { kind: 'success', text: await renderBridgeList(sv, agent) };
         }
         if (tail === 'auto') {
-          const sessionId = requireOpenAgent(agent);
-          disposeSupervisor(sessionId, 'bridge target changed');
-          await updateBridgeSelection(key, null).catch((error) => {
-            log(`mv-aide: failed to clear bridge selection — ${error instanceof Error ? error.message : String(error)}`);
+          requireOpenAgent(agent);
+          await clearBridgeConnection(key).catch((error) => {
+            log(`mv-aide: failed to clear conversation bridge history — ${error instanceof Error ? error.message : String(error)}`);
           });
-          selectionsBySession.delete(key);
-          sv = await ensureActiveSupervisor(agent, { ignoreSession: true });
+          let switchResult;
+          if (!sv) {
+            sv = await ensureActiveSupervisor(agent, { ignoreSession: true });
+            switchResult = sv?.isConnected()
+              ? { ok: true, connection: { port: sv.client.port, workspaceFolders: sv.workspaceFolders } }
+              : { ok: false, error: sv?.lastError ?? '当前没有可用 IDE' };
+          } else {
+            switchResult = await sv.setTarget(null);
+          }
           return {
-            kind: 'success',
-            text: sv
-              ? '已按工作区规则重新选择桥接，正在连接。'
-              : '已清除本对话目标；当前无目录匹配或工作区历史目标，不会尝试连接。',
+            kind: switchResult?.ok ? 'success' : 'error',
+            text: switchResult?.ok
+              ? `已清除本对话的历史目标，并连接 IDE 桥：端口 ${switchResult.connection.port}。`
+              : `已清除本对话的历史目标；当前没有可连接的 IDE，将继续等待。${switchResult?.error ? `\n${switchResult.error}` : ''}`,
           };
         }
         const bridges = await discoverBridges().catch(() => []);
@@ -903,21 +960,29 @@ export function apply(ctx, config = {}) {
         const selection = {
           port: parsed.bridge.port,
           workspaceFolders: parsed.bridge.workspaceFolders ?? [],
-          source: 'manual',
         };
         if (typeof workspace === 'string' && workspace.length > 0) {
           selection.workspace = workspace;
         }
-        await updateBridgeSelection(key, selection, { workspace }).catch((error) => {
-          log(`mv-aide: failed to persist bridge selection — ${error instanceof Error ? error.message : String(error)}`);
-        });
-        selectionsBySession.set(key, selection);
-        if (sv) await sv.setTarget(selection);
-        else sv = supervisorForSync(agent, selection);
+        // Choosing a target is not connection history. Persistence happens only
+        // after the same connect + initialize + tools/list success path used by
+        // automatic discovery and reconnects.
+        let switchResult;
+        if (sv) {
+          switchResult = await sv.setTarget(selection);
+        } else {
+          sv = supervisorForSync(agent, selection);
+          await sv.connectOnce();
+          switchResult = sv.isConnected()
+            ? { ok: true, connection: { port: sv.client.port, workspaceFolders: sv.workspaceFolders } }
+            : { ok: false, error: sv.lastError ?? '连接失败' };
+        }
         const folders = (selection.workspaceFolders ?? []).join(' | ');
         return {
-          kind: 'success',
-          text: `已选择 IDE 桥：端口 ${selection.port}${folders ? `（${folders}）` : ''}，正在重连。`,
+          kind: switchResult?.ok ? 'success' : 'error',
+          text: switchResult?.ok
+            ? `已连接 IDE 桥：端口 ${switchResult.connection.port}${folders ? `（${folders}）` : ''}。`
+            : `IDE 桥连接失败：端口 ${selection.port}${folders ? `（${folders}）` : ''}。原连接保持不变。\n${switchResult?.error ?? '未知错误'}`,
         };
       }
       case 'selection': {
@@ -973,10 +1038,19 @@ export function apply(ctx, config = {}) {
   // user sends a message, push the latest selection snapshot once. The payload
   // carries { agent, status }; a running status that is not a real turn
   // start (e.g. a steer wake) still counts as a send moment — acceptable.
+  // Delivery stays staged-only so running-only sessions (background
+  // subagents included) never receive passive selection pushes.
   ctx.on('agent/status', (payload) => {
-    if (payload && typeof payload === 'object' && payload.status === 'running') {
-      const sv = supervisors.get(sessionKeyOf(payload.agent));
-      if (sv) injectBufferedIfNewer(payload.agent, sv);
+    if (!payload || typeof payload !== 'object') return;
+    const sessionId = sessionIdOf(payload.agent);
+    if (payload.status === 'running') {
+      cancelIdleSupervisorCleanup(sessionId);
+      if (isStagedSession(sessionId)) {
+        const sv = supervisors.get(sessionKeyOf(payload.agent));
+        if (sv) injectBufferedIfNewer(payload.agent, sv);
+      }
+    } else if (payload.status === 'idle') {
+      scheduleIdleSupervisorCleanup(sessionId);
     }
   });
 

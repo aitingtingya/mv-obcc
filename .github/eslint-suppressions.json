@@ -1,167 +1,309 @@
 {
   "main.ts": {
-    "@typescript-eslint/no-base-to-string": { "count": 1 },
-    "@typescript-eslint/no-floating-promises": { "count": 2 },
-    "@typescript-eslint/no-this-alias": { "count": 1 },
-    "@typescript-eslint/no-unnecessary-type-assertion": { "count": 2 },
-    "@typescript-eslint/no-unsafe-argument": { "count": 1 },
-    "@typescript-eslint/no-unsafe-assignment": { "count": 1 },
-    "@typescript-eslint/no-unsafe-call": { "count": 1 },
-    "@typescript-eslint/no-unsafe-member-access": { "count": 1 },
-    "@typescript-eslint/only-throw-error": { "count": 1 },
-    "no-empty": { "count": 1 },
-    "obsidianmd/rule-custom-message": { "count": 2 }
+    "@typescript-eslint/no-base-to-string": {
+      "count": 1
+    },
+    "@typescript-eslint/no-floating-promises": {
+      "count": 2
+    },
+    "@typescript-eslint/no-this-alias": {
+      "count": 1
+    },
+    "@typescript-eslint/no-unnecessary-type-assertion": {
+      "count": 2
+    },
+    "@typescript-eslint/no-unsafe-argument": {
+      "count": 1
+    },
+    "@typescript-eslint/no-unsafe-assignment": {
+      "count": 1
+    },
+    "@typescript-eslint/only-throw-error": {
+      "count": 1
+    },
+    "obsidianmd/rule-custom-message": {
+      "count": 2
+    }
   },
   "mv-dsh-manager/lib/client.js": {
-    "no-useless-escape": { "count": 1 }
+    "no-useless-escape": {
+      "count": 1
+    }
   },
   "mv-dsh-manager/lib/plugins-service.js": {
-    "no-constant-condition": { "count": 1 }
+    "no-constant-condition": {
+      "count": 1
+    }
   },
   "mv-dsh-manager/lib/skills-service.js": {
-    "no-constant-condition": { "count": 1 },
-    "no-extra-boolean-cast": { "count": 1 }
+    "no-constant-condition": {
+      "count": 1
+    },
+    "no-extra-boolean-cast": {
+      "count": 1
+    }
   },
   "src/agent-integrations/claude-code/hooks.ts": {
-    "@typescript-eslint/no-unsafe-assignment": { "count": 2 }
+    "@typescript-eslint/no-unsafe-assignment": {
+      "count": 2
+    }
   },
   "src/agent-integrations/claude-code/mcp-registration.ts": {
-    "@typescript-eslint/no-unnecessary-type-assertion": { "count": 1 },
-    "no-control-regex": { "count": 1 }
+    "@typescript-eslint/no-unnecessary-type-assertion": {
+      "count": 1
+    },
+    "no-control-regex": {
+      "count": 1
+    }
   },
   "src/agent-integrations/claude-code/settings.ts": {
-    "@typescript-eslint/no-unsafe-assignment": { "count": 2 }
+    "@typescript-eslint/no-unsafe-assignment": {
+      "count": 2
+    }
   },
   "src/agent-integrations/codex/ide-endpoint.ts": {
-    "@typescript-eslint/no-base-to-string": { "count": 3 }
+    "@typescript-eslint/no-base-to-string": {
+      "count": 3
+    }
   },
   "src/agent-integrations/codex/workspace-router.ts": {
-    "@typescript-eslint/no-unsafe-argument": { "count": 1 },
-    "@typescript-eslint/no-unsafe-assignment": { "count": 1 }
+    "@typescript-eslint/no-unsafe-argument": {
+      "count": 1
+    },
+    "@typescript-eslint/no-unsafe-assignment": {
+      "count": 1
+    }
   },
   "src/agent-integrations/dsh/feature.ts": {
-    "@typescript-eslint/no-unsafe-member-access": { "count": 1 },
-    "@typescript-eslint/prefer-promise-reject-errors": { "count": 1 }
+    "@typescript-eslint/no-unsafe-member-access": {
+      "count": 1
+    },
+    "@typescript-eslint/prefer-promise-reject-errors": {
+      "count": 1
+    }
   },
   "src/agent-integrations/dsh/runtime/environment.ts": {
-    "@typescript-eslint/no-unnecessary-type-assertion": { "count": 2 }
+    "@typescript-eslint/no-unnecessary-type-assertion": {
+      "count": 2
+    }
   },
   "src/agent-integrations/dsh/runtime/node-runtime.ts": {
-    "no-useless-escape": { "count": 4 }
+    "no-useless-escape": {
+      "count": 4
+    }
   },
   "src/agent-integrations/dsh/runtime/process-discovery.ts": {
-    "@typescript-eslint/no-base-to-string": { "count": 2 }
+    "@typescript-eslint/no-base-to-string": {
+      "count": 2
+    }
   },
   "src/agent-integrations/dsh/runtime/process.ts": {
-    "@typescript-eslint/prefer-promise-reject-errors": { "count": 1 }
+    "@typescript-eslint/prefer-promise-reject-errors": {
+      "count": 1
+    }
   },
   "src/agent-integrations/dsh/runtime/webview.ts": {
-    "no-case-declarations": { "count": 1 }
+    "no-case-declarations": {
+      "count": 1
+    }
   },
   "src/external-file-opener-system.ts": {
-    "@typescript-eslint/only-throw-error": { "count": 1 }
+    "@typescript-eslint/only-throw-error": {
+      "count": 1
+    }
   },
   "src/external-file-opener.ts": {
-    "@typescript-eslint/no-unnecessary-type-assertion": { "count": 1 },
-    "no-control-regex": { "count": 1 }
+    "@typescript-eslint/no-unnecessary-type-assertion": {
+      "count": 1
+    },
+    "no-control-regex": {
+      "count": 1
+    }
   },
   "src/file-explorer-path-bar.ts": {
-    "@typescript-eslint/unbound-method": { "count": 1 }
+    "@typescript-eslint/unbound-method": {
+      "count": 1
+    }
   },
   "src/file-symlink-service.ts": {
-    "@typescript-eslint/no-duplicate-type-constituents": { "count": 1 }
+    "@typescript-eslint/no-duplicate-type-constituents": {
+      "count": 1
+    }
   },
   "src/file-type-icons.ts": {
-    "@typescript-eslint/no-unnecessary-type-assertion": { "count": 2 }
+    "@typescript-eslint/no-unnecessary-type-assertion": {
+      "count": 2
+    }
   },
   "src/i18n/index.ts": {
-    "@typescript-eslint/no-unsafe-member-access": { "count": 2 }
+    "@typescript-eslint/no-unsafe-member-access": {
+      "count": 2
+    }
   },
   "src/ide/bridge-server.ts": {
-    "@typescript-eslint/no-base-to-string": { "count": 1 },
-    "@typescript-eslint/no-unsafe-argument": { "count": 3 }
+    "@typescript-eslint/no-base-to-string": {
+      "count": 1
+    },
+    "@typescript-eslint/no-unsafe-argument": {
+      "count": 3
+    }
   },
   "src/ide/discovery-lock.ts": {
-    "@typescript-eslint/no-unsafe-assignment": { "count": 1 }
+    "@typescript-eslint/no-unsafe-assignment": {
+      "count": 1
+    }
   },
   "src/inline-completion/inline-completion-controller.ts": {
-    "@typescript-eslint/no-this-alias": { "count": 1 }
+    "@typescript-eslint/no-this-alias": {
+      "count": 1
+    }
   },
   "src/inline-completion/inline-completion-migrate.ts": {
-    "@typescript-eslint/no-unnecessary-type-assertion": { "count": 1 }
+    "@typescript-eslint/no-unnecessary-type-assertion": {
+      "count": 1
+    }
   },
   "src/lint/lint-feature.ts": {
-    "@typescript-eslint/no-unsafe-argument": { "count": 1 },
-    "@typescript-eslint/no-unsafe-assignment": { "count": 1 },
-    "@typescript-eslint/no-unsafe-call": { "count": 1 },
-    "@typescript-eslint/no-unsafe-member-access": { "count": 1 }
+    "@typescript-eslint/no-unsafe-argument": {
+      "count": 1
+    },
+    "@typescript-eslint/no-unsafe-assignment": {
+      "count": 1
+    },
+    "@typescript-eslint/no-unsafe-call": {
+      "count": 1
+    },
+    "@typescript-eslint/no-unsafe-member-access": {
+      "count": 1
+    }
   },
   "src/llm-client.ts": {
-    "@typescript-eslint/no-unsafe-assignment": { "count": 6 }
+    "@typescript-eslint/no-unsafe-assignment": {
+      "count": 6
+    }
   },
   "src/llm-feature.ts": {
-    "@typescript-eslint/no-redundant-type-constituents": { "count": 1 }
+    "@typescript-eslint/no-redundant-type-constituents": {
+      "count": 1
+    }
   },
   "src/local-web-preview.ts": {
-    "@typescript-eslint/no-unsafe-return": { "count": 1 }
+    "@typescript-eslint/no-unsafe-return": {
+      "count": 1
+    }
   },
   "src/managed-copy-fallback.ts": {
-    "@typescript-eslint/no-unnecessary-type-assertion": { "count": 1 }
+    "@typescript-eslint/no-unnecessary-type-assertion": {
+      "count": 1
+    }
   },
   "src/official-logo.ts": {
-    "@typescript-eslint/no-unnecessary-type-assertion": { "count": 2 }
+    "@typescript-eslint/no-unnecessary-type-assertion": {
+      "count": 2
+    }
   },
   "src/post-layout-startup.ts": {
-    "@typescript-eslint/unbound-method": { "count": 1 }
+    "@typescript-eslint/unbound-method": {
+      "count": 1
+    }
   },
   "src/selection-highlights.ts": {
-    "@typescript-eslint/no-this-alias": { "count": 1 }
+    "@typescript-eslint/no-this-alias": {
+      "count": 1
+    }
   },
   "src/settings-tab.ts": {
-    "@typescript-eslint/no-misused-promises": { "count": 13 },
-    "@typescript-eslint/no-unnecessary-type-assertion": { "count": 1 }
+    "@typescript-eslint/no-misused-promises": {
+      "count": 13
+    },
+    "@typescript-eslint/no-unnecessary-type-assertion": {
+      "count": 1
+    }
   },
   "src/source-assist/latex-suite-blackbox.ts": {
-    "@typescript-eslint/no-unnecessary-type-assertion": { "count": 1 }
+    "@typescript-eslint/no-unnecessary-type-assertion": {
+      "count": 1
+    }
   },
   "src/source-assist/tex-math.ts": {
-    "@typescript-eslint/no-unnecessary-type-assertion": { "count": 1 },
-    "@typescript-eslint/only-throw-error": { "count": 5 }
+    "@typescript-eslint/no-unnecessary-type-assertion": {
+      "count": 1
+    },
+    "@typescript-eslint/only-throw-error": {
+      "count": 5
+    }
   },
   "src/source-assist/tex-outline-feature.ts": {
-    "@typescript-eslint/no-this-alias": { "count": 1 },
-    "@typescript-eslint/no-unnecessary-type-assertion": { "count": 1 },
-    "@typescript-eslint/no-unsafe-assignment": { "count": 5 },
-    "@typescript-eslint/no-unsafe-call": { "count": 4 },
-    "@typescript-eslint/no-unsafe-member-access": { "count": 10 },
-    "@typescript-eslint/no-unsafe-return": { "count": 2 }
+    "@typescript-eslint/no-this-alias": {
+      "count": 1
+    },
+    "@typescript-eslint/no-unnecessary-type-assertion": {
+      "count": 1
+    },
+    "@typescript-eslint/no-unsafe-assignment": {
+      "count": 5
+    },
+    "@typescript-eslint/no-unsafe-call": {
+      "count": 4
+    },
+    "@typescript-eslint/no-unsafe-member-access": {
+      "count": 10
+    },
+    "@typescript-eslint/no-unsafe-return": {
+      "count": 2
+    }
   },
   "src/terminal/terminal-view.ts": {
-    "@typescript-eslint/no-unsafe-argument": { "count": 2 },
-    "@typescript-eslint/no-unsafe-assignment": { "count": 3 },
-    "@typescript-eslint/no-unsafe-call": { "count": 1 },
-    "@typescript-eslint/no-unsafe-member-access": { "count": 4 },
-    "no-empty": { "count": 2 }
+    "@typescript-eslint/no-unsafe-assignment": {
+      "count": 3
+    },
+    "@typescript-eslint/no-unsafe-call": {
+      "count": 1
+    },
+    "@typescript-eslint/no-unsafe-member-access": {
+      "count": 4
+    },
+    "no-empty": {
+      "count": 2
+    }
   },
   "src/tool-registry.ts": {
-    "@typescript-eslint/no-unnecessary-type-assertion": { "count": 1 }
+    "@typescript-eslint/no-unnecessary-type-assertion": {
+      "count": 1
+    }
   },
   "src/universal-mcp-stdio.ts": {
-    "@typescript-eslint/no-unsafe-assignment": { "count": 1 }
+    "@typescript-eslint/no-unsafe-assignment": {
+      "count": 1
+    }
   },
   "src/universal-mcp.ts": {
-    "@typescript-eslint/no-redundant-type-constituents": { "count": 1 },
-    "@typescript-eslint/no-unsafe-argument": { "count": 1 },
-    "@typescript-eslint/no-unsafe-assignment": { "count": 1 }
+    "@typescript-eslint/no-redundant-type-constituents": {
+      "count": 1
+    },
+    "@typescript-eslint/no-unsafe-argument": {
+      "count": 1
+    },
+    "@typescript-eslint/no-unsafe-assignment": {
+      "count": 1
+    }
   },
   "src/windows-developer-mode-repair.ts": {
-    "@typescript-eslint/unbound-method": { "count": 4 }
+    "@typescript-eslint/unbound-method": {
+      "count": 4
+    }
   },
   "src/windows-file-associations.ts": {
-    "no-control-regex": { "count": 1 }
+    "no-control-regex": {
+      "count": 1
+    }
   },
   "src/workspace-context.ts": {
-    "@typescript-eslint/no-unnecessary-type-assertion": { "count": 1 },
-    "@typescript-eslint/prefer-promise-reject-errors": { "count": 1 }
+    "@typescript-eslint/no-unnecessary-type-assertion": {
+      "count": 1
+    },
+    "@typescript-eslint/prefer-promise-reject-errors": {
+      "count": 1
+    }
   }
 }

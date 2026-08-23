@@ -2,6 +2,19 @@
 
 DSH runtime visual management plugin for plugins, skills, and subagents. It also hosts a **recursive slash-command field picker** for DSH commands.
 
+## Model capability editor
+
+The manager augments DSH 0.1.1's native model rows with the model-level fields already supported by `llm-pi-ai` but not rendered by the native editor:
+
+- input modalities (`text` / `image`);
+- disabled or provider-mapped reasoning levels (`off` through `max`);
+- all currently declared model-level compatibility switches and typed `chatTemplateKwargs`;
+- name and capacity overrides for built-in catalog models.
+
+`lib/model-capabilities-service.js` is the host-side settings/LLM boundary. It exposes only the two local `/api/mv-aide/model-capabilities*` routes, validates a fixed model-field vocabulary, writes custom models without dropping unknown fields, and uses `modelOverrides` for built-in models. `lib/model-capabilities-client.js` owns the browser controls and attaches them to the native model disclosure through stable accessibility labels rather than CSS-module hashes.
+
+Capability changes are staged behind DSH's native Save action. Native provider/model/credential changes commit first; after the editor closes, the client reads a fresh revision and applies all capability changes in one settings mutation. A native failure or cancel writes nothing, while a failed second stage keeps a retryable draft and reports the partial save explicitly.
+
 ## Recursive slash-command field picker
 
 When a DSH user selects a slash command that has secondary fields (for example `/mv-aide`), this plugin can keep showing a popupSelect list for each nested level until a leaf is chosen, then execute the completed command line. Before each popup level the plugin writes the completed command text into the composer (`/mv-aide `, then `/mv-aide connect `, etc.) so the user always sees the command land before picking the next level.

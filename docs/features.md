@@ -167,7 +167,8 @@ IDE 桥接不再改写 Agent 请求，也不提供任意上游代理；被动上
 
 dsh 是第四个已适配 Agent。开启「启用 dsh IDE 功能」后，插件启动 IDE 桥接并把权威 discovery lock 写入 `~/.mv-aide/ide`，dsh 中安装的 `@mv-aide/mv-agent` 会扫描该 lock 文件，用与 Claude Code 相同的本地 JSON-RPC 协议连接本仓库（`127.0.0.1`、端口 `47000 + 仓库种子 % 1500`）。连接后 dsh 侧出现：
 
-- `/mv-aide` 命令：`status`（本会话连接状态与桥信息）、`bridges`（列出所有 IDE 桥）、`connect <序号|端口|路径|auto>`（单会话手动选择/切回自动）、`tools`（列出 IDE 工具）、`selection`（读取当前选区）、`call <name> [json]`（调用任意桥接工具）。桥接选择按 dsh 会话独立持久化，重启 dsh 后仍恢复。在 `/` 菜单选中 `mv-aide` 后会先把命令补全进输入框（`/mv-aide `，选 `connect` 后为 `/mv-aide connect `），再继续弹出二级字段（`connect` 再弹桥列表、`call` 再弹工具列表），选中叶子才执行；选择器自身的错误以中文显示。
+- `/mv-aide` 命令：`status`（本会话连接状态与桥信息）、`bridges`（列出所有 IDE 桥）、`connect <序号|端口|路径|auto>`（单会话手动选择/切回自动）、`tools`（列出 IDE 工具）、`selection`（读取当前选区）、`call <name> [json]`（调用任意桥接工具）。桥接选择按 dsh 会话独立持久化，重启 dsh 后仍恢复。自动解析依次尝试：本对话最后成功连接的 Vault、同一 DSH 工作区最后成功连接的 Vault、包含该工作区的在线 Vault；全部不可连接时保持未连接，不会随意选择其它端口。每个候选都必须完成 WebSocket 鉴权、`initialize` 和 `tools/list`，stale lock 或错误 token 会自动落到下一候选。在 `/` 菜单选中 `mv-aide` 后会先把命令补全进输入框（`/mv-aide `，选 `connect` 后为 `/mv-aide connect `），再继续弹出二级字段（`connect` 再弹桥列表、`call` 再弹工具列表），选中叶子才执行；选择器自身的错误以中文显示。
+- **多 Vault / 多对话**：一个 DSH 对话同一时刻只连接一个 Vault；不同对话可以分别连接不同 Vault，也可以同时连接同一个 Vault。每个对话有独立连接、重连和历史，切换或关闭其中一个不会影响其它对话。Vault 路径是身份，端口变化后仍按路径恢复；`connect auto` 只清除当前对话的历史。
 - `mv_aide__*` 原生工具（如 `mv_aide__getLatestSelection`、`mv_aide__openFile`），与本章「上下文与工具」的公共工具一一对应，遵守同一组工具开关。
 - 被动上下文通知与 Diff 审核：dsh Agent 获得与 Claude Code 相同的选区推送和 `openDiff` 审核通道。
 
@@ -181,9 +182,10 @@ mv-agent 把 DeepSeek Harness（DSH）内嵌进 Obsidian：直接使用 DSH Web 
 ### 目的与启用方式
 
 - **总开关**位于 IDE 桥接分区的「已适配 agent」区域（「启用 dsh IDE 功能」，默认关）。关闭后桥接不启动、不写 lock 文件，mv-agent 分区的其余设置保留但不生效。
-- **视图**：命令面板提供「打开 mv-agent」「停止 mv-agent」「重启 mv-agent」，快捷键可在 Obsidian 快捷键设置中绑定。「停止 mv-agent」会关闭所有已打开的 mv-agent 界面并停止对应的 DSH 后台。视图是一个自定义 Obsidian 视图：上方 iframe 直接嵌入 DSH Web 界面（无浏览器工具栏），底部是 Obsidian 侧状态栏，显示当前已连接的 IDE 桥接客户端数和最新选区快照。
+- **视图**：命令面板提供「打开 mv-agent」「停止 mv-agent」「重启 mv-agent」，快捷键可在 Obsidian 快捷键设置中绑定。「停止 mv-agent」会关闭所有已打开的 mv-agent 界面并停止对应的 DSH 后台。视图是一个自定义 Obsidian 视图：上方 iframe 直接嵌入 DSH Web 界面（无浏览器工具栏），底部是 Obsidian 侧状态栏。连接球直接根据当前视图 DSH 端点到本 Vault bridge 的真实 TCP 连接显示：检查中为灰色，已连接为绿色，确认断开为红色；不依赖本 Vault 是否启动了该共享 DSH。
 - **打开分区**：可选左/右/下，默认右侧。「重启 mv-agent」会重启插件托管的 `dsh web` 进程并刷新所有已打开视图。
-- **终端感知增强**：默认关闭，只影响 mv-agent / DSH。开启时 mv-agent 不注册基础 `mv_aide__getTerminalOutput`，改为注册 `list/read/send/run/open/focus` 六个 mv-AIDE 原生终端工具；关闭时六个增强工具撤销并恢复原来的 `getTerminalOutput`。切换立即刷新工具，不重启 DSH，也不改变其它 IDE 客户端的公共 `tools/list`。库外权限继续复用 `getTerminalOutput` 的范围设置。
+- **终端感知增强**：默认关闭，只影响 mv-agent / DSH。开启时 mv-agent 不注册基础 `mv_aide__getTerminalOutput`，改为注册 `list/read/send/run/open/focus/close` 七个 mv-AIDE 原生终端工具；关闭时七个增强工具撤销并恢复原来的 `getTerminalOutput`。`sendTerminalInput` 是原始输入通道，用于 Ctrl+C、TUI/REPL 和可选 Enter；`runInTerminal` 是可靠的 shell 命令通道，保真处理引号、`!`、空格、Unicode 和多行，`cd`/`export` 仍作用于同一终端。Obsidian 重启后的 deferred 标签只启动全新 shell，`readTerminal` 会等新提示符真正写入 xterm，不恢复旧输出；`closeTerminal` 必须给定 ID，直接关闭 Obsidian 终端标签及其 PTY，deferred 标签不会被唤醒。切换立即刷新工具，不重启 DSH，也不改变其它 IDE 客户端的公共 `tools/list`。库外权限继续复用 `getTerminalOutput` 的范围设置。
+- **自动适应图片大小**：默认开启。图片在发送并写入 DSH 历史前处理，最长边超过 2000px 时等比缩到 2000px；小图保持原字节，原始本地文件不修改。关闭后恢复 DSH 原生尺寸限制。
 - **隐藏 Obsidian 原生状态栏**：默认关闭，只给 `body` 增减专用 class 并隐藏 Obsidian 自身 `.status-bar` 容器；不针对 mv-agent 自有状态栏写选择器，也不会触发桥接重连、DSH 重启或工具刷新。
 - **地址与端口**：DSH Web 服务只绑定 `127.0.0.1`，默认端口 `3080`，可在设置中修改。视图自动探测已运行的 dsh 实例；未运行时显示「mv-agent 未运行」。
 
@@ -197,16 +199,42 @@ mv-agent 把 DeepSeek Harness（DSH）内嵌进 Obsidian：直接使用 DSH Web 
 - 点击下层项目会先补齐它依赖的上层。例如插件注入会依次确保 Node.js、DSH 和 pnpm 可用，每层完成后都重新读取真实状态。安装命令返回成功并不等于升级成功：最终探测到的版本必须与本次精确目标一致，否则操作会报告失败。
 - 仓库安装的最终运行时位于 `<vault>/mv-aide/dsh/`；下载、npm 缓存、安装脚本和 staging 仅存在于单次操作的临时工作区，成功、失败或取消后都会清理。全局 Node.js、DSH 或 pnpm 安装需要写受保护目录时，会弹出 macOS 管理员确认、Windows UAC 或 Linux `pkexec`，用户拒绝后停止且不会降级到仓库。
 - macOS 全局 Node 安装会在 SHA-256 校验通过后，把公开的官方 `.pkg` 临时放到 `/private/tmp` 供系统安装服务读取；安装结束、失败或取消后都会删除该临时文件。
-- 仓库和全局同时存在时优先使用仓库版本。运行环境检测先解析当前用户真实命令环境：macOS/Linux 使用登录交互 shell 的 PATH，Windows 合并当前进程与 User/Machine PATH；Node 与 npm 必须成对且可执行。全局 DSH/pnpm 优先从该 npm 的 global prefix 定位，找不到时再从同一用户命令环境 PATH 查找；版本查询、安装、升级与安装后验证都复用同一环境，避免检测到 A、执行却落到 B。插件注入写入当前 DSH web profile；缺失时显示“注入”，旧版或不完整时显示“修复”，已就绪时可“更新”。
+- 仓库和全局同时存在时优先使用仓库版本。运行环境检测先解析当前用户真实命令环境：macOS/Linux 使用登录交互 shell 的 PATH，Windows 合并当前进程与 User/Machine PATH；Node 与 npm 必须成对且可执行。全局 DSH/pnpm 优先从该 npm 的 global prefix 定位，找不到时再从同一用户命令环境 PATH 查找；版本查询、安装、升级与安装后验证都复用同一环境，避免检测到 A、执行却落到 B。插件注入写入共享的 DSH web profile，mv-agent 与 mv-dsh-manager 分别显示版本、完整性和实际加载状态。
+- **源码仓库安装**：运行中的 `pnpm dsh web`、`apps/cli/src/bin.ts` 或构建后 `apps/cli/lib/bin.js` 可通过端口、监听进程命令行和 cwd 自动识别，不扫描用户磁盘。无法安全还原 CLI 时会分别报告“DSH 正在运行”和“尚未可管理”，不再误报为完全未安装。
+- **自定义 DSH 目录**：可填写 DeepSeek Harness 仓库根目录或 `apps/cli`。验证会核对 manifest 身份、声明的 bin 入口、真实路径边界、Node/pnpm、版本和 `dsh --profile web --dump-config`。验证成功后该目录始终优先；失效时报错而不静默改用其它 DSH。清除后恢复“仓库版优先于全局版”。
+- 源码版继续使用同一组检测、启停、重启、注入和管理功能；“检测”以该 Git 分支配置的上游提交为更新 authority，不用 npm 发布版本替代源码状态。用户点击升级/重装时，mv-AIDE 要求 Git 工作树干净、分支有上游且可 fast-forward，再安装依赖、构建并验证；不会自动 stash、强制合并或另装 npm 版。操作由按真实源码根分配的跨进程锁串行化，更新后构建/验证失败会回到原提交并重新构建原版本，恢复失败会明确报告。
 - 安装下载只由用户点击触发。Node.js 下载先写入操作级临时目录，校验失败或安装取消会删除临时文件并保留原运行时。
 
 ### 插件注入与 DSH 侧能力
 
-「插件注入」把两个公开包写入当前 DSH web profile 的 `node_modules` 并注册到 patch 层：`@mv-aide/mv-agent` 提供桥接、命令和原生工具，`@mv-aide/mv-dsh-manager` 提供插件、技能和预设管理。落盘后会用 `dsh --profile web --dump-config` 校验真实加载状态；注入、修复或更新改变插件图时，mv-AIDE 会协调重启已运行的 DSH 一次，使浏览器端模块图与新状态一致。注入后（能力细节见第 1 章「dsh 支持」）：
+「插件注入」把两个公开包写入当前 DSH web profile 的 `node_modules` 并注册到 patch 层：`@mv-aide/mv-agent` 提供桥接、命令和原生工具，`@mv-aide/mv-dsh-manager` 提供插件、技能和预设管理。每个 bundle marker 记录发布它的 mv-AIDE 版本和内容指纹；版本 authority 是 mv-AIDE `manifest.version`，不是两个包自身的版本。落盘后还会用 `dsh --profile web --dump-config` 校验真实加载状态。
+
+- **低于当前 mv-AIDE**：显示实际版本和“版本较旧”，检测与后台启动不会覆盖；用户点击“升级”后才更新。
+- **等于当前 mv-AIDE**：完整核对 marker、文件集合、指纹、patch 和实际加载；缺失或损坏时显示“修复”。同版本但指纹不同显示构建冲突，只能由显式“更新”替换。
+- **高于当前 mv-AIDE**：显示“已安装更高版本”，跳过当前旧版本的指纹比较、更新和覆盖，只检查包结构可读且 DSH 已实际加载。高版本未加载或结构损坏时要求使用对应高版本 mv-AIDE 处理，当前版本不会降级修复。
+- **旧 marker / 非法版本**：显示“版本未知”并建议升级，检测不会自动覆盖。只有 mv-agent 和 mv-dsh-manager 都满足各自兼容性和加载条件时，完整注入才显示就绪。
+- 共享 profile 的写入由跨进程锁串行化，锁内重新检测版本；每个包通过独立 staging、完整校验、目录切换与失败回滚发布，中断事务会在下次操作先恢复。后台检测不会强杀正在工作的 DSH；设置页区分磁盘包与当前 DSH 已加载版本并显示“待重启”，用户执行“打开/重启 mv-agent”时才协调必要重启。
+
+注入后（能力细节见第 1 章「dsh 支持」）：
 
 - `/mv-aide status | tools | bridges | connect <序号|端口|路径|auto> | selection | call <name> [json]` 命令；
 - 与公共工具开关对应的 `mv_aide__*` 原生工具；
 - 被动上下文通知与 Obsidian 可编辑 Diff 审核。
+
+### 图片上传
+
+开启「自动适应图片大小」后，mv-agent 在 DSH 生成上传 payload 和写入历史之前统一预处理普通消息、Queue/Steer 发送及允许图片的 slash command。PNG、JPEG、WebP、GIF 保持原格式；透明度、方向和动画帧语义保留。已确认开启但处理失败时，输入框和草稿图片保留，并显示错误，不会继续发送超限原图。每个 session 使用其当前已完成桥接握手的 Vault 设置：两个会话可以采用相反开关；没有可确定设置 authority 时保持 DSH 原生行为。模型请求阶段仍会保护旧历史里的超限图片，但新上传不依赖该补救层。
+
+### DSH 模型能力设置
+
+mv-dsh-manager 会在 DSH 原生「模型目录」中每个模型的容量展开区追加「模型能力」，不建立另一套模型设置页。手工模型和 DSH 内置目录模型都可声明文本/图片输入、非思考或自定义思考等级，以及 DSH 0.1.1 `llm-pi-ai` 已支持的模型级兼容参数。思考等级使用 DSH 的 `off/minimal/low/medium/high/xhigh/max` 作为标准等级，并把每一级映射到供应商实际参数值，例如 `max → 最大`。
+
+- 多模态模型选择「文本＋图片」后写入 `input: ['text', 'image']`，下一次模型解析和请求立即读取；该值是用户对端点能力的声明，供应商仍会拒绝错误声明。
+- 思考能力可继承、显式关闭或配置多级映射；`off` 可不发送值，其它等级必须填写供应商参数。默认思考等级仍由会话模型选择或提供方配置决定。
+- 专家区提供 DSH 当前 schema 的完整模型级 `compat`，包括推理格式、请求/流、工具严格模式、缓存/Anthropic 开关和类型化 `chatTemplateKwargs`；每个布尔项都可恢复继承。
+- 内置模型显示风险提示并只为目标模型创建 `modelOverrides`，不会修改或复制整个内置目录；清空最后一个字段会删除空覆盖并恢复目录默认值。
+- 能力草稿复用原生模型卡片的「保存」按钮。原生模型、容量和凭据先保存，编辑器成功关闭后再在最新 revision 上原子写入能力；取消或原生失败不会写能力。第二阶段失败会明确显示「基础模型已保存、模型能力未保存」并提供重试。
+- 设置由独立 host/client 模块实现，只读写 `llm-pi-ai` 的白名单模型字段并保留其它模型、未知字段及未来 compat 字段。旧 DSH 缺少相应 schema 时界面只报告版本不支持。
 
 ### DSH 插件、技能与预设管理
 

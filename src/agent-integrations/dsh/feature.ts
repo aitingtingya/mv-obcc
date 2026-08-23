@@ -2,11 +2,13 @@ import { Notice, requestUrl } from "obsidian";
 import { t } from "../../i18n";
 import { prependExecutableDirectory, resolveUserCommandEnvironment } from "../../process-environment";
 import { runProcess } from "../../process-runner";
+import { findSystemExecutable } from "../../universal-mcp-stdio-command";
 import type MvAideIdePlugin from "../../../main";
 import { getVaultRoot } from "../../selection";
 import {
   ensureDshAgentInjection,
   ensureDshFullInjection,
+  injectionStateIsUsable,
   inspectDshInjection,
   type InjectResult,
 } from "./ide/injection";
@@ -15,6 +17,7 @@ import {
   DshStartCancelledError,
   DshProcessManager,
   isDshStartCancelled,
+  normalizeDshWebUrl,
   type DshWebProbe,
 } from "./runtime/process";
 import {
@@ -27,7 +30,6 @@ import {
   preferredRepairTarget,
   preferredToolLocation,
   selectedNodeStatus,
-  toolIsInstalled,
   toolIsReady,
   UNKNOWN_DSH_ENVIRONMENT,
   type DshEnvironmentStatus,
@@ -65,6 +67,10 @@ import {
   stopOpenMvAgentViews,
 } from "./runtime/webview";
 import { isDshConnectedToBridge } from "./ide/bridge-status";
+import {
+  inspectDshSourceUpdate,
+  rebuildOrUpgradeDshSource,
+} from "./runtime/source-runtime";
 
 const COMMAND_ID = "open-mv-agent-for-obsidian";
 
@@ -137,7 +143,10 @@ function updateError(error: unknown): RuntimeUpdateStatus {
 function toolVersionAtPreferredLocation(
   runtime: DshRuntimeInspection,
   name: DshPackageName,
-): { target: DshInstallTarget; version?: string } | null {
+): { target: DshInstallTarget | "custom"; version?: string } | null {
+  if (name === "dsh" && runtime.dsh.custom?.state === "ready") {
+    return { target: "custom", version: runtime.dsh.custom.version };
+  }
   const target = preferredToolLocation(runtime[name]);
   return target ? { target, version: runtime[name][target].version } : null;
 }
@@ -213,9 +222,6 @@ export class DshFeature {
   private environmentBusy = false;
   private idePluginRuntimeState: DshIdePluginRuntimeState = { state: "disabled" };
   private mvAgentOperationGeneration = 0;
-  private dshBridgeConnected = false;
-  private dshBridgeProbeBusy = false;
-  private dshBridgeProbeGeneration = 0;
   /**
    * Collapsible-subsection open state inside the mv-agent settings section.
    * All subsections default collapsed (开发规范七); user toggles are kept
@@ -238,8 +244,16 @@ export class DshFeature {
         if (node.state !== "ready") {
           throw new Error(node.detail || t("未检测到兼容的 Node.js。"));
         }
-        const runtime = await inspectDshRuntime(vaultRoot, nodes);
-        if (!runtime.command) throw new Error(t("DSH 尚未安装，请先点击“安装”。"));
+        const runtime = await inspectDshRuntime(vaultRoot, nodes, runProcess, undefined, {
+          customDirectory: this.plugin.settings.dsh.customDirectory,
+          preferredPort: this.plugin.settings.dsh.port,
+          sourceProbe: probeDshWebViaRequestUrl,
+        });
+        if (!runtime.command) {
+          throw new Error(
+            combinedToolStatus(runtime.dsh).detail || t("DSH 尚未安装，请先点击“安装”。"),
+          );
+        }
         return runtime.command;
       },
     );
@@ -296,8 +310,6 @@ export class DshFeature {
 
   dispose(): void {
     this.mvAgentOperationGeneration += 1;
-    this.dshBridgeProbeGeneration += 1;
-    this.dshBridgeConnected = false;
     if (this.commandRegistered) {
       this.plugin.removeCommand(COMMAND_ID);
       this.plugin.removeCommand("close-mv-agent");
@@ -319,6 +331,76 @@ export class DshFeature {
     if (this.plugin.settings.dsh.injected === ready) return;
     this.plugin.settings.dsh.injected = ready;
     await this.plugin.saveData(this.plugin.settings);
+  }
+
+  private async annotateRunningBundleStatus(
+    plugins: DshEnvironmentStatus["plugins"],
+  ): Promise<DshEnvironmentStatus["plugins"]> {
+    const next = structuredClone(plugins);
+    let dshUrl = this.processManager.currentUrl();
+    if (!dshUrl) dshUrl = await this.processManager.findDshUrl().catch(() => null);
+    if (!dshUrl || next.agent.state === "missing") return next;
+
+    let payload: unknown;
+    try {
+      const endpoint = new URL("/api/mv-agent/runtime", dshUrl).toString();
+      const response = await withTimeout(
+        requestUrl({ url: endpoint, method: "GET", throw: false }),
+        2_000,
+      );
+      if (response.status !== 200) {
+        if (next.agent.relation === "current") {
+          next.agent.restartRequired = true;
+          next.agent.detail = `${next.agent.detail ?? ""} 当前 DSH 未提供运行 bundle 身份；运行版本待重启。`.trim();
+          next.full.restartRequired = true;
+          next.full.detail = `${next.full.detail ?? ""} 当前 DSH 运行版本待重启。`.trim();
+        }
+        return next;
+      }
+      payload = response.json;
+    } catch {
+      return next;
+    }
+
+    const root = payload && typeof payload === "object" ? payload as Record<string, unknown> : {};
+    const describe = (value: unknown): { mvAideVersion: string | null; fingerprint: string | null } | null => {
+      if (!value || typeof value !== "object") return null;
+      const row = value as Record<string, unknown>;
+      return {
+        mvAideVersion: typeof row.mvAideVersion === "string" ? row.mvAideVersion : null,
+        fingerprint: typeof row.fingerprint === "string" ? row.fingerprint : null,
+      };
+    };
+    // Accept the short-lived flat descriptor shape while every current bundle
+    // publishes the stable { agent, manager } structure.
+    const runtime = {
+      agent: describe(root.agent) ?? describe(root),
+      manager: describe(root.manager),
+    };
+    for (const kind of ["agent", "manager"] as const) {
+      const disk = next[kind];
+      const running = runtime[kind];
+      if (disk.state === "missing") continue;
+      if (!running) {
+        if (disk.relation === "current") {
+          disk.restartRequired = true;
+          disk.detail = `${disk.detail ?? ""} 当前 DSH 未加载该磁盘 bundle；运行版本待重启。`.trim();
+        }
+        continue;
+      }
+      if (running.mvAideVersion) disk.runtimeVersion = running.mvAideVersion;
+      const sameVersion = (running.mvAideVersion ?? null) === (disk.version ?? null);
+      const sameFingerprint = (running.fingerprint ?? null) === (disk.fingerprint ?? null);
+      disk.restartRequired = !(sameVersion && sameFingerprint);
+      disk.detail = disk.restartRequired
+        ? `${disk.detail ?? ""} 磁盘版本 ${disk.version ?? "未知"}，当前 DSH 已加载 ${running.mvAideVersion ?? "未知"}；运行版本待重启。`.trim()
+        : `${disk.detail ?? ""} 当前 DSH 已加载同一 bundle。`.trim();
+    }
+    next.full.restartRequired = next.agent.restartRequired === true || next.manager.restartRequired === true;
+    if (next.full.restartRequired) {
+      next.full.detail = `${next.full.detail ?? ""} 磁盘包与当前 DSH 运行包不同，运行版本待重启。`.trim();
+    }
+    return next;
   }
 
   private async cleanupInstallArtifactsStrict(vaultRoot: string): Promise<void> {
@@ -355,35 +437,48 @@ export class DshFeature {
       const commandEnv = await resolveUserCommandEnvironment();
       const nodes = await inspectNodeRuntimes(vaultRoot, runProcess, commandEnv);
       const node = selectedNodeStatus(nodes);
-      const runtime = await inspectDshRuntime(vaultRoot, nodes, runProcess, commandEnv);
+      const runtime = await inspectDshRuntime(vaultRoot, nodes, runProcess, commandEnv, {
+        customDirectory: this.plugin.settings.dsh.customDirectory,
+        preferredPort: this.plugin.settings.dsh.port,
+        sourceProbe: probeDshWebViaRequestUrl,
+      });
       const plugins = !toolIsReady(runtime.dsh) || !toolIsReady(runtime.pnpm)
         ? blockedPluginStatuses(t("等待 DSH 与 pnpm。"))
-        : await inspectDshInjection(vaultRoot);
+        : await inspectDshInjection(vaultRoot, this.plugin.manifest.version, runtime.command ?? undefined);
 
       const npmExecutable = node.npmExecutable;
       const npmEnvironment = prependExecutableDirectory(commandEnv, node.executable);
       const npmMissing = (): Promise<string> => Promise.reject(new Error(t("未检测到可用于更新检查的 npm。")));
+      const dshUpdate = runtime.sourceRuntime
+        ? inspectDshSourceUpdate(runtime.sourceRuntime).then((source) => ({
+            checked: true,
+            targetVersion: source.targetVersion,
+            updateAvailable: source.updateAvailable,
+            relation: source.updateAvailable ? "older" as const : "current" as const,
+          }))
+        : npmExecutable
+          ? resolveDshTargetVersion(npmExecutable, runProcess, npmEnvironment)
+              .then((target) => updateStatusFor(toolVersionAtPreferredLocation(runtime, "dsh")?.version, target))
+          : npmMissing().then((): RuntimeUpdateStatus => ({ checked: false }));
       const [nodeTarget, dshTarget, pnpmTarget] = await Promise.allSettled([
         resolveNodeTargetVersion(),
-        npmExecutable ? resolveDshTargetVersion(npmExecutable, runProcess, npmEnvironment) : npmMissing(),
+        dshUpdate,
         npmExecutable ? resolvePnpmTargetVersion(npmExecutable, runProcess, npmEnvironment) : npmMissing(),
       ]);
-      const dshCurrent = toolVersionAtPreferredLocation(runtime, "dsh")?.version;
       const pnpmCurrent = toolVersionAtPreferredLocation(runtime, "pnpm")?.version;
       const updates: DshEnvironmentUpdates = {
         node: nodeTarget.status === "fulfilled"
           ? updateStatusFor(node.version, nodeTarget.value)
           : updateError(nodeTarget.reason),
-        dsh: dshTarget.status === "fulfilled"
-          ? updateStatusFor(dshCurrent, dshTarget.value)
-          : updateError(dshTarget.reason),
+        dsh: dshTarget.status === "fulfilled" ? dshTarget.value : updateError(dshTarget.reason),
         pnpm: pnpmTarget.status === "fulfilled"
           ? updateStatusFor(pnpmCurrent, pnpmTarget.value)
           : updateError(pnpmTarget.reason),
       };
 
-      this.environment = environmentFrom(nodes, runtime, plugins, updates);
-      await this.updatePersistedInjectionState(plugins.full.state === "ready");
+      const pluginsWithRuntime = await this.annotateRunningBundleStatus(plugins);
+      this.environment = environmentFrom(nodes, runtime, pluginsWithRuntime, updates);
+      await this.updatePersistedInjectionState(injectionStateIsUsable(plugins.full));
       const ok = node.state === "ready"
         && toolIsReady(runtime.dsh)
         && toolIsReady(runtime.pnpm);
@@ -412,12 +507,17 @@ export class DshFeature {
   }> {
     const commandEnv = await resolveUserCommandEnvironment();
     const nodes = await inspectNodeRuntimes(vaultRoot, runProcess, commandEnv);
-    const runtime = await inspectDshRuntime(vaultRoot, nodes, runProcess, commandEnv);
+    const runtime = await inspectDshRuntime(vaultRoot, nodes, runProcess, commandEnv, {
+      customDirectory: this.plugin.settings.dsh.customDirectory,
+      preferredPort: this.plugin.settings.dsh.port,
+      sourceProbe: probeDshWebViaRequestUrl,
+    });
     const plugins = toolIsReady(runtime.dsh) && toolIsReady(runtime.pnpm)
-      ? await inspectDshInjection(vaultRoot)
+      ? await inspectDshInjection(vaultRoot, this.plugin.manifest.version, runtime.command ?? undefined)
       : blockedPluginStatuses(t("等待 DSH 与 pnpm。"));
-    this.environment = environmentFrom(nodes, runtime, plugins, this.environment.updates);
-    await this.updatePersistedInjectionState(plugins.full.state === "ready");
+    const pluginsWithRuntime = await this.annotateRunningBundleStatus(plugins);
+    this.environment = environmentFrom(nodes, runtime, pluginsWithRuntime, this.environment.updates);
+    await this.updatePersistedInjectionState(injectionStateIsUsable(plugins.full));
     return { nodes, runtime, commandEnv };
   }
 
@@ -614,10 +714,15 @@ export class DshFeature {
     const vaultRoot = getVaultRoot(this.plugin.app);
     try {
       const nodes = await inspectNodeRuntimes(vaultRoot);
-      const runtime = await inspectDshRuntime(vaultRoot, nodes);
-      const before = await inspectDshInjection(vaultRoot);
-      this.environment = environmentFrom(nodes, runtime, before, this.environment.updates);
-      await this.updatePersistedInjectionState(before.full.state === "ready");
+      const runtime = await inspectDshRuntime(vaultRoot, nodes, runProcess, undefined, {
+        customDirectory: this.plugin.settings.dsh.customDirectory,
+        preferredPort: this.plugin.settings.dsh.port,
+        sourceProbe: probeDshWebViaRequestUrl,
+      });
+      const before = await inspectDshInjection(vaultRoot, this.plugin.manifest.version, runtime.command ?? undefined);
+      const beforeWithRuntime = await this.annotateRunningBundleStatus(before);
+      this.environment = environmentFrom(nodes, runtime, beforeWithRuntime, this.environment.updates);
+      await this.updatePersistedInjectionState(injectionStateIsUsable(before.full));
 
       if (!runtime.command) {
         const detail = combinedToolStatus(runtime.dsh).detail
@@ -627,15 +732,20 @@ export class DshFeature {
         return { ok: false, changed: false, message: detail };
       }
 
-      if (before.agent.state !== "ready") {
+      if (!injectionStateIsUsable(before.agent)) {
         this.idePluginRuntimeState = { state: "injecting" };
       }
-      const result = await ensureDshAgentInjection(vaultRoot, runtime.command);
-      const after = await inspectDshInjection(vaultRoot);
-      this.environment = environmentFrom(nodes, runtime, after, this.environment.updates);
-      await this.updatePersistedInjectionState(after.full.state === "ready");
+      const result = await ensureDshAgentInjection(
+        vaultRoot,
+        runtime.command,
+        this.plugin.manifest.version,
+      );
+      const after = await inspectDshInjection(vaultRoot, this.plugin.manifest.version, runtime.command);
+      const afterWithRuntime = await this.annotateRunningBundleStatus(after);
+      this.environment = environmentFrom(nodes, runtime, afterWithRuntime, this.environment.updates);
+      await this.updatePersistedInjectionState(injectionStateIsUsable(after.full));
 
-      if (!result.ok || after.agent.state !== "ready") {
+      if (!result.ok || !injectionStateIsUsable(after.agent)) {
         const detail = result.ok ? after.agent.detail : result.message;
         this.idePluginRuntimeState = { state: "error", detail };
         return { ok: false, changed: result.changed === true, message: detail };
@@ -662,6 +772,76 @@ export class DshFeature {
       this.idePluginRuntimeState = { state: "disabled" };
     }
     await this.plugin.syncDshIdeServices();
+  }
+
+  async configureCustomDshDirectory(input: string): Promise<ActionResult> {
+    if (this.environmentBusy) {
+      return { ok: false, message: t("DSH 环境操作正在进行，请等待完成。") };
+    }
+    if (!input.trim()) return { ok: false, message: t("请填写 DSH 源码目录，或点击“清除”恢复自动检测。") };
+    this.environmentBusy = true;
+    try {
+      const vaultRoot = getVaultRoot(this.plugin.app);
+      const commandEnv = await resolveUserCommandEnvironment();
+      const nodes = await inspectNodeRuntimes(vaultRoot, runProcess, commandEnv);
+      const runtime = await inspectDshRuntime(vaultRoot, nodes, runProcess, commandEnv, {
+        customDirectory: input,
+        preferredPort: this.plugin.settings.dsh.port,
+        sourceProbe: probeDshWebViaRequestUrl,
+      });
+      if (!runtime.sourceRuntime || runtime.dsh.custom?.state !== "ready") {
+        return {
+          ok: false,
+          message: runtime.dsh.custom?.detail || t("自定义 DSH 目录验证失败。"),
+        };
+      }
+      if (!toolIsReady(runtime.pnpm)) {
+        return {
+          ok: false,
+          message: combinedToolStatus(runtime.pnpm).detail || t("未检测到 pnpm。"),
+        };
+      }
+      const command = runtime.sourceRuntime.command;
+      const dump = await runProcess(
+        command.executable,
+        [...command.argsPrefix, "--profile", "web", "--dump-config"],
+        { cwd: command.cwd, env: command.env, timeoutMs: 120_000 },
+      );
+      if (dump.code !== 0) {
+        return { ok: false, message: dump.stderr || dump.stdout || t("DSH 实际配置校验失败。") };
+      }
+      this.plugin.settings.dsh.customDirectory = runtime.sourceRuntime.rootDirectory;
+      await this.plugin.saveData(this.plugin.settings);
+      this.environment.updates.dsh = { checked: false };
+      await this.inspectActualEnvironment(vaultRoot);
+      await this.reconcileEnabledIdeAfterEnvironmentChange(false);
+      return {
+        ok: true,
+        message: t("已使用自定义 DSH 源码目录：{path}", {
+          path: runtime.sourceRuntime.rootDirectory,
+        }),
+      };
+    } finally {
+      this.environmentBusy = false;
+    }
+  }
+
+  async clearCustomDshDirectory(): Promise<ActionResult> {
+    if (this.environmentBusy) {
+      return { ok: false, message: t("DSH 环境操作正在进行，请等待完成。") };
+    }
+    this.environmentBusy = true;
+    try {
+      this.plugin.settings.dsh.customDirectory = "";
+      await this.plugin.saveData(this.plugin.settings);
+      this.environment.updates.dsh = { checked: false };
+      const vaultRoot = getVaultRoot(this.plugin.app);
+      await this.inspectActualEnvironment(vaultRoot);
+      await this.reconcileEnabledIdeAfterEnvironmentChange(false);
+      return { ok: true, message: t("已恢复自动检测 DSH。") };
+    } finally {
+      this.environmentBusy = false;
+    }
   }
 
   private async reconcileEnabledIdeAfterEnvironmentChange(restartRunningDsh: boolean): Promise<void> {
@@ -711,6 +891,48 @@ export class DshFeature {
       }
 
       if (layer === "dsh") {
+        const inspected = await this.inspectActualEnvironment(vaultRoot);
+        if (inspected.runtime.runningUnmanagedDetail && !inspected.runtime.command) {
+          throw new Error(inspected.runtime.runningUnmanagedDetail);
+        }
+        if (this.plugin.settings.dsh.customDirectory && !inspected.runtime.sourceRuntime) {
+          throw new Error(
+            inspected.runtime.dsh.custom?.detail || t("自定义 DSH 目录无效，请修正或清除后重试。"),
+          );
+        }
+        if (inspected.runtime.sourceRuntime) {
+          const source = inspected.runtime.sourceRuntime;
+          const commandEnvironment = source.command.env ?? inspected.commandEnv;
+          const pnpmExecutable = findSystemExecutable("pnpm", process.platform, commandEnvironment);
+          if (!pnpmExecutable) throw new Error(t("未检测到可用于 DSH 源码构建的 pnpm。"));
+          const requestedUpgrade = this.environment.updates.dsh.updateAvailable === true;
+          const sourceUpdate = requestedUpgrade
+            ? await inspectDshSourceUpdate(source)
+            : null;
+          const rebuilt = await rebuildOrUpgradeDshSource(source, {
+            upgrade: sourceUpdate?.updateAvailable === true,
+            pnpmExecutable,
+          });
+          await this.inspectActualEnvironment(vaultRoot);
+          this.environment.updates.dsh = {
+            checked: true,
+            targetVersion: rebuilt.version,
+            relation: "current",
+            updateAvailable: false,
+          };
+          await this.reconcileEnabledIdeAfterEnvironmentChange(true);
+          return {
+            ok: true,
+            message: sourceUpdate?.updateAvailable
+              ? t("DSH 源码版已从 {from} 升级并构建为 {to}。", {
+                  from: source.version,
+                  to: rebuilt.version,
+                })
+              : t("DSH 源码版 {version} 已重新安装依赖、构建并通过校验。", {
+                  version: rebuilt.version,
+                }),
+          };
+        }
         const operation = await this.ensurePackage(vaultRoot, "dsh", requestedTarget, chooseTarget, true);
         if (!operation) throw new Error(t("DSH 操作未执行。"));
         await this.reconcileEnabledIdeAfterEnvironmentChange(true);
@@ -739,14 +961,32 @@ export class DshFeature {
       }
 
       await this.ensureAnyNode(vaultRoot, null, chooseTarget);
+      const detected = await this.inspectActualEnvironment(vaultRoot);
+      if (detected.runtime.runningUnmanagedDetail && !detected.runtime.command) {
+        throw new Error(detected.runtime.runningUnmanagedDetail);
+      }
+      if (this.plugin.settings.dsh.customDirectory) {
+        const configured = detected;
+        if (!configured.runtime.sourceRuntime) {
+          throw new Error(
+            configured.runtime.dsh.custom?.detail || t("自定义 DSH 目录无效，请修正或清除后重试。"),
+          );
+        }
+      }
       await this.ensurePackage(vaultRoot, "dsh", null, chooseTarget, false);
       await this.ensurePackage(vaultRoot, "pnpm", null, chooseTarget, false);
       const { nodes, runtime } = await this.inspectActualEnvironment(vaultRoot);
       if (!runtime.command) throw new Error(t("DSH 命令解析失败。"));
-      const result = await ensureDshFullInjection(vaultRoot, runtime.command);
-      const actual = await inspectDshInjection(vaultRoot);
-      this.environment = environmentFrom(nodes, runtime, actual, this.environment.updates);
-      await this.updatePersistedInjectionState(result.ok && actual.full.state === "ready");
+      const result = await ensureDshFullInjection(
+        vaultRoot,
+        runtime.command,
+        this.plugin.manifest.version,
+        { explicit: true },
+      );
+      const actual = await inspectDshInjection(vaultRoot, this.plugin.manifest.version, runtime.command);
+      const actualWithRuntime = await this.annotateRunningBundleStatus(actual);
+      this.environment = environmentFrom(nodes, runtime, actualWithRuntime, this.environment.updates);
+      await this.updatePersistedInjectionState(result.ok && injectionStateIsUsable(actual.full));
       if (result.ok) await this.restartOpenMvAgentAfterInjection();
       await this.reconcileEnabledIdeAfterEnvironmentChange(false);
       return result;
@@ -773,7 +1013,15 @@ export class DshFeature {
 
   private async openDshForOperation(generation: number): Promise<void> {
     const connectedUrls = this.collectActiveDshUrls();
-    const url = await this.processManager.ensureStartedForOpen(connectedUrls);
+    let restartRequired = false;
+    if (this.plugin.settings.dsh.enabled) {
+      const reconciled = await this.reconcileIdeIntegration({ restartRunningDsh: false });
+      if (!reconciled.ok) throw new Error(reconciled.message);
+      restartRequired = reconciled.changed === true || this.environment.plugins.full.restartRequired === true;
+    }
+    const url = restartRequired
+      ? await this.processManager.restartForObsidian(connectedUrls)
+      : await this.processManager.ensureStartedForOpen(connectedUrls);
     if (generation !== this.mvAgentOperationGeneration) return;
     const leaf = await openDshWebviewInNewLeaf(
       this.plugin.app.workspace,
@@ -793,44 +1041,24 @@ export class DshFeature {
     return this.processManager.currentUrl();
   }
 
-  /** Cached truth for the status dot; refreshed asynchronously by the view. */
-  isDshBridgeConnected(): boolean {
-    return this.dshBridgeConnected;
-  }
-
   /**
-   * Refresh the status dot from OS process/TCP facts only. This deliberately
-   * does not inspect IDE Bridge clients or change the bridge protocol.
+   * Read one mv-agent view's real connection state from OS process/TCP facts.
+   * The view URL is authoritative even before this Vault's private process
+   * manager has adopted a shared DSH instance.
    */
-  async refreshDshBridgeConnection(): Promise<boolean> {
+  async isDshViewConnectedToBridge(dshUrl: string): Promise<boolean> {
     const bridgePort = Number((this.plugin as unknown as { port?: number }).port ?? 0);
-    const dshPort = this.processManager.currentPort();
-    const dshUrl = this.processManager.currentUrl();
-    if (!bridgePort || !dshPort || !dshUrl) {
-      this.dshBridgeProbeGeneration += 1;
-      this.dshBridgeConnected = false;
-      return false;
-    }
-    if (this.dshBridgeProbeBusy) return this.dshBridgeConnected;
-
-    const generation = ++this.dshBridgeProbeGeneration;
-    this.dshBridgeProbeBusy = true;
+    const normalized = normalizeDshWebUrl(dshUrl);
+    if (!bridgePort || !normalized) return false;
+    const dshPort = Number(new URL(normalized).port);
+    if (!Number.isInteger(dshPort) || dshPort <= 0 || dshPort >= 65536) return false;
     try {
-      const connected = await isDshConnectedToBridge(
-        { dshPort, bridgePort, dshUrl },
+      return await isDshConnectedToBridge(
+        { dshPort, bridgePort, dshUrl: normalized },
         { probe: probeDshWebViaRequestUrl },
       );
-      if (generation === this.dshBridgeProbeGeneration) {
-        this.dshBridgeConnected = connected;
-      }
-      return this.dshBridgeConnected;
     } catch {
-      if (generation === this.dshBridgeProbeGeneration) {
-        this.dshBridgeConnected = false;
-      }
       return false;
-    } finally {
-      this.dshBridgeProbeBusy = false;
     }
   }
 
@@ -956,6 +1184,10 @@ export class DshFeature {
   private async restartDshWithNotice(): Promise<void> {
     const generation = ++this.mvAgentOperationGeneration;
     try {
+      if (this.plugin.settings.dsh.enabled) {
+        const reconciled = await this.reconcileIdeIntegration({ restartRunningDsh: false });
+        if (!reconciled.ok) throw new Error(reconciled.message);
+      }
       const connectedUrls = this.collectActiveDshUrls();
       const url = await this.processManager.restartForObsidian(connectedUrls);
       if (generation !== this.mvAgentOperationGeneration) return;

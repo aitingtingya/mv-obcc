@@ -120,6 +120,24 @@ export class ActiveSessionRegistry {
   }
 }
 
+/**
+ * Bridge-tool authorization for one session: allowed while a frontend stages
+ * it OR while its agent is mid-turn (`status === 'running'`, subagents
+ * included). Strictly a superset of staged-only access — anything authorized
+ * before stays authorized. Pure so tests can cover the union truth table
+ * without a DSH runtime; the live agent read is authoritative, so stale
+ * bookkeeping can never wrongly deny an in-flight turn.
+ */
+export function isSessionAuthorized(activeSessions, agentsService, sessionId) {
+  if (typeof sessionId !== 'string' || sessionId.length === 0) return false;
+  if (activeSessions.isActive(sessionId)) return true;
+  try {
+    return agentsService?.get?.(sessionId)?.status === 'running';
+  } catch {
+    return false;
+  }
+}
+
 function rejectUpgrade(socket, status = '403 Forbidden', body = 'forbidden') {
   const payload = Buffer.from(body, 'utf8');
   socket.end([

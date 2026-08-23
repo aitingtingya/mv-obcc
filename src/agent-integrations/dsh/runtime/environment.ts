@@ -10,7 +10,7 @@ import {
   findSystemExecutable,
   systemExecutableCandidates,
 } from "../../../universal-mcp-stdio-command";
-import { DSH_PACKAGE, type DshCommand } from "./process";
+import { DSH_PACKAGE, type DshCommand, type DshWebProbeFn } from "./process";
 import type { DshInstallTarget } from "../settings";
 import { dshVaultRuntimeDirectory } from "../paths";
 import {
@@ -35,6 +35,12 @@ import {
   sameBrokenSymlink,
   type BinaryOccupancy,
 } from "./binary-occupancy";
+import {
+  discoverRunningDshSource,
+  resolveDshSourceRuntime,
+  type DshSourceRuntime,
+} from "./source-runtime";
+import type { DshProcessDiscoveryAdapter } from "./process-discovery";
 
 export type DshLayerState =
   | "unknown"
@@ -43,6 +49,9 @@ export type DshLayerState =
   | "broken-link"
   | "occupied"
   | "incompatible"
+  | "outdated"
+  | "newer"
+  | "conflict"
   | "blocked"
   | "partial"
   | "error";
@@ -55,6 +64,16 @@ export interface DshLayerStatus {
   installed?: boolean;
   /** Filesystem occupancy that prevents or qualifies package installation. */
   binaryIssue?: BinaryOccupancy;
+  /** Compatibility of a shared injected bundle against this mv-AIDE build. */
+  relation?: "older" | "current" | "newer" | "unknown";
+  /** Whether the detected injected bundle may continue serving DSH. */
+  usable?: boolean;
+  /** mv-AIDE version captured by the currently running DSH plugin instance. */
+  runtimeVersion?: string;
+  /** True when disk and running DSH bundle identities differ. */
+  restartRequired?: boolean;
+  /** Content fingerprint recorded by the installed mv-AIDE bundle marker. */
+  fingerprint?: string;
 }
 
 export interface DshNodeStatus extends DshLayerStatus {
@@ -73,6 +92,7 @@ export interface DshNodeLocations {
 export interface DshToolLocations {
   vault: DshLayerStatus;
   global: DshLayerStatus;
+  custom?: DshLayerStatus;
 }
 
 export interface RuntimeUpdateStatus {
@@ -203,11 +223,13 @@ export function combinedNodeStatus(node: DshNodeLocations): DshLayerStatus {
 }
 
 export function toolIsReady(tool: DshToolLocations): boolean {
-  return tool.vault.state === "ready" || tool.global.state === "ready";
+  return tool.custom?.state === "ready" || tool.vault.state === "ready" || tool.global.state === "ready";
 }
 
 export function toolIsInstalled(tool: DshToolLocations): boolean {
-  return tool.vault.state === "ready"
+  return tool.custom?.state === "ready"
+    || tool.custom?.installed === true
+    || tool.vault.state === "ready"
     || tool.global.state === "ready"
     || tool.vault.installed === true
     || tool.global.installed === true;
@@ -229,6 +251,15 @@ export function preferredRepairTarget(tool: DshToolLocations): DshInstallTarget 
 }
 
 export function combinedToolStatus(tool: DshToolLocations): DshLayerStatus {
+  if (tool.custom?.state === "ready") {
+    return {
+      ...tool.custom,
+      detail: tool.custom.detail || t("已检测到自定义 DSH 源码版。"),
+    };
+  }
+  if (tool.custom && tool.custom.state !== "missing" && tool.custom.state !== "unknown") {
+    return tool.custom;
+  }
   const ready = (["vault", "global"] as const)
     .filter((location) => tool[location].state === "ready")
     .map((location) => {
@@ -468,6 +499,16 @@ export interface DshRuntimeInspection {
   dsh: DshToolLocations;
   pnpm: DshToolLocations;
   command: DshCommand | null;
+  sourceRuntime?: DshSourceRuntime;
+  runningDshUrl?: string;
+  runningUnmanagedDetail?: string;
+}
+
+export interface DshRuntimeInspectOptions {
+  customDirectory?: string;
+  preferredPort?: number;
+  sourceProbe?: DshWebProbeFn;
+  sourceDiscovery?: DshProcessDiscoveryAdapter;
 }
 
 async function probeCommand(
@@ -481,6 +522,7 @@ async function probeCommand(
     {
       timeoutMs: 30_000,
       env: command.env,
+      cwd: command.cwd,
     },
   );
   const output = processOutput(result);
@@ -651,6 +693,7 @@ export async function inspectDshRuntime(
   nodes: DshNodeLocations,
   runner: typeof runProcess = runProcess,
   environment?: NodeJS.ProcessEnv,
+  options: DshRuntimeInspectOptions = {},
 ): Promise<DshRuntimeInspection> {
   const commandEnv = environment ?? await resolveUserCommandEnvironment(process.platform, process.env, runner);
   const node = selectedNodeStatus(nodes);
@@ -697,8 +740,16 @@ export async function inspectDshRuntime(
         installed: globalInstalled,
       },
     });
+    const dsh = blocked(vaultDshExists, globalDshExecutable !== null);
+    if (options.customDirectory) {
+      dsh.custom = {
+        state: "blocked",
+        detail: nodeDependencyDetail(node),
+        installed: true,
+      };
+    }
     return {
-      dsh: blocked(vaultDshExists, globalDshExecutable !== null),
+      dsh,
       pnpm: blocked(vaultPnpmExecutable !== null, globalPnpmExecutable !== null),
       command: null,
     };
@@ -711,6 +762,7 @@ export async function inspectDshRuntime(
           executable: node.executable,
           argsPrefix: [dshCliPath(vaultRoot)],
           env: commandEnvironment(vaultRoot, false, node, commandEnv),
+          origin: "vault",
         },
       }
     : null;
@@ -721,6 +773,7 @@ export async function inspectDshRuntime(
           executable: globalDshExecutable,
           argsPrefix: [],
           env: commandEnvironment(vaultRoot, false, globalNode ?? node, commandEnv),
+          origin: "global",
         },
       }
     : null;
@@ -739,6 +792,91 @@ export async function inspectDshRuntime(
       }
     : null;
 
+  const sourceEnvironment = commandEnvironment(
+    vaultRoot,
+    vaultPnpmExecutable !== null,
+    node,
+    commandEnv,
+  );
+  let sourceRuntime: DshSourceRuntime | undefined;
+  let customStatus: DshLayerStatus | undefined;
+  let runningDshUrl: string | undefined;
+  let runningUnmanagedDetail: string | undefined;
+  if (options.customDirectory) {
+    try {
+      sourceRuntime = await resolveDshSourceRuntime(options.customDirectory, {
+        nodeExecutable: node.executable,
+        environment: sourceEnvironment,
+        origin: "custom-manual",
+        runner,
+      });
+      customStatus = {
+        state: "ready",
+        version: sourceRuntime.version,
+        installed: true,
+        detail: t("自定义源码目录：{path}", { path: sourceRuntime.rootDirectory }),
+      };
+      if (options.preferredPort) {
+        const running = await discoverRunningDshSource(options.preferredPort, {
+          nodeExecutable: node.executable,
+          environment: sourceEnvironment,
+          runner,
+          probe: options.sourceProbe,
+          discovery: options.sourceDiscovery,
+        });
+        runningDshUrl = running.url ?? undefined;
+        if (
+          running.url
+          && (
+            !running.runtime
+            || path.resolve(running.runtime.rootDirectory) !== path.resolve(sourceRuntime.rootDirectory)
+          )
+        ) {
+          const runningSource = running.runtime?.rootDirectory
+            ?? t("无法验证来源的运行实例 {url}", { url: running.url });
+          customStatus = {
+            state: "conflict",
+            installed: true,
+            detail: t("运行中的 DSH 来自 {running}，与所选自定义目录 {selected} 不同。请先停止或更正运行实例。", {
+              running: runningSource,
+              selected: sourceRuntime.rootDirectory,
+            }),
+          };
+          sourceRuntime = undefined;
+        }
+      }
+    } catch (error) {
+      customStatus = {
+        state: "error",
+        installed: true,
+        detail: error instanceof Error ? error.message : String(error),
+      };
+    }
+  } else if (options.preferredPort) {
+    const discovered = await discoverRunningDshSource(options.preferredPort, {
+      nodeExecutable: node.executable,
+      environment: sourceEnvironment,
+      runner,
+      probe: options.sourceProbe,
+      discovery: options.sourceDiscovery,
+    });
+    runningDshUrl = discovered.url ?? undefined;
+    if (discovered.runtime) {
+      sourceRuntime = discovered.runtime;
+      customStatus = {
+        state: "ready",
+        version: sourceRuntime.version,
+        installed: true,
+        detail: t("已从运行中的 DSH 自动识别源码目录：{path}", {
+          path: sourceRuntime.rootDirectory,
+        }),
+      };
+    } else if (discovered.url) {
+      runningUnmanagedDetail = discovered.detail
+        || t("已检测到运行中的 DSH，但尚未配置可管理 CLI。");
+    }
+  }
+
   const [vaultDshStatus, globalDshStatus, vaultPnpmStatus, globalPnpmStatus] =
     await Promise.all([
       probeCommand(vaultDsh?.command ?? null, runner),
@@ -752,19 +890,32 @@ export async function inspectDshRuntime(
         ? probeCommand(globalPnpm, runner)
         : Promise.resolve(statusFromBinaryIssue(globalPnpmIssue)),
     ]);
-  const dsh = { vault: vaultDshStatus, global: globalDshStatus };
+  const dsh: DshToolLocations = {
+    vault: vaultDshStatus,
+    global: globalDshStatus,
+    ...(customStatus ? { custom: customStatus } : {}),
+  };
   const pnpm = { vault: vaultPnpmStatus, global: globalPnpmStatus };
+  const automaticCommand = selectPreferredDshCommand(
+    vaultRoot,
+    vaultDshStatus.state === "ready" ? vaultDsh?.command ?? null : null,
+    globalDshStatus.state === "ready" ? globalDsh?.command ?? null : null,
+    pnpm.vault.state === "ready",
+    node,
+    commandEnv,
+  );
+  if (!sourceRuntime && runningUnmanagedDetail && !automaticCommand) {
+    dsh.custom = { state: "blocked", installed: true, detail: runningUnmanagedDetail };
+  }
   return {
     dsh,
     pnpm,
-    command: selectPreferredDshCommand(
-      vaultRoot,
-      vaultDshStatus.state === "ready" ? vaultDsh?.command ?? null : null,
-      globalDshStatus.state === "ready" ? globalDsh?.command ?? null : null,
-      pnpm.vault.state === "ready",
-      node,
-      commandEnv,
-    ),
+    command: options.customDirectory
+      ? sourceRuntime?.command ?? null
+      : sourceRuntime?.command ?? automaticCommand,
+    ...(sourceRuntime ? { sourceRuntime } : {}),
+    ...(runningDshUrl ? { runningDshUrl } : {}),
+    ...(runningUnmanagedDetail ? { runningUnmanagedDetail } : {}),
   };
 }
 

@@ -27,6 +27,7 @@ window.__ModuleLoader__.load({
     Object.defineProperty(exports, Symbol.toStringTag, { value: 'Module' });
 
     const planReviewClient = require('@mv-aide/mv-dsh-manager/plan-review-client');
+    const modelCapabilitiesClient = require('@mv-aide/mv-dsh-manager/model-capabilities-client');
 
     // `remote.commands` is a dotted service namespace: DSH's own runtime
     // injects both `remote` and `remote.commands` (see dsh-client-runtime),
@@ -912,6 +913,7 @@ window.__ModuleLoader__.load({
     // ── Plugin body ──────────────────────────────────────────────────────
     function apply(ctx) {
       planReviewClient.apply(ctx);
+      modelCapabilitiesClient.apply(ctx);
       registerCommandTree(DEFAULT_PICKER_COMMAND, defaultMvAideTree());
       decorateCommand(ctx, DEFAULT_PICKER_COMMAND);
       startHintDirectoryPicker(ctx);

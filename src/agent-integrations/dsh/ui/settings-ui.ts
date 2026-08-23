@@ -83,7 +83,7 @@ function statusSpan(containerEl: HTMLElement, text: string, cls: string): void {
 
 export type Rerender = () => void;
 
-function layerStatusText(status: DshLayerStatus): string {
+function layerStatusBaseText(status: DshLayerStatus): string {
   switch (status.state) {
     case "ready":
       return status.version ? t("● 已就绪（{version}）", { version: status.version }) : t("● 已就绪");
@@ -95,6 +95,16 @@ function layerStatusText(status: DshLayerStatus): string {
       return t("● 路径被占用");
     case "incompatible":
       return t("● 版本不兼容");
+    case "outdated":
+      return status.version
+        ? t("● 版本较旧（{version}）", { version: status.version })
+        : t("● 版本较旧");
+    case "newer":
+      return status.version
+        ? t("● 已安装更高版本（{version}）", { version: status.version })
+        : t("● 已安装更高版本");
+    case "conflict":
+      return t("● 同版本内容冲突");
     case "blocked":
       return t("● 等待下层依赖");
     case "partial":
@@ -103,6 +113,81 @@ function layerStatusText(status: DshLayerStatus): string {
       return t("● 检测失败");
     default:
       return t("● 未检测");
+  }
+}
+
+function layerStatusText(status: DshLayerStatus): string {
+  const base = layerStatusBaseText(status);
+  return status.restartRequired ? `${base} · ${t("待重启")}` : base;
+}
+
+function injectedLayerDetail(label: string, status: DshLayerStatus, currentVersion: string): string {
+  let detail: string;
+  switch (status.state) {
+    case "ready":
+      detail = t("{label} {version} 的文件、patch 与 DSH 实际加载均完整。", {
+        label,
+        version: status.version ?? currentVersion,
+      });
+      break;
+    case "outdated":
+      detail = t("{label} {version} 低于当前 mv-AIDE {current}；检测不会覆盖，请点击升级。", {
+        label,
+        version: status.version ?? t("未知版本"),
+        current: currentVersion,
+      });
+      break;
+    case "newer":
+      detail = t("{label} {version} 高于当前 mv-AIDE {current}；已跳过当前版本的指纹比较与覆盖。", {
+        label,
+        version: status.version ?? t("未知版本"),
+        current: currentVersion,
+      });
+      break;
+    case "unknown":
+      detail = t("{label} 的注入版本未知；检测不会覆盖，建议点击升级。", { label });
+      break;
+    case "conflict":
+      detail = t("{label} 与当前 mv-AIDE 版本相同但内容指纹不同；仅可通过显式更新替换。", { label });
+      break;
+    case "missing":
+      detail = t("{label} 尚未注入 DSH web profile。", { label });
+      break;
+    case "partial":
+      detail = status.relation === "newer"
+        ? t("{label} 的高版本存在但未被 DSH 完整加载；请使用对应高版本 mv-AIDE 处理。", { label })
+        : t("{label} 注入不完整或未被 DSH 实际加载，需要修复。", { label });
+      break;
+    default:
+      detail = status.detail ? t(status.detail) : layerStatusText(status);
+  }
+  if (status.restartRequired) {
+    return status.runtimeVersion
+      ? `${detail} ${t("磁盘版本 {disk}，当前 DSH 已加载 {running}；运行版本待重启。", {
+          disk: status.version ?? t("未知版本"),
+          running: status.runtimeVersion,
+        })}`
+      : `${detail} ${t("当前 DSH 运行版本待重启。")}`;
+  }
+  return status.runtimeVersion
+    ? `${detail} ${t("当前 DSH 已加载同一 bundle。")}`
+    : detail;
+}
+
+function injectedAggregateDetail(status: DshLayerStatus): string {
+  if (status.restartRequired) return t("磁盘插件与当前 DSH 运行插件不同，运行版本待重启。");
+  switch (status.state) {
+    case "ready": return t("mv-agent 与 mv-dsh-manager 均已就绪。");
+    case "outdated": return t("至少一个受管插件版本较旧；检测不会覆盖，请点击升级。");
+    case "newer": return t("至少一个受管插件高于当前 mv-AIDE；当前版本不会降级覆盖。");
+    case "unknown": return t("至少一个受管插件版本未知；建议点击升级。");
+    case "conflict": return t("至少一个受管插件存在同版本内容冲突；仅可显式更新。");
+    case "missing": return t("尚未向 DSH web profile 注入受管插件。");
+    case "partial":
+      return status.relation === "newer"
+        ? t("高版本注入存在但不完整；请使用对应高版本 mv-AIDE 处理。")
+        : t("检测到不完整注入，需要修复。");
+    default: return status.detail ? t(status.detail) : layerStatusText(status);
   }
 }
 
@@ -129,12 +214,14 @@ function runtimeActionLabel(installed: boolean, update: RuntimeUpdateStatus): st
 }
 
 function layerStatusClass(status: DshLayerStatus): string {
-  if (status.state === "ready") return "mv-aide-status-success";
+  if (status.state === "ready" || status.state === "newer") return "mv-aide-status-success";
   if (
     status.state === "missing"
     || status.state === "broken-link"
     || status.state === "occupied"
     || status.state === "incompatible"
+    || status.state === "outdated"
+    || status.state === "conflict"
     || status.state === "error"
     || status.state === "partial"
   ) {
@@ -357,9 +444,12 @@ export function renderDshSection(
       .setDesc(update.error || status.detail || t("点击“检测”刷新实际状态。"))
       .addButton((button) => {
         environmentButtons.push(button);
+        const sourceDshReady = layer === "dsh" && locations.custom?.state === "ready";
         const actionLabel = status.state === "broken-link" && status.binaryIssue?.repairable
           ? t("修复")
-          : runtimeActionLabel(toolIsInstalled(locations), update);
+          : sourceDshReady
+            ? update.updateAvailable === true ? t("升级") : t("重装")
+            : runtimeActionLabel(toolIsInstalled(locations), update);
         button
           .setButtonText(actionLabel)
           .setDisabled(dshFeature.isEnvironmentBusy())
@@ -368,21 +458,86 @@ export function renderDshSection(
     statusSpan(setting.settingEl, runtimeStatusText(status, update), layerStatusClass(status));
   }
 
+  let customDirectoryDraft = plugin.settings.dsh.customDirectory;
+  const customDirectorySetting = new Setting(installEl)
+    .setName(t("自定义 DSH 目录"))
+    .setDesc(
+      environment.dsh.custom?.detail
+        || t("自动检测失败时，可填写 DeepSeek Harness 仓库根目录或 apps/cli 目录。验证成功后始终优先使用。"),
+    )
+    .addText((text) =>
+      text
+        .setPlaceholder(t("自动检测"))
+        .setValue(customDirectoryDraft)
+        .onChange((value) => {
+          customDirectoryDraft = value.trim();
+        }),
+    )
+    .addButton((button) => {
+      environmentButtons.push(button);
+      button
+        .setButtonText(t("验证并使用"))
+        .setCta()
+        .setDisabled(dshFeature.isEnvironmentBusy())
+        .onClick(async () => {
+          setEnvironmentBusy(true);
+          try {
+            const result = await dshFeature.configureCustomDshDirectory(customDirectoryDraft);
+            new Notice(result.message, 10000);
+            if (result.ok) rerender();
+          } catch (error) {
+            new Notice(error instanceof Error ? error.message : String(error), 10000);
+          } finally {
+            setEnvironmentBusy(false);
+          }
+        });
+    })
+    .addButton((button) => {
+      environmentButtons.push(button);
+      button
+        .setButtonText(t("清除"))
+        .setDisabled(dshFeature.isEnvironmentBusy() || !plugin.settings.dsh.customDirectory)
+        .onClick(async () => {
+          setEnvironmentBusy(true);
+          try {
+            const result = await dshFeature.clearCustomDshDirectory();
+            new Notice(result.message, 8000);
+            rerender();
+          } catch (error) {
+            new Notice(error instanceof Error ? error.message : String(error), 8000);
+          } finally {
+            setEnvironmentBusy(false);
+          }
+        });
+    });
+  customDirectorySetting.settingEl.addClass("mv-aide-dsh-custom-directory-setting");
+
   const pluginStatus = environment.plugins.full;
-  const pluginAction = pluginStatus.state === "ready"
-    ? t("更新")
-    : pluginStatus.state === "partial" || pluginStatus.state === "error"
-      ? t("修复")
-      : t("注入");
+  const protectedHigherVersion = pluginStatus.state === "newer"
+    || (pluginStatus.state === "partial" && pluginStatus.relation === "newer");
+  const pluginAction = protectedHigherVersion
+    ? t("高版本")
+    : pluginStatus.state === "ready" || pluginStatus.state === "conflict"
+      ? t("更新")
+      : pluginStatus.state === "outdated" || pluginStatus.state === "unknown"
+        ? t("升级")
+        : pluginStatus.state === "partial" || pluginStatus.state === "error"
+          ? t("修复")
+          : t("注入");
+  const pluginDetail = [
+    injectedAggregateDetail(pluginStatus),
+    injectedLayerDetail("mv-agent", environment.plugins.agent, plugin.manifest.version),
+    injectedLayerDetail("mv-dsh-manager", environment.plugins.manager, plugin.manifest.version),
+  ].join("\n");
   const pluginSetting = new Setting(installEl)
     .setName(t("插件注入"))
-    .setDesc(pluginStatus.detail || t("点击“检测”刷新实际状态。"))
+    .setDesc(pluginDetail)
     .addButton((button) => {
       environmentButtons.push(button);
       button
         .setButtonText(pluginAction)
         .setCta()
-        .setDisabled(dshFeature.isEnvironmentBusy())
+        .setDisabled(dshFeature.isEnvironmentBusy() || protectedHigherVersion)
         .onClick(() => runLayer("plugin"));
     });
   statusSpan(
@@ -439,6 +594,20 @@ export function renderDshSection(
         .setValue(plugin.settings.dsh.terminalAwarenessEnhanced)
         .onChange(async (value) => {
           plugin.settings.dsh.terminalAwarenessEnhanced = value;
+          await plugin.saveAndApplySettings();
+        }),
+    );
+
+  new Setting(installEl)
+    .setName(t("自动适应图片大小"))
+    .setDesc(
+      t("发送并写入 DSH 历史前自动按比例缩小过大的图片，使最长边不超过 2000px；不会修改原文件或放大小图片。关闭后恢复 DSH 原生尺寸限制。"),
+    )
+    .addToggle((toggle) =>
+      toggle
+        .setValue(plugin.settings.dsh.autoFitImageSize)
+        .onChange(async (value) => {
+          plugin.settings.dsh.autoFitImageSize = value;
           await plugin.saveAndApplySettings();
         }),
     );

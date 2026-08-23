@@ -869,6 +869,22 @@ export default class MvAideIdePlugin extends Plugin {
   }
 
   onunload(): void {
+    // 终端 PTY 清扫必须最先执行且逐叶保护：卸载序列后续任何 dispose 抛异常
+    // 都不能阻止进程组被收割（实测曾出现 PTY 穿透插件重载残留）。
+    try {
+      for (const leaf of this.app.workspace.getLeavesOfType(TERMINAL_VIEW_TYPE)) {
+        const view = leaf.view;
+        if (view instanceof TerminalView) {
+          try {
+            view.stopShell();
+          } catch (_) {
+            // 单叶收割失败不阻断其余终端的清理。
+          }
+        }
+      }
+    } catch (_) {
+      // 叶枚举本身失败时放弃清扫，交由 python watchdog 兜底。
+    }
     if (this.broadcastTimer !== null) {
       activeWindow.clearTimeout(this.broadcastTimer);
       this.broadcastTimer = null;
@@ -902,16 +918,6 @@ export default class MvAideIdePlugin extends Plugin {
     this.dshFeature = null;
     this.removeWebSelectionReporters();
     this.customMarkdownHighlightEditorViews.clear();
-
-    const leaves = this.app.workspace.getLeavesOfType(TERMINAL_VIEW_TYPE);
-    for (const leaf of leaves) {
-      const view = leaf.view;
-      if (view instanceof TerminalView) {
-        try {
-          (view as any).stopShell();
-        } catch (_) {}
-      }
-    }
 
     void removeLegacyCodexShellAlias();
     void this.finishUnload();
@@ -978,6 +984,7 @@ export default class MvAideIdePlugin extends Plugin {
       params: {
         reviewOutsideVault: this.settings.dsh.reviewOutsideVault,
         terminalAwarenessEnhanced: this.settings.dsh.terminalAwarenessEnhanced,
+        autoFitImageSize: this.settings.dsh.autoFitImageSize,
         pushLocation: this.settings.dsh.pushLocation,
         pushSelection: this.settings.dsh.pushSelection,
         outsideToolPolicy: this.settings.dsh.outsideToolPolicy,
@@ -2325,6 +2332,7 @@ export default class MvAideIdePlugin extends Plugin {
             },
             reviewOutsideVault: this.settings.dsh.reviewOutsideVault,
             terminalAwarenessEnhanced: this.settings.dsh.terminalAwarenessEnhanced,
+            autoFitImageSize: this.settings.dsh.autoFitImageSize,
             pushLocation: this.settings.dsh.pushLocation,
             pushSelection: this.settings.dsh.pushSelection,
             outsideToolPolicy: this.settings.dsh.outsideToolPolicy,

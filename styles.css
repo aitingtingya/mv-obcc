@@ -1671,6 +1671,10 @@ body.mv-aide-hide-obsidian-native-status-bar .status-bar {
   background: var(--color-red);
 }
 
+.mv-aide-dsh-dot.is-checking {
+  background: var(--text-faint);
+}
+
 .mv-aide-dsh-status-detail {
   background: var(--background-secondary-alt);
   border-top: 1px solid var(--background-modifier-border);

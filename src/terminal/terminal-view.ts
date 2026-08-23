@@ -18,6 +18,17 @@ import { resolveTerminalKeyAction } from "./terminal-clipboard";
 import { encodeTerminalKey } from "./terminal-keys";
 import { TERMINAL_PTY_PY_BASE64, TERMINAL_WIN_PY_BASE64 } from "./terminal-scripts";
 import { loginShellPath, resolvePythonCommand } from "./terminal-process";
+import {
+  collectTailLines,
+  collectUsedLines,
+  describeBuffer,
+  type ReadDiagnostics,
+} from "./terminal-read";
+import { TerminalInputQueue } from "./terminal-input-queue";
+import {
+  terminalShellKind,
+  type TerminalShellKind,
+} from "./terminal-command";
 import type MvAideIdePlugin from "../../main";
 
 // stdin 帧协议：[type: 1B][length: 4B LE][payload]。前端按消息打帧、后端
@@ -45,6 +56,12 @@ export class TerminalView extends ItemView {
   // 通过滚轮/触控板/Shift+PageUp/Down 主动滚动后重新采样。
   private followPinned = true;
   private shellStartGeneration = 0;
+  // PTY 就绪前的输入帧队列（含人工键入与 agent 写入），stdin 挂上后按序冲刷。
+  private inputQueue = new TerminalInputQueue();
+  /** 首批 PTY 输出是否已经由 xterm 解析并提交到缓冲区。 */
+  private firstParsedOutput = false;
+  private outputRevision = 0;
+  private currentShellKind: TerminalShellKind = process.platform === "win32" ? "cmd" : "posix";
 
   constructor(leaf: WorkspaceLeaf, plugin: MvAideIdePlugin) {
     super(leaf);
@@ -62,18 +79,52 @@ export class TerminalView extends ItemView {
     this.updateTheme(true);
   }
 
-  /** 读取终端缓冲区末尾若干行（供 MCP getTerminalOutput 工具）。 */
+  /** 读取终端缓冲区末尾若干物理行（字面模式，供 getTerminalOutput 与显式 lastN）。 */
   readTailLines(maxLines: number): string[] {
     const buffer = this.term?.buffer.active;
     if (!buffer) return [];
-    const total = buffer.length;
-    const start = Math.max(0, total - Math.max(1, Math.floor(maxLines)));
-    const lines: string[] = [];
-    for (let y = start; y < total; y++) {
-      lines.push(buffer.getLine(y)?.translateToString(true) ?? "");
-    }
-    while (lines.length > 0 && lines[lines.length - 1].trim() === "") lines.pop();
-    return lines;
+    return collectTailLines(buffer, maxLines);
+  }
+
+  /**
+   * 智能模式：读取"已用区域"（光标 / 最后非空行向上）最多 maxLines 行。
+   * 空闲 shell 的提示符在缓冲区顶部、其下全是空白视口行，字面尾窗会读成
+   * 全空——此模式跳过空白填充，让默认调用总能看到实际内容。
+   */
+  readUsedLines(maxLines = 50): string[] {
+    const buffer = this.term?.buffer.active;
+    if (!buffer) return [];
+    return collectUsedLines(buffer, maxLines);
+  }
+
+  /** 缓冲区诊断信息，随 read 响应返回以便远程定位问题。 */
+  describeReadState(): ReadDiagnostics & { procAlive: boolean } {
+    const buffer = this.term?.buffer.active;
+    const base = buffer
+      ? describeBuffer(buffer)
+      : { bufLen: 0, cursorRow: null, lastContentRow: null };
+    return { ...base, procAlive: !!this.proc && !this.proc.killed };
+  }
+
+  /** PTY 是否已挂载且产出过字节（shell 大致就绪的信号）。 */
+  isShellReady(): boolean {
+    return this.isShellAlive() && this.firstParsedOutput;
+  }
+
+  isShellAlive(): boolean {
+    return !!this.proc && this.proc.exitCode === null && this.proc.signalCode === null;
+  }
+
+  hasReadableContent(): boolean {
+    return this.readUsedLines(1).length > 0;
+  }
+
+  terminalOutputRevision(): number {
+    return this.outputRevision;
+  }
+
+  shellKind(): TerminalShellKind {
+    return this.currentShellKind;
   }
 
   getViewType(): string {
@@ -310,19 +361,35 @@ export class TerminalView extends ItemView {
     });
   }
 
-  /** 向 PTY 发送原始输入（文件底部指令等外部触发用）。 */
-  sendInput(text: string): void {
-    this.writeTerminalFrame(TERMINAL_FRAME_INPUT, text);
+  /** 向 PTY 发送原始输入（文件底部指令等外部触发用）。PTY 未就绪时入队。 */
+  sendInput(text: string): boolean {
+    return this.writeTerminalFrame(TERMINAL_FRAME_INPUT, text);
   }
 
-  private writeTerminalFrame(type: number, payload: string): void {
-    const proc = this.proc;
-    if (!proc?.stdin || proc.killed) return;
-    const body = Buffer.from(payload, "utf8");
-    const header = Buffer.alloc(5);
-    header.writeUInt8(type, 0);
-    header.writeUInt32LE(body.length, 1);
-    proc.stdin.write(Buffer.concat([header, body]));
+  /** Atomically queue a sequence of raw input payloads before PTY startup. */
+  sendInputSequence(payloads: string[]): boolean {
+    return this.inputQueue.enqueueManyOrWrite(
+      payloads.map((payload) => ({ type: TERMINAL_FRAME_INPUT, payload })),
+      this.frameSink(),
+    );
+  }
+
+  private writeTerminalFrame(type: number, payload: string): boolean {
+    // PTY 尚未挂载时不再静默丢帧：入队等待 startShell 完成后按序冲刷。
+    return this.inputQueue.enqueueOrWrite(type, payload, this.frameSink());
+  }
+
+  private frameSink() {
+    return {
+      canWrite: () => !!this.proc?.stdin && this.isShellAlive(),
+      write: (frame: Buffer) => {
+        const proc = this.proc;
+        if (!proc?.stdin || !this.isShellAlive()) {
+          throw new Error("Terminal process closed before input delivery");
+        }
+        proc.stdin.write(frame);
+      },
+    };
   }
 
   private handleTerminalKeydown(event: KeyboardEvent): void {
@@ -405,6 +472,8 @@ export class TerminalView extends ItemView {
 
   private async startShell(): Promise<void> {
     const generation = ++this.shellStartGeneration;
+    this.firstParsedOutput = false;
+    this.outputRevision = 0;
     const isWindows = process.platform === "win32";
     const settings = this.plugin.settings;
 
@@ -426,6 +495,7 @@ export class TerminalView extends ItemView {
     const shellPath = isWindows 
       ? (settings.terminalWinShellPath || "cmd.exe") 
       : (settings.terminalMacShellPath || process.env.SHELL || "/bin/zsh");
+    this.currentShellKind = terminalShellKind(shellPath, process.platform);
     
     const shellArgsStr = isWindows 
       ? settings.terminalWinShellArgs 
@@ -466,19 +536,25 @@ export class TerminalView extends ItemView {
     }
 
     try {
-      this.proc = child_process.spawn(pythonCmd, ptyArgs, {
+      const child = child_process.spawn(pythonCmd, ptyArgs, {
         cwd,
         env: shellEnv,
         stdio: ["pipe", "pipe", "pipe"],
         detached: !isWindows
       });
+      this.proc = child;
 
       this.stdoutDecoder = new StringDecoder("utf8");
       this.stderrDecoder = new StringDecoder("utf8");
 
-      this.proc.stdout?.on("data", (data) => {
+      child.stdout?.on("data", (data: Buffer) => {
+        if (generation !== this.shellStartGeneration || this.proc !== child) return;
         if (this.term && this.stdoutDecoder) {
-          this.term.write(this.stdoutDecoder.write(data), () => {
+          const decoded = this.stdoutDecoder.write(data);
+          this.term.write(decoded, () => {
+            if (generation !== this.shellStartGeneration || this.proc !== child) return;
+            this.firstParsedOutput = true;
+            this.outputRevision += 1;
             // 写完每个输出块后若用户钉在底部则强制回底：无论 xterm 内部跟随
             // 状态被 reflow/转义序列带歪成什么样，下一个输出块都会扶正。
             if (this.followPinned) this.term?.scrollToBottom();
@@ -486,15 +562,21 @@ export class TerminalView extends ItemView {
         }
       });
 
-      this.proc.stderr?.on("data", (data) => {
+      child.stderr?.on("data", (data: Buffer) => {
+        if (generation !== this.shellStartGeneration || this.proc !== child) return;
         if (this.term && this.stderrDecoder) {
-          this.term.write(this.stderrDecoder.write(data), () => {
+          const decoded = this.stderrDecoder.write(data);
+          this.term.write(decoded, () => {
+            if (generation !== this.shellStartGeneration || this.proc !== child) return;
+            this.firstParsedOutput = true;
+            this.outputRevision += 1;
             if (this.followPinned) this.term?.scrollToBottom();
           });
         }
       });
 
-      this.proc.on("exit", (code, signal) => {
+      child.on("exit", (code, signal) => {
+        if (generation !== this.shellStartGeneration || this.proc !== child) return;
         if (isWindows && code === 9009) {
           this.term?.writeln(t("\r\n[Python 解释器未找到]"));
           this.term?.writeln(t("请在设置中配置 Python 可执行文件路径，或者安装 Python 到系统。"));
@@ -504,13 +586,15 @@ export class TerminalView extends ItemView {
         this.proc = null;
       });
 
-      this.proc.on("error", (err) => {
+      child.on("error", (err) => {
+        if (generation !== this.shellStartGeneration || this.proc !== child) return;
         if (isWindows && err.message.includes("ENOENT")) {
           this.term?.writeln(t("\r\n[Python 执行失败 - Python 未找到]"));
           this.term?.writeln(t("请检查 Python 是否已安装且在 PATH 中，或在设置中手动指定。"));
         } else {
           this.term?.writeln(t("\r\n[错误: {message}]", { message: err.message }));
         }
+        this.proc = null;
       });
 
       // Fit/focus immediately when the container already has a real size
@@ -527,15 +611,31 @@ export class TerminalView extends ItemView {
         }
       }, 300);
 
+      // PTY 已挂载：冲刷就绪前积压的输入帧（保持到达顺序）。
+      this.inputQueue.flush({
+        canWrite: () => this.proc === child && !!child.stdin && child.exitCode === null,
+        write: (frame) => {
+          if (this.proc !== child || !child.stdin || child.exitCode !== null) return;
+          child.stdin.write(frame);
+        },
+      });
+
     } catch (e) {
       this.term?.writeln(t("\r\n[启动终端错误: {message}]", { message: (e as any).message }));
     }
   }
 
+  /** 停止 PTY（插件卸载清扫与「刷新终端」共用）。 */
   stopShell() {
     this.shellStartGeneration += 1;
-    if (this.proc && !this.proc.killed) {
-      const pid = this.proc.pid;
+    // 进程被终止，未冲刷的输入帧随之作废，避免串到下一个 shell 会话。
+    this.inputQueue.clear();
+    this.firstParsedOutput = false;
+    this.outputRevision = 0;
+    const child = this.proc;
+    this.proc = null;
+    if (child && child.exitCode === null && child.signalCode === null) {
+      const pid = child.pid;
       const isWin = process.platform === "win32";
       const killTree = (sig: NodeJS.Signals) => {
         if (!isWin && pid) {
@@ -545,17 +645,16 @@ export class TerminalView extends ItemView {
           } catch (_) {}
         }
         try {
-          this.proc?.kill(sig);
+          child.kill(sig);
         } catch (_) {}
       };
       killTree("SIGTERM");
-      const t = setTimeout(() => {
-        if (this.proc && this.proc.exitCode === null) {
+      const killTimer = setTimeout(() => {
+        if (child.exitCode === null && child.signalCode === null) {
           killTree("SIGKILL");
         }
       }, 1000);
-      this.proc.once("exit", () => clearTimeout(t));
-      this.proc = null;
+      child.once("exit", () => clearTimeout(killTimer));
     }
     if (this.stdoutDecoder) {
       const rem = this.stdoutDecoder.end();

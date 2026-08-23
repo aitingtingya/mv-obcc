@@ -14,6 +14,7 @@ const TERMINAL_METHODS = new Set([
   "dsh/terminal/run",
   "dsh/terminal/open",
   "dsh/terminal/focus",
+  "dsh/terminal/close",
 ]);
 
 /**
@@ -73,13 +74,19 @@ export class DshTerminalRpc {
         case "dsh/terminal/read": {
           const terminalId = optionalString(params.terminalId, "terminalId");
           const lastN = optionalNumber(params.lastN, "lastN");
-          return this.success(id, this.terminals.read(terminalId, lastN ?? 50));
+          const waitMs = optionalNumber(params.waitMs, "waitMs");
+          // lastN 原样透传（undefined = 智能模式）；不得在此合并默认值，
+          // 否则"没填"与"填了 50"在中间层被混同。
+          return this.success(
+            id,
+            await this.terminals.read(terminalId, lastN, waitMs ?? 0),
+          );
         }
         case "dsh/terminal/send": {
           const terminalId = optionalString(params.terminalId, "terminalId");
           const input = requiredString(params.input, "input", true);
           const submit = optionalBoolean(params.submit, "submit") ?? false;
-          return this.success(id, this.terminals.send(terminalId, input, submit));
+          return this.success(id, await this.terminals.send(terminalId, input, submit));
         }
         case "dsh/terminal/run": {
           const command = requiredString(params.command, "command");
@@ -95,6 +102,10 @@ export class DshTerminalRpc {
         case "dsh/terminal/focus": {
           const terminalId = requiredString(params.terminalId, "terminalId");
           return this.success(id, await this.terminals.focus(terminalId));
+        }
+        case "dsh/terminal/close": {
+          const terminalId = requiredString(params.terminalId, "terminalId");
+          return this.success(id, await this.terminals.close(terminalId));
         }
         default:
           return null;

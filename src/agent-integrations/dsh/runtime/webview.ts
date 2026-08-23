@@ -33,6 +33,7 @@ export const DSH_WEB_VIEW_TYPE = "mv-aide-dsh";
 const FRAME_LOAD_TIMEOUT_MS = 10_000;
 /** 「打开：」内容的截断长度。 */
 const OPEN_MAX_CHARS = 20;
+type DshBridgeViewState = "checking" | "connected" | "disconnected";
 
 export function isDshWebviewLeaf(leaf: WorkspaceLeaf): boolean {
   return leaf.view?.getViewType?.() === DSH_WEB_VIEW_TYPE;
@@ -236,6 +237,9 @@ export class DshWebView extends ItemView {
   private statusRefreshTimer: number | null = null;
   private navigationGeneration = 0;
   private stateGeneration = 0;
+  private bridgeConnectionState: DshBridgeViewState = "checking";
+  private bridgeProbeBusy = false;
+  private bridgeProbeGeneration = 0;
   private closed = false;
 
   constructor(
@@ -333,6 +337,7 @@ export class DshWebView extends ItemView {
 
   async onClose(): Promise<void> {
     this.closed = true;
+    this.bridgeProbeGeneration += 1;
     this.navigationGeneration += 1;
     this.stateGeneration += 1;
     this.clearLoadWatchdog();
@@ -445,6 +450,7 @@ export class DshWebView extends ItemView {
   private beginNavigation(url: string, apply: () => void): void {
     this.currentUrl = url;
     this.navigationGeneration += 1;
+    this.resetBridgeConnectionState();
     const generation = this.navigationGeneration;
     this.clearLoadWatchdog();
     this.loadFailed = false;
@@ -516,7 +522,7 @@ export class DshWebView extends ItemView {
       bar.createSpan({ cls: "mv-aide-dsh-status-divider" });
     // 顺序：小球 │ 打开 │ 选中 │ 端口
     this.statusDotEl = bar.createSpan({
-      cls: "mv-aide-dsh-dot is-disconnected",
+      cls: "mv-aide-dsh-dot is-checking",
     });
     addDivider();
     this.statusOpenEl = bar.createSpan({
@@ -751,18 +757,40 @@ export class DshWebView extends ItemView {
 
   private async refreshDshBridgeStatus(): Promise<void> {
     const feature = this.plugin.dshFeature;
-    if (!feature || this.closed) return;
-    await feature.refreshDshBridgeConnection();
-    if (!this.closed) this.renderStatus();
+    const url = this.currentViewUrl();
+    if (!feature || !url || this.closed || this.bridgeProbeBusy) return;
+    const generation = ++this.bridgeProbeGeneration;
+    this.bridgeProbeBusy = true;
+    try {
+      const connected = await feature.isDshViewConnectedToBridge(url);
+      if (
+        !this.closed &&
+        generation === this.bridgeProbeGeneration &&
+        sameDshWebUrl(url, this.currentViewUrl() ?? "")
+      ) {
+        this.bridgeConnectionState = connected ? "connected" : "disconnected";
+        this.renderStatus();
+      }
+    } finally {
+      this.bridgeProbeBusy = false;
+    }
+  }
+
+  private resetBridgeConnectionState(): void {
+    this.bridgeProbeGeneration += 1;
+    this.bridgeConnectionState = "checking";
   }
 
   private renderStatus(): void {
     const plugin = this.plugin;
     const settings = plugin.settings;
     const dshFeature = plugin.dshFeature;
-    const actualPort = dshFeature?.currentDshPort() ?? null;
-    const actualUrl = dshFeature?.currentDshUrl() ?? null;
-    const connected = dshFeature?.isDshBridgeConnected() ?? false;
+    const actualUrl = this.currentViewUrl() ?? dshFeature?.currentDshUrl() ?? null;
+    const actualPort = actualUrl
+      ? Number(new URL(actualUrl).port) || dshFeature?.currentDshPort() || null
+      : dshFeature?.currentDshPort() ?? null;
+    const connectionState = this.bridgeConnectionState;
+    const connected = connectionState === "connected";
     const snapshot = plugin.latestSelectionSnapshot();
     const parts = buildDshStatusParts(snapshot);
     const port = actualPort ?? settings.dsh.port;
@@ -792,8 +820,12 @@ export class DshWebView extends ItemView {
     }
     if (this.statusDotEl) {
       this.statusDotEl.toggleClass("is-connected", connected);
-      this.statusDotEl.toggleClass("is-disconnected", !connected);
-      this.statusDotEl.setAttr("title", connected ? t("已连接") : t("未连接"));
+      this.statusDotEl.toggleClass("is-disconnected", connectionState === "disconnected");
+      this.statusDotEl.toggleClass("is-checking", connectionState === "checking");
+      this.statusDotEl.setAttr(
+        "title",
+        connectionState === "checking" ? t("检查中") : connected ? t("已连接") : t("未连接"),
+      );
     }
     const applyCheck = (
       el: HTMLSpanElement | null,
@@ -835,7 +867,7 @@ export class DshWebView extends ItemView {
     );
     setTextIfChanged(
       this.detailConnectionEl,
-      `mv-aide ${connected ? t("已连接") : t("未连接")}`,
+      `mv-aide ${connectionState === "checking" ? t("检查中") : connected ? t("已连接") : t("未连接")}`,
     );
     setTextIfChanged(this.detailOpenEl, parts.openFull);
     setTextIfChanged(this.detailSelectionEl, parts.selection);
