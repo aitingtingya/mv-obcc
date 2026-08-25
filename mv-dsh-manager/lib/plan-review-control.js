@@ -39,15 +39,21 @@ function hasRealUserMessage(messages) {
  * The returned disposer is idempotent as far as Cordis listeners are concerned:
  * every listener disposer is called once when the owning plugin unloads.
  */
-export function installPlanReviewControl(ctx) {
+export function installPlanReviewControl(ctx, options = {}) {
   if (!ctx || typeof ctx.on !== 'function') return () => {};
+  const enabled = () => options.enabled?.() !== false;
 
-  const deferredSessions = new WeakSet();
+  const deferredSessions = new WeakMap();
+  let policyGeneration = 0;
+  const unsubscribe = options.subscribe?.((next, previous) => {
+    if (previous?.planReviewEnhancementEnabled !== false
+        && next?.planReviewEnhancementEnabled === false) policyGeneration += 1;
+  });
 
   const disposeExecute = ctx.on('tools/execute', async (exec, next) => {
     const result = await next();
-    if (isPlanReviewDismissResult(exec, result)) {
-      deferredSessions.add(exec.agent.session);
+    if (enabled() && isPlanReviewDismissResult(exec, result)) {
+      deferredSessions.set(exec.agent.session, policyGeneration);
     }
     return result;
   });
@@ -56,7 +62,7 @@ export function installPlanReviewControl(ctx) {
     'agent/pre-step',
     async ({ agent, messages } = {}, next) => {
       const session = agent?.session;
-      if (!session || !deferredSessions.has(session)) return next();
+      if (!enabled() || !session || deferredSessions.get(session) !== policyGeneration) return next();
 
       // The step immediately following the cancelled exit_plan_mode has no new
       // human input. Rejecting it ends the current turn before another LLM
@@ -77,5 +83,6 @@ export function installPlanReviewControl(ctx) {
   return () => {
     if (typeof disposePreStep === 'function') disposePreStep();
     if (typeof disposeExecute === 'function') disposeExecute();
+    unsubscribe?.();
   };
 }

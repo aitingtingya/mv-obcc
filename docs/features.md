@@ -181,7 +181,7 @@ mv-agent 把 DeepSeek Harness（DSH）内嵌进 Obsidian：直接使用 DSH Web 
 
 ### 目的与启用方式
 
-- **总开关**位于 IDE 桥接分区的「已适配 agent」区域（「启用 dsh IDE 功能」，默认关）。关闭后桥接不启动、不写 lock 文件，mv-agent 分区的其余设置保留但不生效。
+- **桥接总开关**位于 IDE 桥接分区的「已适配 agent」区域（「启用 dsh IDE 功能」，默认关）。关闭后桥接不启动、不写 lock 文件，桥接工具和被动上下文暂停；环境管理、DSH 视图和文件拖入是独立功能，不因桥接关闭而失效。
 - **视图**：命令面板提供「打开 mv-agent」「停止 mv-agent」「重启 mv-agent」，快捷键可在 Obsidian 快捷键设置中绑定。「停止 mv-agent」会关闭所有已打开的 mv-agent 界面并停止对应的 DSH 后台。视图是一个自定义 Obsidian 视图：上方 iframe 直接嵌入 DSH Web 界面（无浏览器工具栏），底部是 Obsidian 侧状态栏。状态栏显示连接球、当前页面或文件、选区、端口和展开入口；展开后可查看 DSH 地址、桥接状态、选区范围与正文，并进入插件、技能、子 Agent 管理或外部浏览器。位置与选区勾选框分别控制下次消息是否携带对应快照。连接球直接根据当前视图 DSH 端点到本 Vault bridge 的真实 TCP 连接显示：检查中为灰色，已连接为绿色，确认断开为红色；每个视图独立探测，不依赖本 Vault 是否启动了共享 DSH，也不依赖环境检测缓存。
 - **打开分区**：可选左/右/下，默认右侧。「重启 mv-agent」会重启插件托管的 `dsh web` 进程并刷新所有已打开视图。
 - **终端感知增强**：默认关闭，只影响 mv-agent / DSH。开启时 mv-agent 不注册基础 `mv_aide__getTerminalOutput`，改为注册 `list/read/send/run/open/focus/close` 七个 mv-AIDE 原生终端工具；关闭时七个增强工具撤销并恢复原来的 `getTerminalOutput`。`sendTerminalInput` 是原始输入通道，用于 Ctrl+C、TUI/REPL 和可选 Enter；`runInTerminal` 是可靠的 shell 命令通道，保真处理引号、`!`、空格、Unicode 和多行，`cd`/`export` 仍作用于同一终端。Obsidian 重启后的 deferred 标签只启动全新 shell，`readTerminal` 会等新提示符真正写入 xterm，不恢复旧输出；`closeTerminal` 必须给定 ID，直接关闭 Obsidian 终端标签及其 PTY，deferred 标签不会被唤醒。切换立即刷新工具，不重启 DSH，也不改变其它 IDE 客户端的公共 `tools/list`。库外权限继续复用 `getTerminalOutput` 的范围设置。
@@ -207,7 +207,7 @@ mv-agent 把 DeepSeek Harness（DSH）内嵌进 Obsidian：直接使用 DSH Web 
 
 ### 插件注入与 DSH 侧能力
 
-「插件注入」把两个公开包写入当前 DSH web profile 的 `node_modules` 并注册到 patch 层：`@mv-aide/mv-agent` 提供桥接、命令和原生工具，`@mv-aide/mv-dsh-manager` 提供插件、技能和预设管理。每个 bundle marker 记录发布它的 mv-AIDE 版本和内容指纹；版本 authority 是 mv-AIDE `manifest.version`，不是两个包自身的版本。落盘后还会用 `dsh --profile web --dump-config` 校验真实加载状态。
+「插件注入」把两个公开包写入当前 DSH web profile 的 `node_modules` 并注册到 patch 层：`@mv-aide/mv-agent` 提供桥接、命令和原生工具，`@mv-aide/mv-dsh-manager` 提供插件、技能、预设、模型能力和文件拖入适配。每个 bundle marker 记录发布它的 mv-AIDE 版本和内容指纹；版本 authority 是 mv-AIDE `manifest.version`，不是两个包自身的版本。落盘后还会用 `dsh --profile web --dump-config` 校验真实加载状态。
 
 - **低于当前 mv-AIDE**：显示实际版本和“版本较旧”，检测与后台启动不会覆盖；用户点击“升级”后才更新。
 - **等于当前 mv-AIDE**：完整核对 marker、文件集合、指纹、patch 和实际加载；缺失或损坏时显示“修复”。同版本但指纹不同显示构建冲突，只能由显式“更新”替换。
@@ -221,11 +221,29 @@ mv-agent 把 DeepSeek Harness（DSH）内嵌进 Obsidian：直接使用 DSH Web 
 - 与公共工具开关对应的 `mv_aide__*` 原生工具；
 - 被动上下文通知与 Obsidian 可编辑 Diff 审核。
 
+### DSH 原生插件配置
+
+DSH 的「设置 → 插件配置」使用官方 `settings.plugin.item` 插槽显示两张默认折叠卡。设置写入当前 DSH profile，点击「保存」后实时生效；「恢复继承」删除当前字段的用户层覆盖。无用户配置、设置服务未加载或旧 DSH 没有配置插槽时，两个插件按全部默认值运行，即与升级前一致。
+
+- **mv-agent**：可配置 IDE 桥接、IDE 工具、七项终端增强、Obsidian Diff、`/mv-aide`、Vault 工作区自动进入、选区上下文、`@` 提及、选区上限（256–50000，默认 6000）、防抖（50–3000ms，默认 400ms）、悬浮侧栏和图片适配。桥接关闭只暂停依赖桥接的子项，不改写子项值；`/mv-aide`、悬浮侧栏和图片适配不以桥接连接为前提。
+- **mv-dsh-manager**：可分别开关插件、技能、子智能体预设管理界面，模型能力编辑器，Obsidian 文件拖入，递归命令选择器和计划审核增强；选择器叶子上限为 10–200（默认 50）。关闭管理界面不会停用已安装的插件、技能或预设，Host API、运行身份和注入完整性检查始终保留。
+- **authority**：DSH profile 开关是 DSH 侧最终门控；对同时存在 Vault 设置的终端和图片能力，实际结果取两侧交集。不同 DSH profile 互不影响，该配置不按对话或 Vault 分别保存。
+
+### 文件拖入
+
+安装兼容版本的 mv-dsh-manager 后，可把 Obsidian 文件列表中的文件或电脑文件管理器中的文件直接拖到 mv-agent 对话区。这条通道不读取 discovery lock，不连接 bridge WebSocket，也不调用 supervisor、`initialize`、`tools/list` 或 IDE 工具；即使 IDE 桥接关闭或状态球为红色，只要当前 DSH iframe 与 manager client 已就绪，仍可向草稿添加文件。文件只加入当前 DSH 对话的草稿，不覆盖已有文字，也不会自动发送；一次最多 20 个，重复路径会在真实路径规范化后合并。文件夹、设备文件和递归导入不在支持范围内。
+
+- **普通文件**：写入 DSH 原生结构化 `@file` 引用。当前 DSH 工作区内的文件使用相对路径，工作区外使用绝对路径；这是实时磁盘引用，不是副本。Agent 真正调用 `read` 时才读取内容，因此拖入后移动、删除、修改或改变权限都会反映到实际读取结果。外部绝对路径会作为提示文本保存在 DSH 会话历史中。
+- **图片**：PNG、JPEG、WebP、GIF 通过文件签名识别并加入 DSH 原生图片草稿，继续受当前模型图片能力、DSH 数量/字节限制和「自动适应图片大小」控制；原始文件不会被修改。图片与普通文件可以混合拖入，同一批次要么全部加入，要么完整回滚。
+- **二进制文档**：PDF、Office、压缩包等只创建路径引用。能否读取或转换取决于当前 DSH 工具，不表示内容已经作为附件上传给模型。
+- **跨平台路径**：macOS 使用 Finder，Windows 支持文件资源管理器的盘符、UNC 与重解析后的真实路径，Linux 支持标准 `Files` 和本机 `file://` URI。路径由 Electron/Obsidian 桌面接口取得并在宿主侧验证；无法取得可信绝对路径时拒绝，不用文件名猜测。移动端、远程 DSH 或 Obsidian 与 DSH 不共享文件系统时不支持普通文件引用。
+- **隔离与安全**：Obsidian 宿主和 DSH iframe 使用按视图、按导航轮换令牌的本机 `postMessage` 握手，校验源窗口、精确 origin、代次和请求 ID；路径不通过新的 HTTP 文件接口暴露。mv-dsh-manager 缺失、版本过旧、输入锁定、会话切换或 iframe 刷新时显示真实错误，不产生半成品草稿。
+
 ### 图片上传
 
 开启「自动适应图片大小」后，mv-agent 在 DSH 生成上传 payload 和写入历史之前统一预处理普通消息、Queue/Steer 发送及允许图片的 slash command。最长边大于 2000px 时等比缩到 2000px；不超限时沿用原字节，且始终不修改本地原文件。PNG、JPEG、WebP、GIF 保持原格式，透明度、EXIF 方向和动画帧语义均保留。预处理入口最多接收 16 MiB 的单张图片，并限制解码像素以防异常图片耗尽内存。
 
-每个 session 使用其当前已完成桥接握手的 Vault 设置，因此两个会话可以采用相反开关。开关关闭、没有可确定设置 authority，或当前 DSH 运行环境没有可加载的图像处理模块时，接口返回“不处理”并保留 DSH 原生上传与尺寸限制；这不是缩放成功。已进入预处理但解码、缩放或编码失败时，输入框和草稿图片保留，界面显示错误，超限原图不会继续发送。模型请求阶段仍会尽力适配旧历史中的超限图片；该兼容层失败时保留原请求，因此新上传的尺寸保证只来自上传前处理。
+普通 DSH 上传使用当前 session 已确认的 Vault 策略；文件拖入则由 Obsidian 宿主在按视图鉴权的 `prepare` 阶段携带来源 Vault 的图片开关，因此它不需要 bridge supervisor。该一次性策略只属于当前拖入事务，不写 DSH profile，也不会污染其他 Vault 或普通上传。开关关闭、没有可确定设置 authority，或当前 DSH 运行环境没有可加载的图像处理模块时，接口返回“不处理”并保留 DSH 原生上传与尺寸限制；这不是缩放成功。已进入预处理但解码、缩放或编码失败时，输入框和草稿图片保留，界面显示错误，超限原图不会继续发送。模型请求阶段仍会尽力适配旧历史中的超限图片；该兼容层失败时保留原请求，因此新上传的尺寸保证只来自上传前处理。
 
 ### DSH 模型能力设置
 

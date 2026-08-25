@@ -47,13 +47,15 @@ window.__ModuleLoader__.load({
       return pending.find(isPlanReviewInteraction) || null;
     }
 
-    function apply(ctx) {
+    function apply(ctx, options = {}) {
       if (typeof window?.addEventListener !== 'function') return;
+      const enabled = () => options.get?.().planReviewEnhancementEnabled !== false;
 
       let inFlightKey = null;
       let dismissedKey = null;
 
       const onKeyDown = (event) => {
+        if (!enabled()) return;
         if (event?.key !== 'Escape' || event.isComposing === true) return;
 
         const pending = activePlanReview(ctx);

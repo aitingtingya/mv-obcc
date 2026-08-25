@@ -49,9 +49,12 @@ Settings inspect Node.js, DSH, pnpm, and plugin injection as four separate layer
 
 - per-conversation vault selection, history, and recovery;
 - editable Obsidian diff review for file writes that require permission;
+- direct drops from the vault or local filesystem: images become attachments and other files become live `@file` references;
 - seven optional enhanced terminal tools, including reliable command execution and true tab closing;
 - pre-upload image fitting plus image-input, reasoning-level, and compatibility declarations for models;
 - out-of-vault tools and passive context that remain off by default and can be opened per channel.
+
+DSH's native **Plugin configuration** page contains separate mv-agent and mv-dsh-manager cards for bridge, context, page enhancement, model-capability, file-drop, and related modules. Every option defaults to the existing behavior. File drop is independent of the IDE bridge, so local files can still be appended to the current DSH draft while the bridge is disabled.
 
 ![Real DSH answers from the current selection and expands the live mv-agent status](media/readme/mv-agent.gif)
 

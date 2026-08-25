@@ -11,6 +11,7 @@ import { discoverBridges, listTools } from './bridge-service.js';
 import { installPlanReviewControl } from './plan-review-control.js';
 import { createModelCapabilitiesService, ModelCapabilitiesError } from './model-capabilities-service.js';
 import { UI_SCRIPT_TAG } from './ui-script.js';
+import { installManagerFeatureSettings } from './feature-settings.js';
 
 export const name = 'mv-dsh-manager';
 export const inject = ['webServer'];
@@ -56,7 +57,11 @@ function publishRuntimeDescriptor(ctx) {
 
 export function apply(ctx) {
   publishRuntimeDescriptor(ctx);
-  installPlanReviewControl(ctx);
+  const featureSettings = installManagerFeatureSettings(ctx);
+  installPlanReviewControl(ctx, {
+    enabled: () => featureSettings.get().planReviewEnhancementEnabled !== false,
+    subscribe: (listener) => featureSettings.subscribe(listener),
+  });
 
   const webServer = ctx.get ? ctx.get('webServer') : ctx.webServer;
   if (!webServer || typeof webServer.register !== 'function') {

@@ -263,7 +263,12 @@ function installWebRoutes(ctx, service, fitOptions, runtimeRegistry) {
           return;
         }
         const sessionId = url.searchParams.get('sessionId');
-        const enabled = service.enabledFor(sessionId ?? undefined);
+        // A token-authenticated Obsidian file-drop transaction carries its
+        // Vault policy on the File object and the browser wrapper forwards it
+        // here. This one-shot authority is intentionally independent of an IDE
+        // bridge supervisor; ordinary uploads still use the session policy.
+        const sourcePolicyEnabled = req.headers['x-mv-aide-image-source-policy'] === 'enabled';
+        const enabled = sourcePolicyEnabled || service.enabledFor(sessionId ?? undefined);
         if (enabled !== true) {
           req.resume?.();
           res.writeHead(204);

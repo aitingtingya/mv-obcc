@@ -45,6 +45,7 @@ import {
 } from './passive-state.js';
 import { mountHoverSidebar } from './hover-sidebar.js';
 import { installImageAdapter } from './image-adapter.js';
+import { installAgentFeatureSettings } from './feature-settings.js';
 import {
   callEnhancedTerminalTool,
   isEnhancedTerminalTool,
@@ -59,7 +60,6 @@ const COMMAND_USAGE =
   'Usage: /mv-aide [status|tools|bridges|connect <序号|端口|路径|auto>|selection|call <name> [json]]';
 
 const PLUGIN_SOURCE = 'mv-aide-dsh';
-const MAX_SELECTION_CHARS = 6000;
 const SESSION_NOT_OPEN_MESSAGE =
   'mv-AIDE 仅服务当前打开或正在运行的 DSH 对话；该对话已关闭且不在运行。切回该对话页面即可自动恢复连接。';
 /** How long an idle, unstaged supervisor lingers before cleanup (absorbs rapid idle↔running flaps). */
@@ -108,7 +108,9 @@ export function apply(ctx, config = {}) {
   /** sessionId → pending cleanup timer for idle, unstaged supervisors. */
   const idleDisposers = new Map();
   let directControlDisposer;
+  let commandDisposer;
   const imagePolicyService = installImageAdapter(ctx);
+  const featureSettings = installAgentFeatureSettings(ctx);
 
   const log = (message) => {
     if (ctx.logger && typeof ctx.logger.warn === 'function') {
@@ -178,6 +180,9 @@ export function apply(ctx, config = {}) {
   }
 
   function requireOpenAgent(agent) {
+    if (featureSettings.get().bridgeEnabled === false) {
+      throw new Error('mv-AIDE IDE bridge is disabled in DSH plugin settings.');
+    }
     const sessionId = sessionIdOf(agent);
     // Staged (frontend-reported) OR mid-turn running agents — including
     // background subagents — may use the bridge. Idle + unstaged sessions
@@ -201,7 +206,10 @@ export function apply(ctx, config = {}) {
   function syncImagePolicy(supervisor) {
     if (!imagePolicyService || typeof imagePolicyService.setSession !== 'function') return;
     if (typeof supervisor?.sessionId !== 'string' || supervisor.sessionId.length === 0) return;
-    imagePolicyService.setSession(supervisor.sessionId, supervisor.autoFitImageSize !== false);
+    imagePolicyService.setSession(
+      supervisor.sessionId,
+      featureSettings.get().imageAutoFitEnabled !== false && supervisor.autoFitImageSize !== false,
+    );
   }
 
   function clearImagePolicy(sessionId) {
@@ -241,7 +249,7 @@ export function apply(ctx, config = {}) {
         if (isStagedSession(sessionId)) {
           await recordBridgeConnection(key, connection, { workspace });
         }
-        imagePolicyService?.setSession?.(sessionId, connection.autoFitImageSize !== false);
+        syncImagePolicy(sv);
       },
       onLog: log,
       onNotification: (notification) => handleNotification(sv, notification),
@@ -318,6 +326,7 @@ export function apply(ctx, config = {}) {
     });
     if (!agent || activationGenerations.get(report.sessionId) !== generation || !activeSessions.isActive(report.sessionId)) return;
     activeAgents.set(report.sessionId, agent);
+    if (featureSettings.get().bridgeEnabled === false) return;
     await ensureActiveSupervisor(agent).catch((error) => {
       if (activeSessions.isActive(report.sessionId)) {
         log(`mv-aide: failed to activate opened session ${report.sessionId} — ${error instanceof Error ? error.message : String(error)}`);
@@ -410,13 +419,17 @@ export function apply(ctx, config = {}) {
   }
 
   function collectTools() {
+    if (featureSettings.get().bridgeEnabled === false || featureSettings.get().ideToolsEnabled === false) {
+      return [];
+    }
     const byName = new Map();
     const connected = [...supervisors.values()].filter((sv) => sv.client?.isOpen());
     // Tool registration is global in DSH, so a mixed multi-vault session cannot
     // expose per-agent schemas. Enhanced mode wins globally to preserve the
     // strict invariant that getTerminalOutput and native terminal tools never
     // coexist in one registered tool set.
-    const enhancedMode = connected.some((sv) => sv.terminalAwarenessEnhanced !== false);
+    const enhancedMode = featureSettings.get().terminalToolsEnabled !== false
+      && connected.some((sv) => sv.terminalAwarenessEnhanced !== false);
     for (const sv of connected) {
       for (const tool of sv.client?.tools ?? []) {
         if (tool?.name) byName.set(tool.name, tool);
@@ -453,6 +466,9 @@ export function apply(ctx, config = {}) {
             },
           },
           execute: async (args, exec) => {
+            if (featureSettings.get().bridgeEnabled === false || featureSettings.get().ideToolsEnabled === false) {
+              throw new Error('mv-AIDE IDE tools are disabled in DSH plugin settings.');
+            }
             const sv = await supervisorFor(exec?.agent);
             if (!sv?.isConnected()) {
               throw new Error(
@@ -477,7 +493,9 @@ export function apply(ctx, config = {}) {
               );
             }
             const normalizedArgs = normalizeArgs(args);
-            if (isEnhancedTerminalTool(rawName) && sv.terminalAwarenessEnhanced === false) {
+            if (isEnhancedTerminalTool(rawName)
+                && (featureSettings.get().terminalToolsEnabled === false
+                  || sv.terminalAwarenessEnhanced === false)) {
               throw new Error('mv-AIDE enhanced terminal awareness is disabled for this session.');
             }
             const result = isEnhancedTerminalTool(rawName)
@@ -521,7 +539,6 @@ export function apply(ctx, config = {}) {
   }
 
   // ── Passive context delivery (per session) ────────────────────────────
-  const SELECTION_DEBOUNCE_MS = 400;
   const MENTION_DEDUPE_WINDOW_MS = 5000;
   const MENTION_HISTORY = 3;
 
@@ -544,8 +561,8 @@ export function apply(ctx, config = {}) {
       if (text.length > 0) {
         lines.push('选中文本：');
         lines.push(
-          text.length > MAX_SELECTION_CHARS
-            ? `${text.slice(0, MAX_SELECTION_CHARS)}…`
+          text.length > featureSettings.get().selectionMaxChars
+            ? `${text.slice(0, featureSettings.get().selectionMaxChars)}…`
             : text,
         );
       } else if (typeof params?.selection?.start?.line === 'number') {
@@ -722,6 +739,8 @@ export function apply(ctx, config = {}) {
       return;
     }
     if (method === 'selection_changed') {
+      if (featureSettings.get().bridgeEnabled === false
+          || featureSettings.get().selectionContextEnabled === false) return;
       const channels = selectionChannels(
         supervisor.pushLocation,
         supervisor.pushSelection,
@@ -750,9 +769,14 @@ export function apply(ctx, config = {}) {
         at: now,
       };
       if (state.selectionTimer !== null) clearTimeout(state.selectionTimer);
-      state.selectionTimer = setTimeout(() => flushSelection(supervisor), SELECTION_DEBOUNCE_MS);
+      state.selectionTimer = setTimeout(
+        () => flushSelection(supervisor),
+        featureSettings.get().selectionDebounceMs,
+      );
       tryBufferedSendBackup(supervisor);
     } else if (method === 'at_mentioned') {
+      if (featureSettings.get().bridgeEnabled === false
+          || featureSettings.get().mentionSteeringEnabled === false) return;
       const params = notification.params ?? {};
       const signature = mentionSignature(params);
       const now = Date.now();
@@ -788,6 +812,8 @@ export function apply(ctx, config = {}) {
   ctx.on('tools/execute', createDiffHook({
     ctx,
     resolveSupervisor: async (exec) => {
+      if (featureSettings.get().bridgeEnabled === false
+          || featureSettings.get().diffReviewEnabled === false) return null;
       const sessionId = sessionIdOf(exec?.agent);
       if (!sessionId || !activeSessions.isActive(sessionId)) return null;
       return ensureActiveSupervisor(exec?.agent).catch(() => null);
@@ -800,6 +826,8 @@ export function apply(ctx, config = {}) {
   // has no session yet, create one whose cwd is the vault root. Idempotent
   // per vault root.
   async function ensureVaultWorkspace(supervisor) {
+    if (featureSettings.get().bridgeEnabled === false
+        || featureSettings.get().autoEnterVaultWorkspaceEnabled === false) return;
     const vaultRoot = supervisor.workspaceFolders?.[0];
     if (typeof vaultRoot !== 'string' || vaultRoot.length === 0) return;
     const key = normalizePath(vaultRoot);
@@ -873,12 +901,24 @@ export function apply(ctx, config = {}) {
     return lines.join('\n');
   }
 
-  const command = ctx.commands.register({
-    name: 'mv-aide',
-    description: 'connect to the mv-AIDE Obsidian IDE bridge and query or call its tools',
-    input: { hint: '[status|tools|bridges|connect <序号|端口|路径|auto>|selection|call <name> [json]]' },
-    handler: (invocation) => runCommand(invocation.rawInput, invocation.signal, invocation.agent),
-  });
+  function syncCommandRegistration() {
+    const enabled = featureSettings.get().slashCommandEnabled !== false;
+    if (!enabled && commandDisposer) {
+      commandDisposer();
+      commandDisposer = undefined;
+      return;
+    }
+    if (enabled && !commandDisposer) {
+      commandDisposer = ctx.commands.register({
+        name: 'mv-aide',
+        description: 'connect to the mv-AIDE Obsidian IDE bridge and query or call its tools',
+        input: { hint: '[status|tools|bridges|connect <序号|端口|路径|auto>|selection|call <name> [json]]' },
+        handler: (invocation) => runCommand(invocation.rawInput, invocation.signal, invocation.agent),
+      });
+    }
+  }
+
+  syncCommandRegistration();
 
   async function runCommand(rawInput, signal, agent) {
     const input = (rawInput ?? '').trim();
@@ -1054,9 +1094,37 @@ export function apply(ctx, config = {}) {
     }
   });
 
+  const unsubscribeFeatureSettings = featureSettings.subscribe((next, previous) => {
+    syncCommandRegistration();
+    if (previous.bridgeEnabled !== false && next.bridgeEnabled === false) {
+      const opened = [...activeAgents.entries()];
+      disposeAllSupervisors();
+      for (const [sessionId, agent] of opened) activeAgents.set(sessionId, agent);
+    } else if (previous.bridgeEnabled === false && next.bridgeEnabled !== false) {
+      for (const agent of activeAgents.values()) {
+        void ensureActiveSupervisor(agent).catch((error) => {
+          log(`mv-aide: failed to resume bridge after settings change — ${error instanceof Error ? error.message : String(error)}`);
+        });
+      }
+    }
+    if (next.selectionContextEnabled === false) {
+      for (const supervisor of supervisors.values()) {
+        const state = passiveStateFor(supervisor);
+        if (state.selectionTimer !== null) clearTimeout(state.selectionTimer);
+        state.selectionTimer = null;
+        state.pendingSelection = null;
+        state.bufferedSelection = null;
+      }
+    }
+    for (const supervisor of supervisors.values()) syncImagePolicy(supervisor);
+    refreshTools();
+  });
+
   ctx.effect(() => {
     return () => {
-      command();
+      unsubscribeFeatureSettings();
+      commandDisposer?.();
+      commandDisposer = undefined;
       directControlDisposer?.();
       directControlDisposer = undefined;
       activeSessions.clear();

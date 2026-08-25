@@ -4,9 +4,22 @@
 
 window.__ModuleLoader__.load({
   id: '@mv-aide/mv-agent',
-  factory: () => {
+  factory: (require) => {
     const module = { exports: {} };
     const exports = module.exports;
+    const fallbackPolicy = Object.freeze({
+      imageAutoFitEnabled: true,
+      hoverSidebarEnabled: true,
+    });
+    let settingsClient;
+    try {
+      settingsClient = typeof require === 'function'
+        ? require('@mv-aide/mv-agent/settings-client')
+        : null;
+    } catch {
+      settingsClient = null;
+    }
+    settingsClient ??= { install: () => ({ get: () => fallbackPolicy, subscribe: () => () => {} }) };
 
     const inject = ['sessions', 'conversation'];
     const CONTROL_PATH = '/api/mv-agent/active-session';
@@ -31,9 +44,10 @@ window.__ModuleLoader__.load({
     }
 
     const IMAGE_ENCODER_MARK = Symbol.for('@mv-aide/mv-agent/image-upload-preprocessor');
+    const IMAGE_SOURCE_POLICY = Symbol.for('@mv-aide/image-source-policy/v1');
     const SUPPORTED_UPLOAD_MEDIA_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
 
-    function installImageUploadPreprocessor(ctx) {
+    function installImageUploadPreprocessor(ctx, featurePolicy) {
       const conversation = typeof ctx?.get === 'function'
         ? ctx.get('conversation')
         : ctx?.conversation;
@@ -41,6 +55,11 @@ window.__ModuleLoader__.load({
       const current = conversation.encodeImage;
       if (current?.[IMAGE_ENCODER_MARK]) return;
       const wrapper = async function encodeImageWithMvAideFit(file) {
+        const profileEnabled = featurePolicy?.get?.().imageAutoFitEnabled !== false;
+        const sourcePolicy = file?.[IMAGE_SOURCE_POLICY];
+        if (!profileEnabled || sourcePolicy?.autoFitImageSize === false) {
+          return current.call(this, file);
+        }
         const sessionId = activeReport(ctx.sessions).sessionId;
         if (sessionId === null || typeof window.fetch !== 'function') {
           return current.call(this, file);
@@ -57,7 +76,16 @@ window.__ModuleLoader__.load({
         try {
           response = await window.fetch(
             `/api/mv-agent/image-fit?sessionId=${encodeURIComponent(sessionId)}`,
-            { method: 'POST', headers: { 'Content-Type': file.type }, body: file },
+            {
+              method: 'POST',
+              headers: {
+                'Content-Type': file.type,
+                ...(sourcePolicy?.autoFitImageSize === true
+                  ? { 'X-Mv-Aide-Image-Source-Policy': 'enabled' }
+                  : {}),
+              },
+              body: file,
+            },
           );
         } catch (error) {
           // Rejected values may come from another realm, so read `message`
@@ -94,7 +122,8 @@ window.__ModuleLoader__.load({
     }
 
     function apply(ctx) {
-      installImageUploadPreprocessor(ctx);
+      const featurePolicy = settingsClient.install(ctx);
+      installImageUploadPreprocessor(ctx, featurePolicy);
       ctx.effect(() => {
         let disposed = false;
         let socket = null;

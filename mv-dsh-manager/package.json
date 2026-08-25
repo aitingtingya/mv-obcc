@@ -1,7 +1,7 @@
 {
   "name": "@mv-aide/mv-dsh-manager",
   "version": "0.1.4",
-  "description": "DeepSeek Harness runtime visual management plugin for plugins, skills, and subagents; also provides the recursive slash-command field picker",
+  "description": "DeepSeek Harness integration for runtime management, model capabilities, Obsidian file drops, and recursive command picking",
   "main": "lib/index.js",
   "type": "module",
   "exports": {
@@ -15,6 +15,9 @@
         "@deepseek-ai/dsh-client-ui-commands",
         "@deepseek-ai/dsh-client-runtime",
         "@deepseek-ai/dsh-api-remotes"
+      ],
+      "external": [
+        "react"
       ],
       "platform": "web"
     }
@@ -34,5 +37,8 @@
   },
   "dependencies": {
     "yaml": "^2.9.0"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/schemastery": "*"
   }
 }

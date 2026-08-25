@@ -1,6 +1,6 @@
 # @mv-aide/mv-dsh-manager
 
-DSH runtime visual management plugin for plugins, skills, and subagents. It also hosts a **recursive slash-command field picker** for DSH commands.
+DSH runtime integration for plugin, skill, subagent, model-capability, and Obsidian file-drop management. It also hosts a **recursive slash-command field picker** for DSH commands.
 
 ## Model capability editor
 
@@ -14,6 +14,17 @@ The manager augments DSH 0.1.1's native model rows with the model-level fields a
 `lib/model-capabilities-service.js` is the host-side settings/LLM boundary. It exposes only the two local `/api/mv-aide/model-capabilities*` routes, validates a fixed model-field vocabulary, writes custom models without dropping unknown fields, and uses `modelOverrides` for built-in models. `lib/model-capabilities-client.js` owns the browser controls and attaches them to the native model disclosure through stable accessibility labels rather than CSS-module hashes.
 
 Capability changes are staged behind DSH's native Save action. Native provider/model/credential changes commit first; after the editor closes, the client reads a fresh revision and applies all capability changes in one settings mutation. A native failure or cancel writes nothing, while a failed second stage keeps a retryable draft and reports the partial save explicitly.
+
+## Obsidian file-drop receiver
+
+`lib/file-drop-client.js` is the isolated DSH-side half of mv-agent file drops. The Obsidian host resolves and validates native paths; this module accepts only an authenticated, per-iframe `postMessage` channel and uses DSH's current session APIs to:
+
+- append regular files as native structured `@file` references, using a workspace-relative path when possible and an absolute path otherwise;
+- register PNG, JPEG, WebP, and GIF bytes in DSH's native draft-image store;
+- enforce the current session's input phase, block state, and projected image limits;
+- commit mixed batches atomically and restore the original draft plus image IDs on failure.
+
+The module never submits the composer, copies regular-file contents, exposes a path-reading HTTP route, or modifies the source file. The main manager client only invokes its `apply()` lifecycle hook; the settings, plugin, skill, preset, model-capability, plan-review, and slash-picker modules remain independent.
 
 ## Recursive slash-command field picker
 

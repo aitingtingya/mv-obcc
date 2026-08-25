@@ -8,6 +8,24 @@ export const UI_SCRIPT_BODY = `
 
   let activeCustomTab = null; // 'skills' | 'subagents' | null
 
+  const DEFAULT_FEATURE_POLICY = {
+    pluginManagementUiEnabled: true,
+    skillManagementUiEnabled: true,
+    presetManagementUiEnabled: true
+  };
+
+  function featurePolicy() {
+    return Object.assign({}, DEFAULT_FEATURE_POLICY, window.__MV_DSH_MANAGER_FEATURE_POLICY__ || {});
+  }
+
+  function closeCustomWorkbench() {
+    activeCustomTab = null;
+    const custom = document.getElementById('mv-aide-custom-workbench-root');
+    if (custom) custom.remove();
+    const original = document.querySelector('div[class*="_options"]');
+    if (original) original.style.display = '';
+  }
+
   // ─────────────────────────────────────────────────────────────
   // 1. Plugins List Toggle Buttons, Delete & Toolbar Injection
   // ─────────────────────────────────────────────────────────────
@@ -615,6 +633,11 @@ export const UI_SCRIPT_BODY = `
   }
 
   function scanCards() {
+    if (!featurePolicy().pluginManagementUiEnabled) {
+      document.querySelectorAll('.mv-aide-pm-btn-group, .mv-aide-import-plugin-btn, .mv-aide-open-folder-btn')
+        .forEach(function(node) { node.remove(); });
+      return;
+    }
     const cards = document.querySelectorAll('li[data-plugin-entry], li[class*="_card"], div[class*="_card"]');
     for (let i = 0; i < cards.length; i++) {
       injectCardButtons(cards[i]);
@@ -666,6 +689,16 @@ export const UI_SCRIPT_BODY = `
   }
 
   function injectSidebarNav() {
+    const policy = featurePolicy();
+    if (!policy.skillManagementUiEnabled) {
+      document.getElementById('mv-aide-nav-skills-btn')?.remove();
+      if (activeCustomTab === 'skills') closeCustomWorkbench();
+    }
+    if (!policy.presetManagementUiEnabled) {
+      document.getElementById('mv-aide-nav-subagents-btn')?.remove();
+      if (activeCustomTab === 'subagents') closeCustomWorkbench();
+    }
+    if (!policy.skillManagementUiEnabled && !policy.presetManagementUiEnabled) return;
     const navList = document.querySelector('div[class*="_navList"], nav div:has(button[class*="_navCell"])');
     if (!navList) return;
 
@@ -689,7 +722,7 @@ export const UI_SCRIPT_BODY = `
 
     // 1. 挂载「✨ 技能」
     let skillBtn = document.getElementById('mv-aide-nav-skills-btn');
-    if (!skillBtn) {
+    if (policy.skillManagementUiEnabled && !skillBtn) {
       skillBtn = createNavButton('skills', '✨', '技能', baseClassName);
 
       skillBtn.onmouseenter = function() {
@@ -712,7 +745,7 @@ export const UI_SCRIPT_BODY = `
 
     // 2. 挂载「🤖 子智能体」
     let subagentBtn = document.getElementById('mv-aide-nav-subagents-btn');
-    if (!subagentBtn) {
+    if (policy.presetManagementUiEnabled && !subagentBtn) {
       subagentBtn = createNavButton('subagents', '🤖', '子智能体', baseClassName);
 
       subagentBtn.onmouseenter = function() {
@@ -767,6 +800,9 @@ export const UI_SCRIPT_BODY = `
   // ─────────────────────────────────────────────────────────────
 
   function openWorkbench(type, activeClass) {
+    const policy = featurePolicy();
+    if ((type === 'skills' && !policy.skillManagementUiEnabled)
+        || (type === 'subagents' && !policy.presetManagementUiEnabled)) return;
     activeCustomTab = type;
 
     // 清理所有原生按钮高亮
@@ -1303,6 +1339,8 @@ export const UI_SCRIPT_BODY = `
     scanCards();
     injectSidebarNav();
   }
+
+  window.addEventListener('mv-aide:manager-feature-policy', scanAll);
 
   const observer = new MutationObserver(function() {
     scanAll();

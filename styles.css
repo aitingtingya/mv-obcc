@@ -1562,6 +1562,13 @@ body.mv-aide-hide-obsidian-native-status-bar .status-bar {
   padding: 0;
 }
 
+.mv-aide-dsh-frame-container {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  position: relative;
+}
+
 .mv-aide-dsh-view .mv-aide-dsh-frame {
   border: 0;
   display: block;
@@ -1569,6 +1576,34 @@ body.mv-aide-hide-obsidian-native-status-bar .status-bar {
   height: 100%;
   min-height: 0;
   width: 100%;
+}
+
+.mv-aide-dsh-file-drop-overlay {
+  align-items: center;
+  backdrop-filter: blur(3px);
+  background: color-mix(in srgb, var(--background-primary) 84%, transparent);
+  border: 2px dashed var(--interactive-accent);
+  border-radius: var(--radius-l);
+  color: var(--text-normal);
+  display: flex;
+  font-size: var(--font-ui-medium);
+  font-weight: var(--font-semibold);
+  inset: 16px;
+  justify-content: center;
+  padding: 24px;
+  pointer-events: auto;
+  position: absolute;
+  text-align: center;
+  z-index: 20;
+}
+
+.mv-aide-dsh-file-drop-overlay[hidden] {
+  display: none;
+}
+
+.mv-aide-dsh-file-drop-overlay.is-unavailable {
+  border-color: var(--text-warning);
+  color: var(--text-warning);
 }
 
 .mv-aide-dsh-statusbar {

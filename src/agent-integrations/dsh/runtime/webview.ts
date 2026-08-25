@@ -16,6 +16,7 @@ import { t } from "../../../i18n";
 import type { DshAutoOpenRegion } from "../settings";
 import type { SelectionState } from "../../../types";
 import { normalizeDshWebUrl, sameDshWebUrl } from "./process";
+import { DshFileDropHost } from "./file-drop-host";
 
 export const DSH_VIEW_TITLE = "mv-agent";
 /**
@@ -240,6 +241,7 @@ export class DshWebView extends ItemView {
   private bridgeConnectionState: DshBridgeViewState = "checking";
   private bridgeProbeBusy = false;
   private bridgeProbeGeneration = 0;
+  private fileDropHost: DshFileDropHost | null = null;
   private closed = false;
 
   constructor(
@@ -345,6 +347,8 @@ export class DshWebView extends ItemView {
       this.viewWindow().clearInterval(this.statusRefreshTimer);
       this.statusRefreshTimer = null;
     }
+    this.fileDropHost?.dispose();
+    this.fileDropHost = null;
     this.frameEl?.remove();
     this.frameEl = null;
     this.statusPortEl = null;
@@ -450,6 +454,7 @@ export class DshWebView extends ItemView {
   private beginNavigation(url: string, apply: () => void): void {
     this.currentUrl = url;
     this.navigationGeneration += 1;
+    this.fileDropHost?.setTarget(url, this.navigationGeneration);
     this.resetBridgeConnectionState();
     const generation = this.navigationGeneration;
     this.clearLoadWatchdog();
@@ -484,6 +489,7 @@ export class DshWebView extends ItemView {
     this.clearLoadWatchdog();
     this.loadFailed = false;
     this.renderStatus();
+    if (target) this.fileDropHost?.frameLoaded(target, generation);
     if (!feature || !target) return;
     void feature.confirmDshViewUrl(target).then((confirmed) => {
       if (
@@ -503,7 +509,10 @@ export class DshWebView extends ItemView {
     const container = this.containerEl;
     container.empty();
     container.addClass("mv-aide-dsh-view");
-    const frame = container.createEl("iframe", {
+    const frameContainer = container.createDiv({
+      cls: "mv-aide-dsh-frame-container",
+    });
+    const frame = frameContainer.createEl("iframe", {
       cls: "mv-aide-dsh-frame",
       attr: {
         id: "mv-aide-dsh-frame",
@@ -512,6 +521,13 @@ export class DshWebView extends ItemView {
       },
     });
     this.frameEl = frame;
+    this.fileDropHost = new DshFileDropHost({
+      app: this.app,
+      frame,
+      frameContainer,
+      viewWindow: this.viewWindow(),
+      autoFitImageSize: () => this.plugin.settings.dsh.autoFitImageSize,
+    });
     frame.addEventListener("load", () => {
       this.handleFrameLoad();
     });

@@ -97,6 +97,10 @@ To uninstall: remove the insert block from `cordis.patch.yml` and remove the dep
 
 ## Configuration
 
+DSH's native **Settings → Plugin configuration → mv-agent** card stores live, profile-scoped preferences for the bridge, IDE and terminal tools, Diff review, `/mv-aide`, automatic Vault entry, selection/mention delivery, selection size and debounce, hover sidebar, and image fitting. Every field defaults to the behavior documented above. The card stages edits until Save, and Reset clears the user-layer override. If the DSH settings service or browser slot is unavailable, mv-agent continues with all defaults enabled.
+
+Turning off the bridge setting releases active supervisors and bridge-owned tools but preserves selection history and every child preference. `/mv-aide`, the hover-sidebar presentation, the image adapter, and mv-dsh-manager's file-drop channel have independent lifecycles. In particular, file drop never reads discovery locks or calls this package's bridge client.
+
 The row accepts one optional field:
 
 ```yaml

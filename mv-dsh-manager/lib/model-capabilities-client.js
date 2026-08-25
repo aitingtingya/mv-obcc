@@ -850,17 +850,29 @@ window.__ModuleLoader__.load({
       if (provider) stageSave(state, editor, provider, event);
     }
 
-    function install(ctx) {
+    function install(ctx, options = {}) {
       if (typeof document === 'undefined' || typeof MutationObserver === 'undefined') return () => {};
       if (window[INSTALL_KEY]) return window[INSTALL_KEY].dispose;
+      const enabled = () => options.get?.().modelCapabilitiesUiEnabled !== false;
+      const removeUi = () => {
+        document.querySelectorAll('[data-mv-aide-model-capabilities], [data-mv-aide-builtin-catalog], [data-mv-aide-capability-unsupported], [data-mv-aide-capability-error]')
+          .forEach((node) => node.remove());
+      };
       installStyle();
       const state = {
         disposed: false, scanQueued: false, directory: null, providers: new Map(), drafts: new Map(),
         expandedBuiltins: new Set(), providerHint: null, providerHintAt: 0, pending: null, partial: null,
         directoryFailure: null, providerFailures: new Map(),
       };
-      const observer = new MutationObserver(() => scheduleScan(state));
-      const click = (event) => onClick(state, event);
+      const observer = new MutationObserver(() => {
+        if (enabled()) scheduleScan(state);
+        else removeUi();
+      });
+      const click = (event) => { if (enabled()) onClick(state, event); };
+      const unsubscribe = options.subscribe?.(() => {
+        if (enabled()) scheduleScan(state);
+        else removeUi();
+      });
       document.addEventListener('click', click, true);
       if (document.body) observer.observe(document.body, { childList: true, subtree: true });
       else document.addEventListener('DOMContentLoaded', () => {
@@ -870,15 +882,15 @@ window.__ModuleLoader__.load({
         if (state.disposed) return;
         state.disposed = true;
         observer.disconnect();
+        unsubscribe?.();
         document.removeEventListener('click', click, true);
-        document.querySelectorAll('[data-mv-aide-model-capabilities], [data-mv-aide-builtin-catalog], [data-mv-aide-capability-unsupported], [data-mv-aide-capability-error]')
-          .forEach((node) => node.remove());
+        removeUi();
         state.partial?.remove();
         document.getElementById('mv-aide-model-capabilities-style')?.remove();
         delete window[INSTALL_KEY];
       };
       window[INSTALL_KEY] = { dispose };
-      scheduleScan(state);
+      if (enabled()) scheduleScan(state);
       try {
         ctx?.effect?.(() => dispose, 'mv-dsh-manager: model capability editor');
       } catch {

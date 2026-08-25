@@ -28,13 +28,31 @@ window.__ModuleLoader__.load({
 
     const planReviewClient = require('@mv-aide/mv-dsh-manager/plan-review-client');
     const modelCapabilitiesClient = require('@mv-aide/mv-dsh-manager/model-capabilities-client');
+    const fileDropClient = require('@mv-aide/mv-dsh-manager/file-drop-client');
+    let settingsClient;
+    try {
+      settingsClient = require('@mv-aide/mv-dsh-manager/settings-client');
+    } catch {
+      const defaults = Object.freeze({
+        modelCapabilitiesUiEnabled: true,
+        fileDropEnabled: true,
+        recursiveCommandPickerEnabled: true,
+        planReviewEnhancementEnabled: true,
+        commandPickerMaxLeaves: 50,
+      });
+      settingsClient = {
+        DEFAULTS: defaults,
+        install: () => ({ get: () => defaults, subscribe: () => () => {} }),
+      };
+    }
 
     // `remote.commands` is a dotted service namespace: DSH's own runtime
     // injects both `remote` and `remote.commands` (see dsh-client-runtime),
     // so this module must declare both to call ctx.remote.commands.execute.
     const inject = ['commandUi', 'sessions', 'remote', 'remote.commands'];
     const DEFAULT_PICKER_COMMAND = 'mv-aide';
-    const MAX_HINT_LEAVES = 50;
+    let featurePolicy;
+    const currentFeatures = () => featurePolicy?.get?.() ?? settingsClient.DEFAULTS;
 
     // ── Generic recursive command tree registry ──────────────────────────
     const trees = new Map();
@@ -673,7 +691,7 @@ window.__ModuleLoader__.load({
           if (trimmed !== '' && !out.includes(trimmed)) out.push(trimmed);
         }
       }
-      return out.slice(0, MAX_HINT_LEAVES);
+      return out.slice(0, currentFeatures().commandPickerMaxLeaves);
     }
 
     function flatHintFields(commandName, expansions, description) {
@@ -899,6 +917,7 @@ window.__ModuleLoader__.load({
       return commandUi.decorate({
         name,
         available(session) {
+          if (currentFeatures().recursiveCommandPickerEnabled === false) return false;
           try {
             prepareSession(session && session.sessionId, ctx, commandUi);
           } catch (error) {
@@ -912,8 +931,14 @@ window.__ModuleLoader__.load({
 
     // ── Plugin body ──────────────────────────────────────────────────────
     function apply(ctx) {
-      planReviewClient.apply(ctx);
-      modelCapabilitiesClient.apply(ctx);
+      featurePolicy = settingsClient.install(ctx);
+      const policyOptions = {
+        get: currentFeatures,
+        subscribe: (listener) => featurePolicy.subscribe(listener),
+      };
+      planReviewClient.apply(ctx, policyOptions);
+      modelCapabilitiesClient.apply(ctx, policyOptions);
+      fileDropClient.apply(ctx, policyOptions);
       registerCommandTree(DEFAULT_PICKER_COMMAND, defaultMvAideTree());
       decorateCommand(ctx, DEFAULT_PICKER_COMMAND);
       startHintDirectoryPicker(ctx);
