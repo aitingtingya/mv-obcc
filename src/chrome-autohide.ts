@@ -10,7 +10,7 @@ export const CHROME_AUTOHIDE_KIND_CLASS: Record<ChromeAutoHideKind, string> = {
 
 /** 展开态只属于单个标签组，三个开关仅决定该组中显示哪些层。 */
 export const CHROME_EXPANDED_CLASS = "mv-aide-chrome-expanded";
-/** 收起状态下位于组顶部的 8px 唤出面。 */
+/** 收起状态下位于标签组顶部或紧贴可见标签栏下方的 8px 唤出面。 */
 export const CHROME_SENSOR_CLASS = "mv-aide-chrome-sensor";
 /** 系统指针真正离开展开区域后的宽限期。 */
 export const CHROME_COLLAPSE_DELAY_MS = 120;
@@ -563,10 +563,16 @@ export class ChromeAutoHideFeature {
   private syncSensorRect(group: HTMLElement): void {
     const sensor = this.sensors.get(group);
     if (!sensor || sensor.style.display === "none" || !group.isConnected) return;
-    const rect = group.getBoundingClientRect();
-    sensor.style.left = `${rect.left}px`;
-    sensor.style.top = `${rect.top}px`;
-    sensor.style.width = `${rect.width}px`;
+    const groupRect = group.getBoundingClientRect();
+    const strip = group.querySelector<HTMLElement>(STRIP_SELECTOR);
+    const stripRect = strip?.getBoundingClientRect();
+    const sensorTop =
+      !this.hasArmedTabStrip(group) && stripRect && stripRect.height > 0
+        ? stripRect.bottom
+        : groupRect.top;
+    sensor.style.left = `${groupRect.left}px`;
+    sensor.style.top = `${sensorTop}px`;
+    sensor.style.width = `${groupRect.width}px`;
     sensor.style.height = `${SENSOR_HEIGHT_PX}px`;
   }
 
