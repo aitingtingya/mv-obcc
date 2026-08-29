@@ -1879,19 +1879,10 @@ body.mv-aide-chrome-autohide-tab
   pointer-events: auto;
 }
 
-/* ── 文件 / 浏览器 header（absolute 覆盖层，触发权上交统一模块；
-       strip 展开时 leaf-content 整体下移，覆盖层随之落在 strip 正下方，
-       排序即原生；obsidian.asar 实证 .view-header 原生 z-index:1、
-       高 var(--header-height)） ── */
-body.mv-aide-chrome-autohide-file
-  .workspace-leaf-content[data-type="markdown"],
-body.mv-aide-chrome-autohide-web
-  .workspace-leaf-content[data-type="webviewer"],
-body.mv-aide-chrome-autohide-web
-  .workspace-leaf-content[data-type="browser"] {
-  position: relative;
-}
-
+/* ── 文件 / 浏览器 header（in-flow 推挤式）：workspace-leaf-content 原生是
+       column flex，收起时把 view-header 的 flex 高度归零，展开时恢复原生
+       var(--header-height)，正文与 WebView 因而整体下移而不是被覆盖。高度瞬时
+       切换，动画仍只作用于透明度，避免几何过渡引发指针判定抖动。 ── */
 body.mv-aide-chrome-autohide-file
   .workspace-leaf-content[data-type="markdown"]
   .view-header,
@@ -1901,12 +1892,10 @@ body.mv-aide-chrome-autohide-web
 body.mv-aide-chrome-autohide-web
   .workspace-leaf-content[data-type="browser"]
   .view-header {
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  z-index: var(--layer-cover);
-  background: var(--background-primary);
+  height: 0;
+  min-height: 0;
+  flex: 0 0 0;
+  overflow: hidden;
   opacity: 0;
   pointer-events: none;
   transition: opacity 120ms ease-in-out;
@@ -1924,6 +1913,9 @@ body.mv-aide-chrome-autohide-web
   .workspace-tabs.mv-aide-chrome-expanded
   .workspace-leaf-content[data-type="browser"]
   .view-header {
+  height: var(--header-height);
+  flex: 0 0 var(--header-height);
+  overflow: visible;
   opacity: 1;
   pointer-events: auto;
 }
@@ -1932,7 +1924,8 @@ body.mv-aide-chrome-autohide-web
    标签条收起态时组顶是 <webview>/正文死区，而组内 absolute 元素会被
    .document-search-container（z-index: --layer-popover=30）等组内层盖掉；
    sensor 挂在 document.body 上 position:fixed（脱离一切组内 stacking
-   context），由 JS 用 getBoundingClientRect 逐帧对齐到所属组顶部 8px，
+   context），由 JS 用 getBoundingClientRect 对齐到所属组顶部 8px；如果标签栏
+   保持显示而只收起下方工具栏，则改为紧贴可见标签栏下方的 8px。
    覆盖原生触发面。显示/尺寸由 JS 门控：仅该组标签条武装且仍处于收起态
    时 display:block；一旦展开立即隐藏，避免透明层挡住真实标签与按钮。
    三个开关全关时 Sensor 全部隐藏、零侵入。 */
