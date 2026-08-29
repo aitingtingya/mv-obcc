@@ -532,7 +532,7 @@ export const UI_SCRIPT_BODY = `
     delBtn.onmouseenter = function() { delBtn.style.background = 'rgba(239, 68, 68, 0.15)'; };
     delBtn.onmouseleave = function() { delBtn.style.background = 'transparent'; };
 
-    const isRisky = entryId.startsWith('@deepseek-ai/') || entryId.startsWith('cordis:') || entryId.includes('mv-dsh-manager') || entryId.includes('mv-agent');
+    const isRisky = entryId.startsWith('@deepseek-ai/') || entryId.startsWith('cordis:') || entryId.includes('mv-dsh-manager') || entryId.includes('mv-agent') || entryId.includes('mv-dsh-subworkspace');
 
     delBtn.onclick = async function(e) {
       if (e) { e.stopPropagation(); e.preventDefault(); }

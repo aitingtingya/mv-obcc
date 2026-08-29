@@ -4,7 +4,11 @@ import { setTimeout as waitFor } from "node:timers/promises";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { processOutput, runProcess } from "../../../process-runner";
-import { MV_AGENT_PLUGIN_FILES, MV_DSH_MANAGER_PLUGIN_FILES } from "./plugin-bundle";
+import {
+  MV_AGENT_PLUGIN_FILES,
+  MV_DSH_MANAGER_PLUGIN_FILES,
+  MV_DSH_SUBWORKSPACE_PLUGIN_FILES,
+} from "./plugin-bundle";
 import {
   dshPluginBundleFingerprint,
   installedDshPluginBundleMatches,
@@ -16,6 +20,7 @@ import type { DshCommand } from "../runtime/process";
 import {
   dshAgentPackageDirectory,
   dshManagerPackageDirectory,
+  dshSubworkspacePackageDirectory,
   dshVaultDirectory,
   dshWebProfileDirectory,
   dshWebProfilePatchPath,
@@ -23,14 +28,17 @@ import {
 
 export const DSH_AGENT_BUNDLE_FINGERPRINT = dshPluginBundleFingerprint(MV_AGENT_PLUGIN_FILES);
 export const DSH_MANAGER_BUNDLE_FINGERPRINT = dshPluginBundleFingerprint(MV_DSH_MANAGER_PLUGIN_FILES);
+export const DSH_SUBWORKSPACE_BUNDLE_FINGERPRINT = dshPluginBundleFingerprint(MV_DSH_SUBWORKSPACE_PLUGIN_FILES);
 
 export const DSH_AGENT_PLUGIN_NAME = "@mv-aide/mv-agent";
 export const DSH_PM_PLUGIN_NAME = "@mv-aide/mv-dsh-manager";
+export const DSH_SUBWORKSPACE_PLUGIN_NAME = "@mv-aide/mv-dsh-subworkspace";
 export const DSH_PLUGIN_NAME = DSH_AGENT_PLUGIN_NAME;
 
 const DSH_MANAGED_PLUGINS = {
   agent: { id: "mv-agent", name: DSH_AGENT_PLUGIN_NAME, legacyIds: ["mv-aide"] },
   manager: { id: "mv-dsh-manager", name: DSH_PM_PLUGIN_NAME, legacyIds: ["mv-plugin-manager"] },
+  subworkspace: { id: "mv-dsh-subworkspace", name: DSH_SUBWORKSPACE_PLUGIN_NAME, legacyIds: [] },
 } as const;
 
 const DEFAULT_PATCH_FILE =
@@ -68,6 +76,7 @@ export interface DshInjectionStatus {
 export interface DshInjectionStatuses {
   agent: DshInjectionStatus;
   manager: DshInjectionStatus;
+  subworkspace: DshInjectionStatus;
   full: DshInjectionStatus;
 }
 
@@ -206,11 +215,16 @@ export function ensureAgentPatchRow(content: string): string {
 }
 
 export function ensureFullPatchRows(content: string): string {
-  return ensurePatchRows(content, ["agent", "manager"]);
+  // The subworkspace around-dispatch listener must wrap mv-agent's optional
+  // diff listener. Its nested native calls then flow through mv-agent normally.
+  return ensurePatchRows(content, ["subworkspace", "agent", "manager"]);
 }
 
 export function isHealthyPatchFile(content: string): boolean {
-  return patchRowReady(content, "agent") && patchRowReady(content, "manager") && !content.split(/\r?\n/u).some((line) => line.trim() === "[]");
+  return patchRowReady(content, "agent")
+    && patchRowReady(content, "manager")
+    && patchRowReady(content, "subworkspace")
+    && !content.split(/\r?\n/u).some((line) => line.trim() === "[]");
 }
 
 export function healPatchFile(content: string): string {
@@ -224,9 +238,9 @@ async function writePatchRows(target: InjectionTarget): Promise<void> {
 }
 
 function bundleNamesFor(kind: ManagedPluginKind): readonly string[] {
-  return kind === "agent"
-    ? [DSH_AGENT_PLUGIN_NAME, "@mv-aide/dsh-plugin"]
-    : [DSH_PM_PLUGIN_NAME, "@mv-aide/mv-plugin-manager"];
+  if (kind === "agent") return [DSH_AGENT_PLUGIN_NAME, "@mv-aide/dsh-plugin"];
+  if (kind === "manager") return [DSH_PM_PLUGIN_NAME, "@mv-aide/mv-plugin-manager"];
+  return [DSH_SUBWORKSPACE_PLUGIN_NAME];
 }
 
 function bundlesContainPlugin(manifest: ProfileManifest, kind: ManagedPluginKind): boolean {
@@ -240,7 +254,7 @@ async function cleanupBundles(target: InjectionTarget): Promise<void> {
   if (!manifest) return;
   const bundles = manifest.dsh?.profile?.bundles ?? [];
   const remove = new Set(
-    (target === "ide" ? (["agent"] as const) : (["agent", "manager"] as const))
+    (target === "ide" ? (["agent"] as const) : (["agent", "manager", "subworkspace"] as const))
       .flatMap((kind) => [...bundleNamesFor(kind)]),
   );
   const filtered = bundles.filter((name) => !remove.has(name));
@@ -340,6 +354,7 @@ async function recoverInterruptedPackageTransaction(installedDir: string): Promi
 async function recoverInterruptedInjectionTransactions(): Promise<void> {
   await recoverInterruptedPackageTransaction(dshAgentPackageDirectory());
   await recoverInterruptedPackageTransaction(dshManagerPackageDirectory());
+  await recoverInterruptedPackageTransaction(dshSubworkspacePackageDirectory());
 }
 
 // Lock holders run the full verify path (`--profile web --dump-config`, up to
@@ -438,13 +453,30 @@ export async function materializeManagerPlugin(mvAideVersion: string): Promise<v
   );
 }
 
+export async function materializeSubworkspacePlugin(mvAideVersion: string): Promise<void> {
+  await fs.mkdir(dshWebProfileDirectory(), { recursive: true });
+  await writePackage(
+    dshSubworkspacePackageDirectory(),
+    MV_DSH_SUBWORKSPACE_PLUGIN_FILES,
+    DSH_SUBWORKSPACE_BUNDLE_FINGERPRINT,
+    mvAideVersion,
+  );
+}
+
 export async function materializeFullPluginSet(mvAideVersion: string): Promise<void> {
-  await materializeAgentPlugin(mvAideVersion);
-  await materializeManagerPlugin(mvAideVersion);
+  await Promise.all([
+    materializeAgentPlugin(mvAideVersion),
+    materializeManagerPlugin(mvAideVersion),
+    materializeSubworkspacePlugin(mvAideVersion),
+  ]);
 }
 
 async function legacyVaultPluginExists(vaultRoot: string, kind: ManagedPluginKind): Promise<boolean> {
-  const subdirs = kind === "agent" ? ["mv-agent"] : ["mv-dsh-manager", "mv-plugin-manager"];
+  const subdirs = kind === "agent"
+    ? ["mv-agent"]
+    : kind === "manager"
+      ? ["mv-dsh-manager", "mv-plugin-manager"]
+      : ["mv-dsh-subworkspace"];
   for (const subdir of subdirs) {
     if (await pathExists(path.join(dshVaultDirectory(vaultRoot), "plugin", subdir, "package.json"))) return true;
   }
@@ -452,7 +484,11 @@ async function legacyVaultPluginExists(vaultRoot: string, kind: ManagedPluginKin
 }
 
 async function managedPackageReadable(kind: ManagedPluginKind): Promise<boolean> {
-  const installedDir = kind === "agent" ? dshAgentPackageDirectory() : dshManagerPackageDirectory();
+  const installedDir = kind === "agent"
+    ? dshAgentPackageDirectory()
+    : kind === "manager"
+      ? dshManagerPackageDirectory()
+      : dshSubworkspacePackageDirectory();
   const expectedName = DSH_MANAGED_PLUGINS[kind].name;
   try {
     const manifest = JSON.parse(await fs.readFile(path.join(installedDir, "package.json"), "utf8")) as {
@@ -480,7 +516,11 @@ async function legacyProfileArtifactsExist(profileDir: string, kind: ManagedPlug
   for (const name of bundleNamesFor(kind)) {
     if (dependencies[name]) return true;
   }
-  const legacyPackages = kind === "agent" ? ["@mv-aide/dsh-plugin"] : ["@mv-aide/mv-plugin-manager"];
+  const legacyPackages = kind === "agent"
+    ? ["@mv-aide/dsh-plugin"]
+    : kind === "manager"
+      ? ["@mv-aide/mv-plugin-manager"]
+      : [];
   for (const name of legacyPackages) {
     const packageName = name.slice("@mv-aide/".length);
     if (await pathExists(path.join(profileDir, "node_modules", "@mv-aide", packageName, "package.json"))) return true;
@@ -490,13 +530,17 @@ async function legacyProfileArtifactsExist(profileDir: string, kind: ManagedPlug
 
 async function cleanupLegacyInjection(vaultRoot: string, target: InjectionTarget): Promise<void> {
   const profileDir = dshWebProfileDirectory();
-  const kinds: readonly ManagedPluginKind[] = target === "ide" ? ["agent"] : ["agent", "manager"];
+  const kinds: readonly ManagedPluginKind[] = target === "ide" ? ["agent"] : ["agent", "manager", "subworkspace"];
   for (const kind of kinds) {
-    const legacyPackages = kind === "agent" ? ["dsh-plugin"] : ["mv-plugin-manager"];
+    const legacyPackages = kind === "agent" ? ["dsh-plugin"] : kind === "manager" ? ["mv-plugin-manager"] : [];
     for (const packageName of legacyPackages) {
       await fs.rm(path.join(profileDir, "node_modules", "@mv-aide", packageName), { recursive: true, force: true });
     }
-    const legacyVaultDirs = kind === "agent" ? ["mv-agent"] : ["mv-dsh-manager", "mv-plugin-manager"];
+    const legacyVaultDirs = kind === "agent"
+      ? ["mv-agent"]
+      : kind === "manager"
+        ? ["mv-dsh-manager", "mv-plugin-manager"]
+        : ["mv-dsh-subworkspace"];
     for (const subdir of legacyVaultDirs) {
       await fs.rm(path.join(dshVaultDirectory(vaultRoot), "plugin", subdir), { recursive: true, force: true });
     }
@@ -540,6 +584,7 @@ interface LoadedPluginInspection {
   ok: boolean;
   hasAgent: boolean;
   hasManager: boolean;
+  hasSubworkspace: boolean;
   detail: string;
 }
 
@@ -554,6 +599,8 @@ async function inspectLoadedPlugins(command: DshCommand): Promise<LoadedPluginIn
     ok: result.code === 0,
     hasAgent: detail.includes(DSH_MANAGED_PLUGINS.agent.id) || detail.includes(DSH_AGENT_PLUGIN_NAME),
     hasManager: detail.includes(DSH_MANAGED_PLUGINS.manager.id) || detail.includes(DSH_PM_PLUGIN_NAME),
+    hasSubworkspace: detail.includes(DSH_MANAGED_PLUGINS.subworkspace.id)
+      || detail.includes(DSH_SUBWORKSPACE_PLUGIN_NAME),
     detail,
   };
 }
@@ -603,7 +650,11 @@ function layerStatus(options: {
     currentVersion,
     markerPresent,
   } = options;
-  const label = kind === "agent" ? "mv-agent" : "mv-dsh-manager";
+  const label = kind === "agent"
+    ? "mv-agent"
+    : kind === "manager"
+      ? "mv-dsh-manager"
+      : "mv-dsh-subworkspace";
   if (!installed && !patchReady && !legacyBundle && !legacyVaultPlugin && !legacyProfileArtifact) {
     return { state: "missing", detail: `${label} 尚未注入 DSH web profile。`, usable: false };
   }
@@ -678,19 +729,23 @@ export async function inspectDshInjection(
   const profileDir = dshWebProfileDirectory();
   const manifest = await readProfileManifest(profileDir);
   const patch = await fs.readFile(dshWebProfilePatchPath(), "utf8").catch(() => "");
-  const [agentInstalled, managerInstalled] = await Promise.all([
+  const [agentInstalled, managerInstalled, subworkspaceInstalled] = await Promise.all([
     managedPackageReadable("agent"),
     managedPackageReadable("manager"),
+    managedPackageReadable("subworkspace"),
   ]);
-  const [agentMarker, managerMarker] = await Promise.all([
+  const [agentMarker, managerMarker, subworkspaceMarker] = await Promise.all([
     readDshPluginBundleMarker(dshAgentPackageDirectory()),
     readDshPluginBundleMarker(dshManagerPackageDirectory()),
+    readDshPluginBundleMarker(dshSubworkspacePackageDirectory()),
   ]);
   const verifyAgentContent = currentMvAideVersion === undefined
     || markerRelation(agentMarker?.mvAideVersion, currentMvAideVersion) === "current";
   const verifyManagerContent = currentMvAideVersion === undefined
     || markerRelation(managerMarker?.mvAideVersion, currentMvAideVersion) === "current";
-  const [agentCurrent, managerCurrent] = await Promise.all([
+  const verifySubworkspaceContent = currentMvAideVersion === undefined
+    || markerRelation(subworkspaceMarker?.mvAideVersion, currentMvAideVersion) === "current";
+  const [agentCurrent, managerCurrent, subworkspaceCurrent] = await Promise.all([
     agentInstalled && verifyAgentContent
       ? installedDshPluginBundleMatches(
           dshAgentPackageDirectory(),
@@ -707,12 +762,29 @@ export async function inspectDshInjection(
           currentMvAideVersion,
         )
       : Promise.resolve(false),
+    subworkspaceInstalled && verifySubworkspaceContent
+      ? installedDshPluginBundleMatches(
+          dshSubworkspacePackageDirectory(),
+          MV_DSH_SUBWORKSPACE_PLUGIN_FILES,
+          DSH_SUBWORKSPACE_BUNDLE_FINGERPRINT,
+          currentMvAideVersion,
+        )
+      : Promise.resolve(false),
   ]);
-  const [agentLegacyVault, managerLegacyVault, agentLegacyProfile, managerLegacyProfile] = await Promise.all([
+  const [
+    agentLegacyVault,
+    managerLegacyVault,
+    subworkspaceLegacyVault,
+    agentLegacyProfile,
+    managerLegacyProfile,
+    subworkspaceLegacyProfile,
+  ] = await Promise.all([
     legacyVaultPluginExists(vaultRoot, "agent"),
     legacyVaultPluginExists(vaultRoot, "manager"),
+    legacyVaultPluginExists(vaultRoot, "subworkspace"),
     legacyProfileArtifactsExist(profileDir, "agent"),
     legacyProfileArtifactsExist(profileDir, "manager"),
+    legacyProfileArtifactsExist(profileDir, "subworkspace"),
   ]);
   let agent: DshInjectionStatus = {
     ...layerStatus({
@@ -744,44 +816,67 @@ export async function inspectDshInjection(
     }),
     ...(managerMarker ? { fingerprint: managerMarker.fingerprint } : {}),
   };
-  if (command && (agent.state !== "missing" || manager.state !== "missing")) {
+  let subworkspace: DshInjectionStatus = {
+    ...layerStatus({
+      kind: "subworkspace",
+      installed: subworkspaceInstalled,
+      current: subworkspaceCurrent,
+      patchReady: patchRowReady(patch, "subworkspace"),
+      legacyBundle: bundlesContainPlugin(manifest ?? {}, "subworkspace"),
+      legacyVaultPlugin: subworkspaceLegacyVault,
+      legacyProfileArtifact: subworkspaceLegacyProfile,
+      installedVersion: subworkspaceMarker?.mvAideVersion,
+      currentVersion: currentMvAideVersion,
+      markerPresent: subworkspaceMarker !== null,
+    }),
+    ...(subworkspaceMarker ? { fingerprint: subworkspaceMarker.fingerprint } : {}),
+  };
+  if (command && (agent.state !== "missing" || manager.state !== "missing" || subworkspace.state !== "missing")) {
     const loaded = await inspectLoadedPlugins(command);
     agent = requireActuallyLoaded(agent, loaded.hasAgent, loaded.ok, "mv-agent", loaded.detail);
     manager = requireActuallyLoaded(manager, loaded.hasManager, loaded.ok, "mv-dsh-manager", loaded.detail);
+    subworkspace = requireActuallyLoaded(
+      subworkspace,
+      loaded.hasSubworkspace,
+      loaded.ok,
+      "mv-dsh-subworkspace",
+      loaded.detail,
+    );
   }
-  const full: DshInjectionStatus = injectionStateIsUsable(agent) && injectionStateIsUsable(manager)
-    ? agent.state === "newer" || manager.state === "newer"
+  const statuses = [agent, manager, subworkspace];
+  const full: DshInjectionStatus = statuses.every(injectionStateIsUsable)
+    ? statuses.some((status) => status.state === "newer")
       ? { state: "newer", detail: "DSH web profile 中至少一个受管插件高于当前 mv-AIDE；已保留高版本。", usable: true }
-      : agent.state === "outdated" || manager.state === "outdated"
+      : statuses.some((status) => status.state === "outdated")
         ? { state: "outdated", detail: "DSH web profile 中存在低于当前 mv-AIDE 的受管插件，建议升级。", usable: true }
-        : agent.state === "unknown" || manager.state === "unknown"
+        : statuses.some((status) => status.state === "unknown")
           ? { state: "unknown", detail: "DSH web profile 中存在版本未知的旧注入，建议升级。", usable: true }
-          : agent.state === "conflict" || manager.state === "conflict"
+          : statuses.some((status) => status.state === "conflict")
             ? { state: "conflict", detail: "DSH web profile 中存在同版本不同指纹的受管插件。", usable: true }
-            : { state: "ready", detail: "DSH web profile 中的 mv-agent 与 mv-dsh-manager 均已就绪。", usable: true }
-    : agent.state === "missing" && manager.state === "missing"
+            : { state: "ready", detail: "DSH web profile 中的三个 mv-AIDE 插件均已就绪。", usable: true }
+    : statuses.every((status) => status.state === "missing")
       ? { state: "missing", detail: "尚未向 DSH web profile 注入插件。", usable: false }
       : {
           state: "partial",
-          detail: injectionStateIsUsable(agent) && !injectionStateIsUsable(manager)
-            ? "IDE 插件已就绪；DSH 管理插件尚未注入或需要修复。"
-            : "检测到不完整注入，需要修复。",
-          relation: agent.relation === "newer" || manager.relation === "newer"
+          detail: "检测到不完整的三插件注入，需要修复。",
+          relation: statuses.some((status) => status.relation === "newer")
             ? "newer"
-            : agent.relation === "older" || manager.relation === "older"
+            : statuses.some((status) => status.relation === "older")
               ? "older"
-              : agent.relation === "unknown" || manager.relation === "unknown"
+              : statuses.some((status) => status.relation === "unknown")
                 ? "unknown"
                 : "current",
           usable: false,
         };
-  return { agent, manager, full };
+  return { agent, manager, subworkspace, full };
 }
 
 async function verifyInjection(command: DshCommand, target: InjectionTarget): Promise<{ ok: boolean; detail: string }> {
   const loaded = await inspectLoadedPlugins(command);
   return {
-    ok: loaded.ok && loaded.hasAgent && (target === "ide" || loaded.hasManager),
+    ok: loaded.ok
+      && loaded.hasAgent
+      && (target === "ide" || (loaded.hasManager && loaded.hasSubworkspace)),
     detail: loaded.detail,
   };
 }
@@ -814,7 +909,7 @@ async function ensureInjection(
           changed: false,
           message: target === "ide"
             ? "mv-agent IDE 插件已注入并通过实际配置校验。"
-            : "mv-agent 与 mv-dsh-manager 插件已注入并通过实际配置校验。",
+            : "mv-agent、mv-dsh-manager 与 mv-dsh-subworkspace 已注入并通过实际配置校验。",
         };
       }
     }
@@ -861,7 +956,7 @@ async function ensureInjection(
         changed: true,
         message: target === "ide"
           ? "mv-agent IDE 插件已注入、清理旧物并通过校验。"
-          : "DSH、mv-agent 与 mv-dsh-manager 插件均已注入、清理旧物并通过校验。",
+          : "DSH 的三个 mv-AIDE 插件均已注入、清理旧物并通过校验。",
       };
     }
     return {

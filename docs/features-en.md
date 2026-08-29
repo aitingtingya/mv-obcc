@@ -2,7 +2,7 @@
 
 [Back to README](../README_EN.md) | [中文](features.md)
 
-This guide describes mv-AIDE `0.9.13` in the same order as its settings page, including behavior, defaults, boundaries, and recovery procedures. The README is the visual introduction; this document is the complete behavioral reference.
+This guide records mv-AIDE features in the same order as the settings page, covering behavior, defaults, boundaries, and recovery procedures. The README is the visual introduction; this document is the complete behavioral reference. The current released version is tracked in `manifest.json`.
 
 ## Contents
 
@@ -66,7 +66,7 @@ Community Plugins is the recommended installation route. A manual installation m
 | 5 | Source Assist | On; Markdown profile only | Non-md extensions, Code Suite, linting, and TeX |
 | 6 | Vim Enhancement | Off for every extension | Independent Vim engine and vault vimrc |
 | 7 | Default File Opener | Off | System associations and external-file mirrors |
-| 8 | Filesystem & Browser | All three entry points on | Downloads, history, and arbitrary-directory browsing |
+| 8 | Filesystem & Browser | All three entry points on | Downloads, history, arbitrary-directory browsing, auto-collapse, custom web page buttons |
 
 Inside **In-file AI assistant**, the order is fixed: **API Providers**, **Selection Assistant**, then **Inline Completion**. All three start collapsed. Their expansion state is remembered only for the current settings-page session and creates no persisted field. This is an information-architecture change only: provider, selection, and inline settings retain their existing fields, defaults, persistence, and runtime paths.
 
@@ -199,7 +199,7 @@ Settings exposes Node.js, DSH, pnpm, and plugin injection as four layers. Clicki
 - Acting on a lower layer satisfies its prerequisites first. Plugin injection, for example, ensures Node.js, DSH, and pnpm in order and re-inspects real state after every layer. A successful installer exit code is not sufficient: the post-install version must exactly match the chosen target or the operation reports failure.
 - Final vault-installed runtimes live under `<vault>/mv-aide/dsh/`. Downloads, npm caches, installer scripts, and staging files exist only in an operation-scoped temporary workspace and are removed after success, failure, or cancellation. A global write to a protected directory requests native macOS administrator authorization, Windows UAC, or Linux `pkexec`. Refusing authorization stops the chain and never falls back to the vault.
 - For a global macOS Node installation, the verified public `.pkg` is staged temporarily in `/private/tmp` so the system installer service can read it. The temporary file is removed after success, failure, or cancellation.
-- When both locations exist, the vault installation is preferred. Runtime detection first resolves the user's actual command environment: macOS/Linux use the login interactive shell PATH, while Windows merges the current process PATH with User and Machine PATH values; Node and npm must be paired and runnable. Global DSH/pnpm are resolved from that npm's global prefix first, then from the same user command PATH as a fallback. Version checks, installation, upgrades, and post-install verification all reuse that environment so detection cannot resolve one toolchain while execution silently uses another. Injection targets the shared DSH web profile; mv-agent and mv-dsh-manager report their versions, integrity, and actual load state separately.
+- When both locations exist, the vault installation is preferred. Runtime detection first resolves the user's actual command environment: macOS/Linux use the login interactive shell PATH, while Windows merges the current process PATH with User and Machine PATH values; Node and npm must be paired and runnable. Global DSH/pnpm are resolved from that npm's global prefix first, then from the same user command PATH as a fallback. Version checks, installation, upgrades, and post-install verification all reuse that environment so detection cannot resolve one toolchain while execution silently uses another. Injection targets the shared DSH web profile; mv-agent, mv-dsh-manager, and mv-dsh-subworkspace report their versions, integrity, and actual load state separately.
 - **Source-checkout installations**: a running `pnpm dsh web`, `apps/cli/src/bin.ts`, or built `apps/cli/lib/bin.js` can be identified from its verified endpoint, listener command line, and cwd without scanning the user's disk. If the CLI cannot be reconstructed safely, mv-AIDE reports “DSH is running” separately from “not yet manageable” instead of calling it entirely uninstalled.
 - **Custom DSH directory**: enter either the DeepSeek Harness repository root or `apps/cli`. Validation checks manifest identity, the declared bin entry, real-path containment, Node/pnpm, version output, and `dsh --profile web --dump-config`. A validated custom directory always wins; if it breaks, mv-AIDE reports the failure instead of silently choosing another DSH. Clearing it restores the existing vault-before-global order.
 - Source checkouts retain the same detection, start/stop/restart, injection, and management features. Check uses the Git branch's configured upstream commit as update authority instead of substituting the npm release version. An explicit Upgrade/Reinstall requires a clean Git worktree, a configured upstream, and a fast-forward update before dependencies are installed, the project is built, and the CLI is revalidated. mv-AIDE never auto-stashes, force-merges, or substitutes an npm copy. A cross-process lock keyed by the real source root serializes the operation; a failed post-update build or validation rolls back and rebuilds the original commit, and a failed restoration is reported explicitly.
@@ -207,12 +207,16 @@ Settings exposes Node.js, DSH, pnpm, and plugin injection as four layers. Clicki
 
 ### Plugin Injection and DSH-side Capabilities
 
-**Plugin injection** writes two public packages into the active DSH web profile's `node_modules` and registers them in its patch layer: `@mv-aide/mv-agent` provides the bridge, command, and native tools, while `@mv-aide/mv-dsh-manager` provides plugin, skill, preset, model-capability, and file-drop integration. Each bundle marker records the mv-AIDE release version that shipped it and a content fingerprint; the authority is mv-AIDE's `manifest.version`, not either package's own version. The resulting graph is also verified with `dsh --profile web --dump-config`.
+**Plugin injection** writes three independent packages into the active DSH web profile's `node_modules` and registers them in its patch layer: `@mv-aide/mv-agent` provides the IDE bridge, `@mv-aide/mv-dsh-manager` provides management and file-drop integration, and `@mv-aide/mv-dsh-subworkspace` provides associated workspace roots and multi-root native-tool dispatch without depending on the IDE bridge. Each bundle marker records the mv-AIDE release version and a content fingerprint. The resulting graph is verified with `dsh --profile web --dump-config`.
+
+`mv-dsh-subworkspace` inserts its associated-directory control between each Workspace row's native ellipsis and plus buttons without adding nested Workspace rows. The popover closes only when its button is toggled, Escape is pressed, or a click lands outside it; pointer movement anywhere inside the button or expanded region never collapses it. Added directories are canonicalized by real path and filesystem identity. Duplicates, symlink aliases, ancestors, and descendants of the primary or any existing associated root are rejected, and concurrent additions are serialized and revalidated.
+
+The model uses the `workspace` tool to list root IDs, switch the current live session's temporary default root, or reset to the primary root. The plugin keeps no tool-name or argument adapter table: it adds `_workspace` uniformly to current and subsequently registered native DSH tools. Omission uses the session default, a string selects one root, a non-empty array selects roots in order, and `all` selects the primary plus every associated root. Each branch keeps the original Agent identity and native arguments and projects only `agent.session.header.cwd` for the complete asynchronous call lifecycle, so permissions, sandboxing, nested calls, and the opaque native implementation share the same target root. Multi-root branches enter complete native DSH tool pipelines concurrently and independently, and a branch failure neither cancels nor contaminates its siblings. One outer DSH call returns individually labelled root ID, path, and status results to the model. Root configuration changes affect existing sessions and subagents immediately, while session switching stays in memory and resets to the primary root after DSH restarts.
 
 - **Below the current mv-AIDE version**: shows the installed version and recommends Upgrade. Checks and background startup do not overwrite it; only an explicit user upgrade writes the current bundle.
 - **Equal to the current mv-AIDE version**: fully checks the marker, file set, fingerprint, patch registration, and actual DSH load. Missing or damaged state shows Repair. A different fingerprint at the same version is reported as a build conflict and can be replaced only by an explicit Update.
 - **Above the current mv-AIDE version**: shows Newer version installed, skips the older build's fingerprint comparison, update, and overwrite, and only confirms that the package structure is readable and DSH actually loaded it. If the newer package is not loaded or is structurally damaged, the UI directs the user to the matching newer mv-AIDE; the older build never downgrades it.
-- **Legacy marker or invalid version**: shows Version unknown and recommends Upgrade, without automatic replacement. Full injection is Ready only when both mv-agent and mv-dsh-manager independently satisfy compatibility and load checks.
+- **Legacy marker or invalid version**: shows Version unknown and recommends Upgrade, without automatic replacement. Full injection is Ready only when mv-agent, mv-dsh-manager, and mv-dsh-subworkspace independently satisfy compatibility and load checks.
 - A cross-process lock serializes writes to the shared profile and every writer rechecks versions after acquiring it. Each package is published through its own staging directory, full validation, directory swap, and rollback; the next operation first recovers an interrupted transaction. Background checks never kill a working DSH. Settings distinguish disk bundles from the versions loaded by the running DSH and show Restart pending; an explicit Open/Restart mv-agent coordinates the required restart.
 
 Once injected (capability details in Chapter 1, “DSH Support”):
@@ -220,6 +224,23 @@ Once injected (capability details in Chapter 1, “DSH Support”):
 - `/mv-aide status | tools | bridges | connect <index|port|path|auto> | selection | call <name> [json]`;
 - native `mv_aide__*` tools matching the public tool switches;
 - passive context notifications and editable Obsidian diff review.
+
+### Plugin auto-update
+
+Two independent switches turn the manual **Install plugins** action into an unattended flow. Both default to **off**.
+
+| Setting key | Default | Behavior |
+| --- | --- | --- |
+| `dsh.autoUpdatePlugins` | Off | At the end of every startup dependency check, compare the three managed plugins in the active DSH web profile with the bundled versions in the current mv-AIDE build. When versions disagree or the injection is incomplete, realign automatically. **A newer installed version is never overwritten and never downgraded.** |
+| `dsh.autoRestartAfterPluginUpdate` | Off | Depends on the previous switch. Only when an auto-update **actually changed files** does it coordinate a restart of the running DSH backend so the new bundle takes effect. It never opens a new mv-agent view on its own. When this switch is off, the new bundle activates the next time mv-agent is opened manually. |
+
+The implementation lives in `src/agent-integrations/dsh/plugin-auto-updater.ts`. The two switches are plain boolean fields and introduce no background service of their own; auto-update reuses the same staging, validation, directory swap, and rollback pipeline as manual injection.
+
+### Obsidian status bar
+
+**Hide the native Obsidian status bar** (`hideObsidianStatusBar`, default **off**) hides only the native `.status-bar` container at the bottom of the Obsidian window — effectively a single CSS class on `document.body`. It does not touch mv-agent's own status bar or any sidebar element.
+
+When this is on, **§6 Vim Enhancement**'s **Editor-overlay Vim status** is forced on and its toggle is disabled; once the native status bar is restored the previous user preference takes effect again. The main plugin calls the Vim public API `refreshStatusChrome()` whenever the native status bar visibility or the Vim overlay switch changes, so the mode badge is redrawn immediately.
 
 ### Native DSH Plugin Configuration
 
@@ -320,7 +341,7 @@ Deleting a provider or model clears template/completion references to prevent da
 
 The master switch is off by default and independent from IDE Bridge. Once enabled, templates can act on selections in Markdown, PDF, and Web Viewer.
 
-- Markdown: use `LLM → Template` from the context menu or a hotkey.
+- Markdown: use `LLM → Template` from the context menu or a hotkey. **The Markdown reading view (preview) has no CodeMirror instance holding a DOM selection** — `view.editor` only mirrors the last source/live-preview state. When `view.getMode() === "preview"`, the plugin falls back to the DOM selection instead; see `src/workspace-context.ts`.
 - PDF: the context menu is commonly owned by Obsidian/pdf++; use a hotkey.
 - Web Viewer: bound hotkeys are injected by default. Experimental context-menu injection suppresses the page's native menu and may be blocked by site security policy.
 
@@ -424,6 +445,10 @@ An Obsidian restart restores terminal leaves only, never the old PTY, cwd, or sc
 
 <a id="source-assist"></a>
 ## 5. Source Assist
+
+### Auto-collapse the file header
+
+**Auto-collapse the file's top status bar** (`fileHeaderAutoHide`, default **off**) sits at the top of this section. When enabled, the Markdown view's `.view-header` (back/forward buttons, file name, and action bar) collapses by default, and expands again when the pointer rests near the top of the page. The expansion applies only to the tab group containing that file; stacked tabs and other split panes are unaffected. It shares the same implementation (`src/chrome-autohide.ts`) as the two other auto-collapse switches documented in §8 "Auto-collapse UI elements".
 
 ### Profiles and Extension Registration
 
@@ -530,6 +555,16 @@ Legacy user-directory or plugin-directory files are read only through explicit m
 
 `:!` and external programs reached through autocmd require separate authorization, off by default. `:w/:wq/:x` call an explicit save on the current Obsidian view; a failed save never proceeds to quit.
 
+### Status display and the Obsidian native status bar
+
+**Editor-overlay Vim status** (default **off**) lets the user decide whether the current Vim mode appears as a floating badge in the lower-left of the Markdown editor. When §2 mv-agent's **Hide the native Obsidian status bar** is enabled:
+
+- the native `.status-bar` is invisible and the badge has nowhere to live;
+- this switch is forced on and disabled in the UI, so the floating badge automatically takes over;
+- as soon as the native status bar is shown again, the previous user preference is restored and the floating badge is hidden.
+
+The main plugin calls the Vim public API `refreshStatusChrome()` (`src/vim-host/public.ts`) on either change so the badge switches between the native status bar and the editor overlay immediately.
+
 <a id="default-opener"></a>
 ## 7. Default File Opener
 
@@ -618,6 +653,49 @@ Adds a directory button to the file explorer toolbar and opens a path browser:
 
 Disabling an entry removes only its button and listeners and never deletes downloads, history, or external files.
 
+### Auto-collapse UI elements
+
+Two of the three auto-collapse switches live in this section; the third lives in §5 Source Assist. All three default to **off** and share one implementation in `src/chrome-autohide.ts`:
+
+| Setting key | Default | Target | Settings location |
+| --- | --- | --- | --- |
+| `browserAutoHideToolbar` | Off | The Web Viewer top toolbar (back/forward, address bar, and so on) | Filesystem & Browser |
+| `tabBarAutoHide` | Off | The workspace tab bar of every tab group, collapsed to a 4 px sensing strip | Filesystem & Browser |
+| `fileHeaderAutoHide` | Off | The Markdown view's `.view-header` (back/forward, file name, actions) | Source Assist |
+
+Behavior:
+
+- Hovering the thin sensing strip at the top of a tab group (4–8 px) expands the bar; **a 120 ms grace period on leave** prevents flicker when the pointer briefly brushes past.
+- Expansion is scoped to a single tab group (`.workspace-tabs`) and never affects stacked tabs or other split panes. Once the pointer leaves the active group the bar collapses again.
+- Implementation: pure CSS class toggling plus `requestAnimationFrame`-registered hover listeners. The plugin attaches one of `mv-aide-chrome-autohide-tab`, `-file`, or `-web` to `document.body`.
+- Each switch is a boolean in `data.json`. None of them makes network requests or runs external scripts; turning one off removes both the class and its listeners.
+
+### Custom web page buttons
+
+`customWebPages` (default **empty array**) turns frequently used URLs into dual Ribbon / command-palette entries, hosted under this section's "Quick open web page" subheading.
+
+Data model (`src/types.ts`):
+
+```ts
+{ id: string; name: string; url: string; icon: string;
+  ribbon: boolean; position: "left" | "center" | "right" }
+```
+
+Each configured entry automatically produces:
+
+- a command-palette command `open-web-page-<entryId>` labelled `Open web page: {name}`;
+- an optional left-side ribbon button using a Lucide icon (unknown names fall back to `globe`);
+- a fresh tab in the chosen region (left sidebar / center / right sidebar) inside the built-in Web Viewer.
+
+Behavior and boundaries:
+
+- Only `http://` and `https://` URLs are accepted; other schemes fall back to the operating system's default handler.
+- The feature reuses Obsidian's webviewer, so Selection Assistant, Browser History, Downloads, and the local-file preview all continue to apply.
+- Editing or deleting an entry triggers a synchronous `sync()` that idempotently rebuilds commands and ribbon icons without a restart; `unload()` removes everything on plugin unload.
+- Implementation: `src/custom-web-pages/custom-web-pages.ts`. The module is idempotent and is invoked only from the main plugin's `onload` / `onunload` and from settings save; it never touches the bridge or any protocol.
+
+The "Hide the native Obsidian status bar" switch belongs to the mv-agent section — see §2 "Obsidian status bar".
+
 <a id="cross-feature"></a>
 ## Cross-feature Behavior
 
@@ -644,6 +722,12 @@ Normal Markdown/PDF/Web Viewer selections, Vim's logical Visual selection, IDE l
 
 mv-agent shares IDE Bridge's local bridge service, the same public tool switches, and the same `openDiff` review channel; mv-agent's **Out-of-vault tool policy** is a scope control layered on top of the public switches that applies to dsh agents only. Turning off **Enable DSH IDE support** stops only the bridge and the lock file; mv-agent's environment-install state and settings are preserved. Disabling the whole mv-agent section does not affect Claude Code / Codex / universal MCP.
 
+`@mv-aide/mv-dsh-subworkspace` is fully decoupled from IDE Bridge: with the bridge off, the lock file missing, or IDE tools disabled, associated roots, the `workspace` tool, and the `_workspace` selector all keep working. When mv-agent and mv-dsh-manager are also installed, ordinary DSH tool-pipeline composition applies.
+
+### Vim status display and the native status bar
+
+**Hide the native Obsidian status bar** (§2 mv-agent) and **Editor-overlay Vim status** (§6 Vim Enhancement) are coupled through a shared settings hook: hiding the native status bar forces the editor overlay badge on, and restoring the native bar returns control to the user's preference.
+
 ### Failure Isolation
 
 - AI request failures do not disable IDE Bridge, Terminal, or source editing.
@@ -665,9 +749,12 @@ Command names are localized with the interface language. Major groups include:
 - Create a registered non-Markdown source file.
 - Open an external file, open by path, and prune broken external links.
 - Current-file and multi-file regex replacement.
-- One command per enabled LLM template.
+- One command per enabled LLM template (`llm-<templateId>`; dynamically re-registered to match the enabled template list).
+- One `open-web-page-<entryId>` command per configured custom web page button ("Open web page: \{name\}").
 - Run lint, clear diagnostics, and enable/disable persistent lint.
 - Commands registered by the Code Suite kernel for snippets, tabstops, and previews.
+
+The three auto-collapse switches (`browserAutoHideToolbar` / `tabBarAutoHide` / `fileHeaderAutoHide`) and **Hide the native Obsidian status bar** are settings only — none of them registers a command.
 
 Only Inline Completion's accept/cancel behavior has default editing keys; mv-AIDE does not assign global command hotkeys. Bind other commands from Obsidian's Hotkeys settings.
 
@@ -699,7 +786,7 @@ Only Inline Completion's accept/cancel behavior has default editing keys; mv-AID
 | `<vault>/mv-aide/external-files/hosts` | External-file host/mapping state |
 | `<vault>/mv-aide/llm-history/latest.md` | Latest Selection Assistant content, overwritten and hidden from common indexes |
 | `<vault>/mv-aide/dsh/` | Vault-installed Node.js, DSH, and pnpm runtimes for mv-agent |
-| `$DSH_HOME/profiles/web/` (default `~/.dsh/profiles/web/`) | DSH web profile, patch layer, and `@mv-aide/mv-agent` / `@mv-aide/mv-dsh-manager` |
+| `$DSH_HOME/profiles/web/` (default `~/.dsh/profiles/web/`) | DSH web profile, patch layer, and the three independent managed plugins: `@mv-aide/mv-agent` / `@mv-aide/mv-dsh-manager` / `@mv-aide/mv-dsh-subworkspace` |
 | `~/.mv-aide/ide/` | Unified IDE bridge discovery registry (authoritative mv-AIDE lock files) |
 | `~/.mv-aide/dsh/bridge-selection.json` | Per-session dsh bridge selections (persisted, partitioned by session key) |
 | `~/.mv-aide/file-opener/` | Current default-opener authority: owner, runtime, wrapper, helper, and icon files; excludes OS association databases |
@@ -723,6 +810,15 @@ New mv-AIDE cross-process artifacts are written only to the exact subdirectories
 
 API keys are stored in plain text in `data.json` and may propagate through vault backup or sync. Do not commit a real `data.json` or publish a demonstration vault containing keys. MCP tokens, managed agent blocks, and default-opener owner state should also be treated as machine configuration.
 
+The following settings are pure local fields in `data.json`; none of them reaches the network or runs an external script:
+
+- The auto-collapse switches `browserAutoHideToolbar`, `tabBarAutoHide`, and `fileHeaderAutoHide`.
+- The custom web page button list `customWebPages`.
+- Status-bar visibility `hideObsidianStatusBar`.
+- mv-agent plugin auto-update switches `dsh.autoUpdatePlugins` and `dsh.autoRestartAfterPluginUpdate`.
+
+`@mv-aide/mv-dsh-subworkspace`'s associated-root list is persisted in the DSH profile's plugin runtime storage (alongside `mv-agent` and `mv-dsh-manager`). The session's current default root is **not** written to disk and always returns to the primary root after a DSH restart.
+
 <a id="troubleshooting"></a>
 ## Troubleshooting
 
@@ -736,7 +832,7 @@ API keys are stored in plain text in `data.json` and may propagate through vault
 ### DSH Environment, Injection, or Plugin Import Fails
 
 1. Inspect the mv-agent layers in order: Node.js → DSH → pnpm → Plugin Injection. A lower-layer action satisfies prerequisites first, but preserves the actual error from any failed layer.
-2. Full injection is ready only when both `@mv-aide/mv-agent` and `@mv-aide/mv-dsh-manager` are present and `--dump-config` verification succeeds. Use Repair when either package or verification is missing.
+2. Full injection is ready only when `@mv-aide/mv-agent`, `@mv-aide/mv-dsh-manager`, and `@mv-aide/mv-dsh-subworkspace` are all present and `--dump-config` verification succeeds. Use Repair when any package or verification is missing. Automatic IDE injection still manages only `mv-agent` and does not install the other two packages.
 3. A plugin-graph change coordinates one restart of a running DSH instance. If the UI still has the old module graph, inspect the restart error, then use **Restart mv-agent** from the command palette.
 4. User plugin imports always go through `dsh plugin add`. If the command, local path, `package.json` name, or profile-manifest verification fails, correct the cause and retry. Do not expect a `file:` hot-load fallback and do not append a patch row manually.
 
@@ -779,6 +875,29 @@ Disable Obsidian built-in Vim, Vim Motions, Vimrc Support, and other engines, th
 ### External File Cannot Be Saved
 
 Check that the entry under `mv-aide/external-files/mirror` is a valid symbolic link. A managed copy is used only after an explicit consent prompt; synchronization conflicts never silently overwrite either side. Use “Retry and migrate to symbolic links” when appropriate.
+
+### Auto-collapse does not take effect
+
+1. Verify the relevant switch (`browserAutoHideToolbar` / `tabBarAutoHide` / `fileHeaderAutoHide`) is on.
+2. Some themes or community plugins rewrite the styling of `.view-header` or the tab bar; if so, the auto-collapse hooks may find nothing to attach to. Try without custom CSS first.
+3. Leaving the expanded bar has a 120 ms grace — a brief brush past the sensing strip is expected and is not a bug.
+
+### Custom web page button does not work
+
+1. The URL must start with `http://` or `https://`; other schemes (for example `obsidian://` or `file://`) are not opened.
+2. An unknown Lucide icon name silently falls back to `globe`; pick a name from the Lucide icon set.
+3. Removing an entry immediately unregisters its command and ribbon icon; if a stale command is still visible in the palette, reload the plugin or restart Obsidian.
+
+### mv-dsh-subworkspace rejects an associated root
+
+- The candidate is the primary workspace root itself, an ancestor or descendant of it;
+- The candidate is realpath-identical to an existing associated root, or sits inside/above one;
+- The candidate does not exist, is unreadable, or was claimed by another concurrent addition during the serialized recheck;
+- All of these are intentional rejections. Pick a sibling directory that genuinely does not overlap with the primary root.
+
+### mv-agent's auto-update finished but the old version still runs
+
+`autoUpdatePlugins` has written the new bundle, but with `autoRestartAfterPluginUpdate` off no DSH restart is performed. Open any mv-agent view or invoke **Restart mv-agent** to pick the new bundle up. The allowed direction is always one-way — a newer installed version is never overwritten by an older one.
 
 <a id="acknowledgements"></a>
 ## Provenance and Licenses

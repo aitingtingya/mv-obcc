@@ -312,29 +312,113 @@ window.__ModuleLoader__.load({
       });
     }
 
-    function appendReferences(target, references) {
-      if (references.length === 0) return;
+    // Read the composer textarea caret. The drag gesture starts outside the
+    // iframe, so `document.activeElement` is never the textarea — query it
+    // directly instead; its selection survives focus loss within this iframe.
+    // Fallback to "append at end" whenever the DOM textarea disagrees with the
+    // observable draft (stale render, future DSH layout changes, etc.).
+    function composerCaret(state) {
+      try {
+        const textarea = document.querySelector?.('textarea[data-phase]');
+        if (
+          textarea &&
+          typeof textarea.selectionStart === 'number' &&
+          textarea.value === state.draft
+        ) {
+          const start = Math.max(0, Math.min(textarea.selectionStart, state.draft.length));
+          const end = Math.max(
+            start,
+            Math.min(
+              typeof textarea.selectionEnd === 'number' ? textarea.selectionEnd : start,
+              state.draft.length,
+            ),
+          );
+          return { start, end };
+        }
+      } catch {
+        // DOM access is best-effort; fall through to the classic append mode.
+      }
+      return null;
+    }
+
+    function imagePlaceholderText(name) {
+      return `[image: ${String(name ?? '')}]`;
+    }
+
+    function rewriteDraft(target, before, start, end, insert) {
+      target.input.setDraft(`${before.slice(0, start)}${insert}${before.slice(end)}`);
+      const state = inputState(target);
+      if (!state) throw new Error(copy().inputUnavailable);
+      return state;
+    }
+
+    // Insert every prepared item (reference mentions and image pseudo-links)
+    // at the composer caret in drop order, replacing an active text selection.
+    // All spacing guards and fallback rules reduce to the historical
+    // "append at end" behaviour when no composer caret can be located.
+    function applyPreparedInsertions(target, prepared) {
+      if (prepared.length === 0) return;
       const input = target.input;
       let state = inputState(target);
       if (!state) throw new Error(copy().inputUnavailable);
-      if (state.draft.length > 0 && !/\s$/u.test(state.draft)) {
-        input.setDraft(`${state.draft} `);
+      const caret = composerCaret(state);
+      let anchor = caret ? caret.start : state.draft.length;
+      let replaceEnd = caret ? caret.end : state.draft.length;
+
+      // Left-side guard: never glue an insertion onto a non-space character.
+      // (In append mode this reproduces the historical trailing-space pad.)
+      // The right side is handled per insertion below.
+      if (anchor > 0 && !/\s/u.test(state.draft.charAt(anchor - 1))) {
+        state = rewriteDraft(target, state.draft, anchor, anchor, ' ');
+        anchor += 1;
+        replaceEnd += 1;
       }
-      for (const reference of references) {
+
+      for (const item of prepared) {
         state = inputState(target);
         if (!state) throw new Error(copy().inputUnavailable);
+        anchor = Math.max(0, Math.min(anchor, state.draft.length));
+        replaceEnd = Math.max(anchor, Math.min(replaceEnd, state.draft.length));
+        if (item.kind === 'image') {
+          const snippet = `${imagePlaceholderText(item.name)} `;
+          const before = state.draft;
+          state = rewriteDraft(target, before, anchor, replaceEnd, snippet);
+          anchor += snippet.length;
+          replaceEnd = anchor;
+          continue;
+        }
+        const beforeLength = state.draft.length;
+        const selectionLength = replaceEnd - anchor;
         const accepted = input.insertReference({
           source: 'reference',
-          ref: reference.mention,
-          label: reference.label,
+          ref: item.mention,
+          label: item.label,
           appearance: 'file',
-          clipboardText: reference.mention,
+          clipboardText: item.mention,
         }, {
-          start: state.draft.length,
-          end: state.draft.length,
+          start: anchor,
+          end: replaceEnd,
           draftRev: state.draftRev,
         });
         if (!accepted) throw new Error(copy().rejected);
+        const nextState = inputState(target);
+        if (!nextState) throw new Error(copy().inputUnavailable);
+        const delta = nextState.draft.length - beforeLength;
+        // New draft length = before - selection + inserted, so the post-insert
+        // caret sits at anchor + inserted = anchor + delta + selection.
+        anchor = Math.max(0, anchor + delta + selectionLength);
+        replaceEnd = anchor;
+        if (
+          anchor < nextState.draft.length &&
+          !/\s/u.test(nextState.draft.charAt(anchor - 1)) &&
+          !/\s/u.test(nextState.draft.charAt(anchor))
+        ) {
+          // Mention chips do not guarantee a trailing space; pad when the
+          // inserted chip is glued to the character that follows it.
+          state = rewriteDraft(target, nextState.draft, anchor, anchor, ' ');
+          anchor += 1;
+          replaceEnd = anchor;
+        }
       }
     }
 
@@ -352,7 +436,7 @@ window.__ModuleLoader__.load({
             throw new Error(copy().rejected);
           }
         }
-        appendReferences(target, prepared.filter(file => file.kind === 'reference'));
+        applyPreparedInsertions(target, prepared);
       } catch (error) {
         try {
           target.input.setDraft(originalDraft);
@@ -511,6 +595,7 @@ window.__ModuleLoader__.load({
     exports.referencePath = referencePath;
     exports.formatMention = formatMention;
     exports.validateMetadata = validateMetadata;
+    exports.applyPreparedInsertions = applyPreparedInsertions;
     exports.commitPrepared = commitPrepared;
     exports.apply = apply;
     return module.exports;

@@ -30,6 +30,8 @@ export interface VimFeatureHost {
   shouldYieldKey: (view: EditorView, event: KeyboardEvent) => boolean;
   onEnterVisual?: (view: EditorView) => void;
   createStatusBarItem: () => HTMLElement;
+  /** Obsidian 原生状态栏是否被用户隐藏（隐藏时编辑器内悬浮状态强制启用）。 */
+  nativeStatusBarHidden: () => boolean;
   registerEditorExtension: (extension: Extension) => void;
   refreshEditorExtensions: () => void;
   notify: (message: string, timeout?: number) => void;
@@ -40,6 +42,8 @@ export interface VimFeatureHandle {
   disable(): void;
   settingsChanged(): Promise<void>;
   reload(): Promise<void>;
+  /** 原生状态栏显隐或「编辑器内状态」开关变化后重绘状态展示（状态栏 + 悬浮）。 */
+  refreshStatusChrome(): void;
   status(): VimFeatureStatus;
   effectiveSelection(view: EditorView): VimEffectiveSelection | null;
   ensureVimrcFile(): Promise<void>;

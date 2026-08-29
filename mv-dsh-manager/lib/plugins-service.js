@@ -9,6 +9,7 @@ import { persistPluginDisabled, persistPluginRemoval } from './plugin-toggle-sta
 const INJECTION_MANAGED_PACKAGES = new Map([
   ['mv-agent', { packageName: '@mv-aide/mv-agent', pathSegments: ['@mv-aide', 'mv-agent'] }],
   ['mv-dsh-manager', { packageName: '@mv-aide/mv-dsh-manager', pathSegments: ['@mv-aide', 'mv-dsh-manager'] }],
+  ['mv-dsh-subworkspace', { packageName: '@mv-aide/mv-dsh-subworkspace', pathSegments: ['@mv-aide', 'mv-dsh-subworkspace'] }],
 ]);
 const INJECTION_MANAGED_IDS = new Set(INJECTION_MANAGED_PACKAGES.keys());
 
@@ -103,7 +104,7 @@ function entryView(entry) {
     canUninstall: true,
     uninstallMode: kind === 'package' ? 'package' : kind === 'injection-managed' ? 'injection' : 'entry',
     isProtected: kind === 'core' || kind === 'injection-managed',
-    requiresFrontendReload: configRowId === 'mv-agent',
+    requiresFrontendReload: configRowId === 'mv-agent' || configRowId === 'mv-dsh-subworkspace',
     fiberPhase,
   };
 }
@@ -382,7 +383,7 @@ export async function deletePlugin(ctx, entryId, force = false, deps = {}) {
   const persistRemoval = deps.persistRemoval || persistPluginRemoval;
 
   if (found.view.sourceKind === 'injection-managed') {
-    // mv-agent / mv-dsh-manager are materialized by mv-AIDE itself rather than
+    // mv-agent / mv-dsh-manager / mv-dsh-subworkspace are materialized by mv-AIDE itself rather than
     // declared as profile dependencies. Their uninstall lifecycle is therefore
     // user-patch registration removal + removal of the materialized package.
     const managedPackage = injectionManagedPackage(found.view.configRowId);

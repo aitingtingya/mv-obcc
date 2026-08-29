@@ -60,6 +60,8 @@ export interface DshLayerStatus {
   state: DshLayerState;
   version?: string;
   detail?: string;
+  /** Exact command/package path whose version was probed for this status. */
+  commandPath?: string;
   /** The package/command exists even if its version probe failed. */
   installed?: boolean;
   /** Filesystem occupancy that prevents or qualifies package installation. */
@@ -116,6 +118,7 @@ export interface DshEnvironmentStatus {
   plugins: {
     agent: DshLayerStatus;
     manager: DshLayerStatus;
+    subworkspace: DshLayerStatus;
     full: DshLayerStatus;
   };
   updates: DshEnvironmentUpdates;
@@ -133,6 +136,7 @@ export const UNKNOWN_DSH_ENVIRONMENT: DshEnvironmentStatus = {
   plugins: {
     agent: { state: "unknown" },
     manager: { state: "unknown" },
+    subworkspace: { state: "unknown" },
     full: { state: "unknown" },
   },
   updates: {
@@ -268,9 +272,11 @@ export function combinedToolStatus(tool: DshToolLocations): DshLayerStatus {
       return version ? `${label} ${version}` : label;
     });
   if (ready.length > 0) {
+    const selected = tool.vault.state === "ready" ? tool.vault : tool.global;
     return {
       state: "ready",
       version: ready.join("，"),
+      commandPath: selected.commandPath,
       detail: ready.length === 2
         ? t("仓库与全局均已安装；当前优先使用仓库版。")
         : t("已检测到{location}安装。", { location: ready[0] }),
@@ -483,7 +489,12 @@ async function globalExecutable(
   vaultRoot: string,
   prefix: string | null,
   environment: NodeJS.ProcessEnv,
+  preferPath = false,
 ): Promise<string | null> {
+  if (preferPath) {
+    const fromPath = findSystemExecutable(name, process.platform, environment);
+    if (fromPath && !isInside(runtimeBinDir(vaultRoot), fromPath)) return fromPath;
+  }
   const fromPrefix = prefix ? await firstExisting(globalBinCandidates(prefix, name)) : null;
   if (fromPrefix) return fromPrefix;
   const fromPath = findSystemExecutable(name, process.platform, environment);
@@ -514,6 +525,7 @@ export interface DshRuntimeInspectOptions {
 async function probeCommand(
   command: DshCommand | null,
   runner: typeof runProcess,
+  commandPath?: string,
 ): Promise<DshLayerStatus> {
   if (!command) return { state: "missing", installed: false };
   const result = await runner(
@@ -527,9 +539,15 @@ async function probeCommand(
   );
   const output = processOutput(result);
   const version = output.split(/\r?\n/u)[0]?.trim();
+  const detectedPath = commandPath ?? command.executable;
   return result.code === 0
-    ? { state: "ready", version: version || t("可用"), installed: true }
-    : { state: "error", detail: output || t("版本检测失败。"), installed: true };
+    ? { state: "ready", version: version || t("可用"), installed: true, commandPath: detectedPath }
+    : {
+        state: "error",
+        detail: output || t("版本检测失败。"),
+        installed: true,
+        commandPath: detectedPath,
+      };
 }
 
 function commandEnvironment(
@@ -701,11 +719,14 @@ export async function inspectDshRuntime(
   const globalCommandEnv = prependExecutableDirectory(commandEnv, globalNode?.executable);
   const globalNpmExecutable = globalNode?.npmExecutable;
   const prefix = await npmGlobalPrefix(globalNpmExecutable, runner, globalCommandEnv);
+  // Volta's Windows shims represent the CLI the user actually invokes. Its npm
+  // prefix can retain an older package image, so only this narrow case is PATH-first.
+  const preferVoltaPathTools = process.platform === "win32" && globalNode?.origin === "volta";
   const [vaultPnpmExecutable, globalDshExecutable, globalPnpmExecutable, vaultDshExists] =
     await Promise.all([
       firstExisting(runtimeBinCandidates(vaultRoot, "pnpm")),
-      globalExecutable("dsh", vaultRoot, prefix, globalCommandEnv),
-      globalExecutable("pnpm", vaultRoot, prefix, globalCommandEnv),
+      globalExecutable("dsh", vaultRoot, prefix, globalCommandEnv, preferVoltaPathTools),
+      globalExecutable("pnpm", vaultRoot, prefix, globalCommandEnv, preferVoltaPathTools),
       fs.access(dshCliPath(vaultRoot)).then(() => true, () => false),
     ]);
   const globalPrefixOccupancyCandidates = (name: string): string[] =>
@@ -814,6 +835,7 @@ export async function inspectDshRuntime(
         state: "ready",
         version: sourceRuntime.version,
         installed: true,
+        commandPath: sourceRuntime.rootDirectory,
         detail: t("自定义源码目录：{path}", { path: sourceRuntime.rootDirectory }),
       };
       if (options.preferredPort) {
@@ -867,6 +889,7 @@ export async function inspectDshRuntime(
         state: "ready",
         version: sourceRuntime.version,
         installed: true,
+        commandPath: sourceRuntime.rootDirectory,
         detail: t("已从运行中的 DSH 自动识别源码目录：{path}", {
           path: sourceRuntime.rootDirectory,
         }),
@@ -879,15 +902,15 @@ export async function inspectDshRuntime(
 
   const [vaultDshStatus, globalDshStatus, vaultPnpmStatus, globalPnpmStatus] =
     await Promise.all([
-      probeCommand(vaultDsh?.command ?? null, runner),
+      probeCommand(vaultDsh?.command ?? null, runner, vaultDsh ? dshCliPath(vaultRoot) : undefined),
       globalDsh?.command
-        ? probeCommand(globalDsh.command, runner)
+        ? probeCommand(globalDsh.command, runner, globalDsh.command.executable)
         : Promise.resolve(statusFromBinaryIssue(globalDshIssue)),
       vaultPnpm
-        ? probeCommand(vaultPnpm, runner)
+        ? probeCommand(vaultPnpm, runner, vaultPnpm.executable)
         : Promise.resolve(statusFromBinaryIssue(vaultPnpmIssue)),
       globalPnpm
-        ? probeCommand(globalPnpm, runner)
+        ? probeCommand(globalPnpm, runner, globalPnpm.executable)
         : Promise.resolve(statusFromBinaryIssue(globalPnpmIssue)),
     ]);
   const dsh: DshToolLocations = {

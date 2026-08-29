@@ -159,7 +159,11 @@ export function classifyNodeOrigin(
   const portable = resolved.replace(/\\/gu, "/").toLowerCase();
   if (portable.includes("/.nvm/versions/node/")) return "nvm";
   if (portable.includes("/.fnm/") || portable.includes("/fnm_multishells/")) return "fnm";
-  if (portable.includes("/.volta/")) return "volta";
+  if (
+    portable.includes("/.volta/")
+    || portable.includes("/program files/volta/")
+    || portable.includes("/appdata/local/volta/")
+  ) return "volta";
   if (portable.includes("/.local/share/mise/") || portable.includes("/.mise/")) return "mise";
   if (portable.includes("/.asdf/")) return "asdf";
   if (portable.includes("/homebrew/") || portable.includes("/cellar/node")) return "homebrew";

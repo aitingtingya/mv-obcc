@@ -33,6 +33,13 @@ import type {
 
 const exec = promisify(childProcess.exec);
 const EMPTY_RUNTIME = compileVimRuntime([]);
+const VIM_INLINE_STATUS_HOST_CLASS = "mv-aide-vim-inline-status-host";
+
+interface InlineStatusRecord {
+  element: HTMLElement;
+  host: HTMLElement;
+  ownsPositionClass: boolean;
+}
 
 export function createVimFeature(host: VimFeatureHost): VimFeatureHandle {
   return new IndependentVimFeature(host);
@@ -58,6 +65,7 @@ class IndependentVimFeature implements VimFeatureHandle {
   private statusBarItem: HTMLElement | null = null;
   private activeStatusView: EditorView | null = null;
   private readonly viewStatuses = new Map<EditorView, VimStatus>();
+  private readonly inlineStatusItems = new Map<EditorView, InlineStatusRecord>();
   private workspaceFocusRegistered = false;
 
   constructor(private readonly host: VimFeatureHost) {}
@@ -138,6 +146,7 @@ class IndependentVimFeature implements VimFeatureHandle {
     this.unregisterWorkspaceFocus();
     this.statusBarItem?.remove();
     this.statusBarItem = null;
+    this.clearInlineStatus();
     this.runtimes.clear();
     this.state = {
       state: "disabled",
@@ -176,6 +185,10 @@ class IndependentVimFeature implements VimFeatureHandle {
       editorCount: this.editorControllers?.size ?? 0,
       loadedFiles: [...this.state.loadedFiles],
     };
+  }
+
+  refreshStatusChrome(): void {
+    this.renderStatusBar();
   }
 
   effectiveSelection(view: EditorView) {
@@ -383,8 +396,6 @@ class IndependentVimFeature implements VimFeatureHandle {
   };
 
   private renderStatusBar(): void {
-    const item = this.statusBarItem;
-    if (!item) return;
     const activeView = this.activeStatusView;
     const activeElement = activeView?.dom.ownerDocument.activeElement;
     const ownsFocus = Boolean(
@@ -394,6 +405,67 @@ class IndependentVimFeature implements VimFeatureHandle {
     const status = activeView && ownsFocus
       ? this.viewStatuses.get(activeView)
       : undefined;
+    if (this.statusBarItem) this.renderStatusInto(this.statusBarItem, status);
+    this.renderInlineStatus(activeView, status);
+  }
+
+  /**
+   * 编辑器内左下角悬浮状态：原生状态栏被隐藏时强制启用，否则遵循
+   * VimSettings.editorStatusBar 开关。只挂在当前持有焦点的编辑器上。
+   */
+  private renderInlineStatus(
+    activeView: EditorView | null,
+    status: VimStatus | undefined,
+  ): void {
+    const showInline = Boolean(
+      activeView &&
+      status &&
+      (this.host.nativeStatusBarHidden() ||
+        this.host.getSettings().editorStatusBar),
+    );
+    for (const [view, record] of Array.from(this.inlineStatusItems)) {
+      if (!showInline || view !== activeView || !view.dom.isConnected) {
+        this.removeInlineStatus(view, record);
+      }
+    }
+    if (!showInline || !activeView || !status) return;
+    let record = this.inlineStatusItems.get(activeView);
+    const ownerDocument = activeView.dom.ownerDocument;
+    if (record && record.element.ownerDocument !== ownerDocument) {
+      this.removeInlineStatus(activeView, record);
+      record = undefined;
+    }
+    if (!record) {
+      const host = activeView.dom.closest<HTMLElement>(".view-content");
+      if (!host) return;
+      const hostWindow = ownerDocument.defaultView;
+      const ownsPositionClass = Boolean(
+        hostWindow && hostWindow.getComputedStyle(host).position === "static",
+      );
+      if (ownsPositionClass) host.classList.add(VIM_INLINE_STATUS_HOST_CLASS);
+      const element = host.createDiv({ cls: "mv-aide-vim-inline-status" });
+      const created: InlineStatusRecord = { element, host, ownsPositionClass };
+      this.inlineStatusItems.set(activeView, created);
+      record = created;
+    }
+    this.renderStatusInto(record.element, status);
+  }
+
+  private clearInlineStatus(): void {
+    for (const [view, record] of Array.from(this.inlineStatusItems)) {
+      this.removeInlineStatus(view, record);
+    }
+  }
+
+  private removeInlineStatus(view: EditorView, record: InlineStatusRecord): void {
+    record.element.remove();
+    if (record.ownsPositionClass) {
+      record.host.classList.remove(VIM_INLINE_STATUS_HOST_CLASS);
+    }
+    this.inlineStatusItems.delete(view);
+  }
+
+  private renderStatusInto(item: HTMLElement, status: VimStatus | undefined): void {
     item.replaceChildren();
     item.classList.remove(
       "mv-aide-vim-statusbar-text",

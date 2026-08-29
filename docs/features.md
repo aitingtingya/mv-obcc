@@ -2,7 +2,7 @@
 
 [返回 README](../README.md) | [English](features-en.md)
 
-本文档对应 mv-AIDE `0.9.13`，以设置页顺序记录功能、默认值、边界和故障处理。README 负责快速了解产品；本文档是功能行为的完整参考。
+本文档以设置页顺序记录功能、默认值、边界和故障处理。README 负责快速了解产品；本文档是功能行为的完整参考，版本对应关系见 `manifest.json`。
 
 ## 目录
 
@@ -66,7 +66,7 @@ mv-AIDE 是 Obsidian 桌面端 AI IDE 插件。八个主设置分区保持功能
 | 5 | 源码编写辅助 | 开；仅内置 Markdown profile | 非 md 后缀、Code Suite、Lint、TeX |
 | 6 | Vim 增强 | 所有后缀均关 | 独立 Vim 引擎与仓库级 vimrc |
 | 7 | 默认文件打开器 | 关 | 系统文件关联与库外文件镜像 |
-| 8 | 文件系统与浏览器 | 三个入口均开 | 下载、历史、任意目录浏览 |
+| 8 | 文件系统与浏览器 | 三个入口均开 | 下载、历史、任意目录浏览、自动收起、自定义网页按钮 |
 
 「文件内AI助手」内部顺序固定为「API提供商」、「划词助手」、「行内补全」。三个子区初始均折叠；展开状态只在当前设置页会话中记忆，不写入新配置字段。这一层级只重组设置入口：提供商、划词和行内补全仍使用原有设置、默认值、保存方式和运行链路。
 
@@ -199,7 +199,7 @@ mv-agent 把 DeepSeek Harness（DSH）内嵌进 Obsidian：直接使用 DSH Web 
 - 点击下层项目会先补齐它依赖的上层。例如插件注入会依次确保 Node.js、DSH 和 pnpm 可用，每层完成后都重新读取真实状态。安装命令返回成功并不等于升级成功：最终探测到的版本必须与本次精确目标一致，否则操作会报告失败。
 - 仓库安装的最终运行时位于 `<vault>/mv-aide/dsh/`；下载、npm 缓存、安装脚本和 staging 仅存在于单次操作的临时工作区，成功、失败或取消后都会清理。全局 Node.js、DSH 或 pnpm 安装需要写受保护目录时，会弹出 macOS 管理员确认、Windows UAC 或 Linux `pkexec`，用户拒绝后停止且不会降级到仓库。
 - macOS 全局 Node 安装会在 SHA-256 校验通过后，把公开的官方 `.pkg` 临时放到 `/private/tmp` 供系统安装服务读取；安装结束、失败或取消后都会删除该临时文件。
-- 仓库和全局同时存在时优先使用仓库版本。运行环境检测先解析当前用户真实命令环境：macOS/Linux 使用登录交互 shell 的 PATH，Windows 合并当前进程与 User/Machine PATH；Node 与 npm 必须成对且可执行。全局 DSH/pnpm 优先从该 npm 的 global prefix 定位，找不到时再从同一用户命令环境 PATH 查找；版本查询、安装、升级与安装后验证都复用同一环境，避免检测到 A、执行却落到 B。插件注入写入共享的 DSH web profile，mv-agent 与 mv-dsh-manager 分别显示版本、完整性和实际加载状态。
+- 仓库和全局同时存在时优先使用仓库版本。运行环境检测先解析当前用户真实命令环境：macOS/Linux 使用登录交互 shell 的 PATH，Windows 合并当前进程与 User/Machine PATH；Node 与 npm 必须成对且可执行。全局 DSH/pnpm 优先从该 npm 的 global prefix 定位，找不到时再从同一用户命令环境 PATH 查找；版本查询、安装、升级与安装后验证都复用同一环境，避免检测到 A、执行却落到 B。插件注入写入共享的 DSH web profile，mv-agent、mv-dsh-manager 与 mv-dsh-subworkspace 分别显示版本、完整性和实际加载状态；mv-dsh-subworkspace 不依赖 IDE 桥接。
 - **源码仓库安装**：运行中的 `pnpm dsh web`、`apps/cli/src/bin.ts` 或构建后 `apps/cli/lib/bin.js` 可通过端口、监听进程命令行和 cwd 自动识别，不扫描用户磁盘。无法安全还原 CLI 时会分别报告“DSH 正在运行”和“尚未可管理”，不再误报为完全未安装。
 - **自定义 DSH 目录**：可填写 DeepSeek Harness 仓库根目录或 `apps/cli`。验证会核对 manifest 身份、声明的 bin 入口、真实路径边界、Node/pnpm、版本和 `dsh --profile web --dump-config`。验证成功后该目录始终优先；失效时报错而不静默改用其它 DSH。清除后恢复“仓库版优先于全局版”。
 - 源码版继续使用同一组检测、启停、重启、注入和管理功能；“检测”以该 Git 分支配置的上游提交为更新 authority，不用 npm 发布版本替代源码状态。用户点击升级/重装时，mv-AIDE 要求 Git 工作树干净、分支有上游且可 fast-forward，再安装依赖、构建并验证；不会自动 stash、强制合并或另装 npm 版。操作由按真实源码根分配的跨进程锁串行化，更新后构建/验证失败会回到原提交并重新构建原版本，恢复失败会明确报告。
@@ -207,12 +207,16 @@ mv-agent 把 DeepSeek Harness（DSH）内嵌进 Obsidian：直接使用 DSH Web 
 
 ### 插件注入与 DSH 侧能力
 
-「插件注入」把两个公开包写入当前 DSH web profile 的 `node_modules` 并注册到 patch 层：`@mv-aide/mv-agent` 提供桥接、命令和原生工具，`@mv-aide/mv-dsh-manager` 提供插件、技能、预设、模型能力和文件拖入适配。每个 bundle marker 记录发布它的 mv-AIDE 版本和内容指纹；版本 authority 是 mv-AIDE `manifest.version`，不是两个包自身的版本。落盘后还会用 `dsh --profile web --dump-config` 校验真实加载状态。
+「插件注入」把三个独立包写入当前 DSH web profile 的 `node_modules` 并注册到 patch 层：`@mv-aide/mv-agent` 提供 IDE 桥接，`@mv-aide/mv-dsh-manager` 提供管理与文件拖入适配，`@mv-aide/mv-dsh-subworkspace` 独立提供关联工作区与多根原生工具调度。每个 bundle marker 记录发布它的 mv-AIDE 版本和内容指纹，落盘后使用 `dsh --profile web --dump-config` 校验真实加载状态。
+
+`mv-dsh-subworkspace` 在每个 DSH 工作区行的原生省略号与加号之间插入关联目录按钮，不增加嵌套工作区行。弹层只会因再次点击按钮、按 Escape 或点击弹层外部而关闭；指针在按钮和整个展开区域内移动不会触发收起。新增目录经过真实路径与文件系统身份规范化，主工作区和所有关联根之间禁止重复、符号链接别名以及任一方向的父子包含；并发新增会串行复检。
+
+DSH 模型通过 `workspace` 工具列出根 ID、切换当前会话的临时默认根或恢复主根。插件不维护工具名或参数适配表，而是为当前和后续动态注册的 DSH 原生工具统一增加 `_workspace`：不填使用会话默认根，字符串选一根，非空数组按给定顺序选择多根，`all` 选择主根和全部关联根。每个分支保持原 Agent 身份和原生参数，只在该调用的完整异步生命周期内投影 `agent.session.header.cwd`；因此权限、沙箱、嵌套调用和工具实现都使用同一个目标根。多根调用并发进入彼此独立的完整 DSH 原生工具管线，任一分支失败不会取消或污染其它结果。每个结果单独标出根 ID、路径和成功状态，再由一个外层 DSH 工具调用结果统一返回给模型。关联根配置实时影响已有会话和子代理，无须重建会话；会话切换本身只保存在内存中，DSH 重启后回到主根。
 
 - **低于当前 mv-AIDE**：显示实际版本和“版本较旧”，检测与后台启动不会覆盖；用户点击“升级”后才更新。
 - **等于当前 mv-AIDE**：完整核对 marker、文件集合、指纹、patch 和实际加载；缺失或损坏时显示“修复”。同版本但指纹不同显示构建冲突，只能由显式“更新”替换。
 - **高于当前 mv-AIDE**：显示“已安装更高版本”，跳过当前旧版本的指纹比较、更新和覆盖，只检查包结构可读且 DSH 已实际加载。高版本未加载或结构损坏时要求使用对应高版本 mv-AIDE 处理，当前版本不会降级修复。
-- **旧 marker / 非法版本**：显示“版本未知”并建议升级，检测不会自动覆盖。只有 mv-agent 和 mv-dsh-manager 都满足各自兼容性和加载条件时，完整注入才显示就绪。
+- **旧 marker / 非法版本**：显示“版本未知”并建议升级，检测不会自动覆盖。只有 mv-agent、mv-dsh-manager 和 mv-dsh-subworkspace 都满足各自兼容性和加载条件时，完整注入才显示就绪。
 - 共享 profile 的写入由跨进程锁串行化，锁内重新检测版本；每个包通过独立 staging、完整校验、目录切换与失败回滚发布，中断事务会在下次操作先恢复。后台检测不会强杀正在工作的 DSH；设置页区分磁盘包与当前 DSH 已加载版本并显示“待重启”，用户执行“打开/重启 mv-agent”时才协调必要重启。
 
 注入后（能力细节见第 1 章「dsh 支持」）：
@@ -220,6 +224,23 @@ mv-agent 把 DeepSeek Harness（DSH）内嵌进 Obsidian：直接使用 DSH Web 
 - `/mv-aide status | tools | bridges | connect <序号|端口|路径|auto> | selection | call <name> [json]` 命令；
 - 与公共工具开关对应的 `mv_aide__*` 原生工具；
 - 被动上下文通知与 Obsidian 可编辑 Diff 审核。
+
+### 插件自动更新
+
+「插件注入」立即操作之后，还可开启两个独立开关把这件事变成无人值守；两者都默认 **关闭**。
+
+| 设置键 | 默认 | 行为 |
+| --- | --- | --- |
+| `dsh.autoUpdatePlugins` | 关 | 每次启动依赖检测完成时，对比已注入到 DSH web profile 的三个受管插件版本与当前 mv-AIDE 内置版本：版本不一致或注入不完整时自动重新对齐注入；**已安装更高版本时永不覆盖、永不降级**。 |
+| `dsh.autoRestartAfterPluginUpdate` | 关 | 依赖上一项；仅在自动更新**确实改动了文件**后才协调重启已运行的 DSH 后端，让新 bundle 生效；永远不会主动新建 mv-agent 视图。关闭时新版本在下次手动打开 mv-agent 时生效。 |
+
+实现位于 `src/agent-integrations/dsh/plugin-auto-updater.ts`。两个开关只是布尔字段，不引入新的后台服务；自动更新沿用手动注入相同的 staging、校验、目录切换与失败回滚流程。
+
+### Obsidian 状态栏
+
+「隐藏 Obsidian 原生状态栏」（`hideObsidianStatusBar`，默认 **关**）只隐藏 Obsidian 窗口底部的原生 `.status-bar` 容器：实现等价于给 body 加一个 CSS class，不操作 mv-agent 自有状态栏、不影响左侧 / 右侧 / 底部任何分栏。
+
+开启时，**§6 Vim 增强** 的「编辑器内显示 Vim 状态」被强制视为开启并禁用开关——原生状态栏恢复显示后回到用户原本的取值。主插件在原生状态栏显隐或 Vim 悬浮状态开关变化后都会调用 Vim 公共接口 `refreshStatusChrome()` 即时重绘。
 
 ### DSH 原生插件配置
 
@@ -320,7 +341,7 @@ mv-agent 分区的「IDE 工具」网格与 IDE 桥接的工具列表一一对�
 
 总开关默认关闭，独立于 IDE 桥接。启用后可在 Markdown、PDF、Web Viewer 中对选区调用模板。
 
-- Markdown：右键 `LLM → 模板` 或快捷键。
+- Markdown：右键 `LLM → 模板` 或快捷键。**阅读视图（preview）没有承载 DOM 选区的 CodeMirror 编辑器**，`view.editor` 只镜像上一次源码/实时预览编辑状态；插件识别 `view.getMode() === "preview"` 之后改按 DOM 选区读取划词，行为见 `src/workspace-context.ts`。
 - PDF：右键菜单通常由 Obsidian/pdf++ 占用，使用快捷键。
 - Web Viewer：默认使用注入到网页中的已绑定快捷键；实验性的网页右键菜单会屏蔽网页原生右键，并可能被站点安全策略阻止。
 
@@ -424,6 +445,10 @@ Obsidian 重启只恢复终端 leaf，不恢复旧 PTY、cwd 或 scrollback；�
 
 <a id="source-assist"></a>
 ## 5. 源码编写辅助
+
+### 自动收起文件顶部状态栏
+
+「自动收起文件顶部状态栏」（`fileHeaderAutoHide`，默认 **关**）位于本分区顶部：开启后 Markdown 视图顶部的 `.view-header`（前进 / 后退、文件名与操作栏）默认收起，鼠标移到页面顶部时自动展开。展开只对所在标签组生效，不影响 stacked 标签和其它分栏。它与 §8 的另外两个自动收起开关共用同一实现 `src/chrome-autohide.ts`，详见 §8「自动收起界面元素」。
 
 ### Profile 与后缀注册
 
@@ -530,6 +555,16 @@ Vim 由 mv-AIDE 独立实现，不依赖 Obsidian 内置 Vim 或第三方 Vim �
 
 `:!` 和 autocmd 间接执行外部程序需要单独授权，默认关闭。`:w/:wq/:x` 调用 Obsidian 当前视图的显式保存；保存失败不会继续退出。
 
+### 状态显示与 Obsidian 原生状态栏
+
+「编辑器内显示 Vim 状态」（默认 **关**）原本完全凭用户偏好决定是否在 Markdown 编辑器左下角悬浮显示当前模式。当 **§2 mv-agent** 的「隐藏 Obsidian 原生状态栏」开启时：
+
+- 原生 `.status-bar` 不可见，模式徽章无处可放；
+- 本开关被强制视为 **开** 并在 UI 中禁用，编辑器内悬浮徽章自动接管；
+- 原生状态栏恢复显示后立即回到用户原本的取值，且悬浮徽章额外关闭。
+
+主插件在原生状态栏显隐或本开关变化时都会调用 Vim 公共接口 `refreshStatusChrome()`（`src/vim-host/public.ts`），让状态徽章在原生状态栏和悬浮层之间即时切换。
+
 <a id="default-opener"></a>
 ## 7. 默认文件打开器
 
@@ -618,6 +653,49 @@ mv-AIDE 自有打开器产物的当前 authority 是 `~/.mv-aide/file-opener/`�
 
 关闭入口后只移除对应按钮和监听器，不删除下载、历史或任何外部文件。
 
+### 自动收起界面元素
+
+两个独立开关位于本分区，另一个位于 §5 源码编写辅助；三者默认 **均关**，共用同一实现 `src/chrome-autohide.ts`：
+
+| 设置键 | 默认 | 作用对象 | UI 归属 |
+| --- | --- | --- | --- |
+| `browserAutoHideToolbar` | 关 | 内置 Web Viewer 页顶工具栏（前进 / 后退、地址栏等） | 文件系统与浏览器 |
+| `tabBarAutoHide` | 关 | 各标签组的标签页栏，收起为 4px 细感应条 | 文件系统与浏览器 |
+| `fileHeaderAutoHide` | 关 | Markdown 视图顶部 `.view-header`（前进 / 后退、文件名、操作栏） | 源码编写辅助 |
+
+行为：
+
+- 鼠标移到展开的条带（标签组顶部 4–8 px 感应区）后悬停展开；**移开后收起宽限 120 ms**，外扫过瞬间不会立即关闭。
+- 展开成只对所在标签组（`.workspace-tabs`）有效，**不影响 stacked 标签和其它分栏**；被打开展开的标签组获得独立 body class 标记，离开该组即恢复。
+- 实现：纯 CSS class 切换 + `requestAnimationFrame` 注册悬停监听；body 上分别附加 `mv-aide-chrome-autohide-tab`、`-file`、`-web` 三类 class。
+- 三个开关均为 `data.json` 中的布尔字段，不发送网络请求、不执行外部脚本，关闭即移除全部 class 与监听器。
+
+### 自定义网页按钮
+
+`customWebPages`（默认 **空数组**）把常用网址注册为命令面板和 Ribbon 双重入口，位于本分区「快捷打开网页」子标题下。
+
+数据模型（`src/types.ts`）：
+
+```ts
+{ id: string; name: string; url: string; icon: string;
+  ribbon: boolean; position: "left" | "center" | "right" }
+```
+
+每条配置自动生成：
+
+- 命令面板命令 `open-web-page-<entryId>`，显示为「打开网页：{name}」；
+- 可选的左侧 Ribbon 图标（Lucide 名称，未知名称自动回退为 `globe`）；
+- 在所选区域（左侧栏 / 中间区域 / 右侧栏）**新建标签页**打开目标 URL。
+
+行为与边界：
+
+- 仅支持 `http://` 和 `https://`；其它协议直接交回系统默认处理。
+- 复用 Obsidian 内置 webviewer 视图，自动继承划词助手、浏览历史、下载、本地文件预览等增强。
+- 编辑或删除条目即时调用 `sync()` 幂等重建命令与 ribbon，无需重启；`unload()` 在插件卸载时移除全部已注册命令与图标。
+- 实现位于 `src/custom-web-pages/custom-web-pages.ts`，幂等且只在主插件 `onload` / `onunload` 与设置保存时被调用，不监听协议、不触碰桥接。
+
+「隐藏 Obsidian 原生状态栏」属于 mv-agent 分区，详见 §2「Obsidian 状态栏」。
+
 <a id="cross-feature"></a>
 ## 跨功能关系
 
@@ -644,6 +722,12 @@ Markdown/PDF/Web Viewer 普通选区、Vim Visual 逻辑选区、IDE 最新选�
 
 mv-agent 与 IDE 桥接共享同一条本地桥接服务、同一组公共工具开关和同一个 `openDiff` 审核通道；mv-agent 的「库外项目工具策略」是在公共开关之上、只对 dsh Agent 生效的范围控制。关闭「启用 dsh IDE 功能」只停止桥接与 lock 文件，mv-agent 分区的环境安装状态与设置保留；关闭整个 mv-agent 分区不影响 Claude Code / Codex / 通用 MCP。
 
+`@mv-aide/mv-dsh-subworkspace` 完全不经 IDE 桥接：桥接关闭、桥接 lock 失效或 IDE 工具被禁用时，关联根配置、`workspace` 工具与 `_workspace` 选择器仍然工作。同时安装 mv-agent / mv-dsh-manager 时遵循 DSH 原生工具管线组合。
+
+### Vim 状态显示与 Obsidian 原生状态栏
+
+「隐藏 Obsidian 原生状态栏」（§2 mv-agent）与「编辑器内显示 Vim 状态」（§6 Vim 增强）通过同一个设置变化钩子联动：原生状态栏隐藏时强制使用编辑器内悬浮徽章，恢复显示后回到用户取值。
+
 ### 故障隔离
 
 - AI 请求失败不影响 IDE 桥接、终端或源码编辑。
@@ -665,9 +749,12 @@ mv-agent 与 IDE 桥接共享同一条本地桥接服务、同一组公共工具
 - 新建已注册的非 Markdown 源码文件。
 - 打开库外文件、按路径打开、清理失效库外链接。
 - 当前文件正则替换、多文件正则替换。
-- 每个启用的 LLM 模板命令。
+- 每个启用的 LLM 模板命令（`llm-<templateId>`，按当前已启用提示词模板动态注册）。
+- 自定义网页按钮中每个条目一个 `open-web-page-<entryId>`（「打开网页：{name}」）。
 - 运行 Lint、清除诊断、启用/禁用持续 Lint。
 - Code Suite 内核注册的 snippet/tabstop/预览命令。
+
+三个自动收起开关（`browserAutoHideToolbar` / `tabBarAutoHide` / `fileHeaderAutoHide`）与「隐藏 Obsidian 原生状态栏」只有设置项，不注册命令。
 
 默认只给行内补全接受/取消键设置行为，不抢占全局命令快捷键。用户可在 Obsidian 的快捷键设置中绑定其它命令。
 
@@ -699,7 +786,7 @@ mv-agent 与 IDE 桥接共享同一条本地桥接服务、同一组公共工具
 | `<vault>/mv-aide/external-files/hosts` | 库外文件 host/映射状态 |
 | `<vault>/mv-aide/llm-history/latest.md` | 最近一次划词助手内容，覆盖写入并从常用索引隐藏 |
 | `<vault>/mv-aide/dsh/` | mv-agent 仓库级安装的 Node.js、DSH 和 pnpm 运行时 |
-| `$DSH_HOME/profiles/web/`（默认 `~/.dsh/profiles/web/`） | DSH web profile、patch 层以及 `@mv-aide/mv-agent` / `@mv-aide/mv-dsh-manager` |
+| `$DSH_HOME/profiles/web/`（默认 `~/.dsh/profiles/web/`） | DSH web profile、patch 层以及三个独立受管插件：`@mv-aide/mv-agent` / `@mv-aide/mv-dsh-manager` / `@mv-aide/mv-dsh-subworkspace` |
 | `~/.mv-aide/ide/` | 统一 IDE 桥接发现注册表（mv-AIDE 权威 lock 文件） |
 | `~/.mv-aide/dsh/bridge-selection.json` | dsh 各会话的桥接选择（持久化，会话键分区） |
 | `~/.mv-aide/file-opener/` | 默认打开器当前 authority：owner、runtime、wrapper、helper 和图标；不包含 OS 系统关联数据库 |
@@ -723,6 +810,15 @@ mv-AIDE 新建的跨进程产物只写入表中的精确子目录；Claude、Cod
 
 API Key 明文存储在 `data.json`，可能随 vault 备份或同步传播。不要提交真实 `data.json`，也不要把含密钥的演示 vault 发布。MCP token、Agent 管理块和默认打开器 owner 也应视作本机配置。
 
+以下设置均为 `data.json` 中的纯本地字段，不发送网络请求、不执行外部脚本：
+
+- 三个自动收起开关：`browserAutoHideToolbar`、`tabBarAutoHide`、`fileHeaderAutoHide`；
+- 自定义网页按钮列表：`customWebPages`；
+- 状态栏显隐：`hideObsidianStatusBar`；
+- mv-agent 插件自动更新：`dsh.autoUpdatePlugins`、`dsh.autoRestartAfterPluginUpdate`。
+
+`@mv-aide/mv-dsh-subworkspace` 的关联根列表持久化在 DSH profile 的插件 runtime 存储中（与 `mv-agent`、`mv-dsh-manager` 同级）；当前会话的默认根**不写入磁盘**，DSH 重启后始终回到主根。
+
 <a id="troubleshooting"></a>
 ## 故障排查
 
@@ -736,7 +832,7 @@ API Key 明文存储在 `data.json`，可能随 vault 备份或同步传播。�
 ### DSH 环境、注入或插件导入失败
 
 1. 在 mv-agent 分区按 Node.js → DSH → pnpm → 插件注入的顺序检查；下层按钮会先补齐上层，但每层失败仍会保留真实错误。
-2. 完整注入的就绪状态必须同时包含 `@mv-aide/mv-agent` 和 `@mv-aide/mv-dsh-manager`；缺一项或 `--dump-config` 校验不通过时使用「修复」。
+2. 完整注入的就绪状态必须同时包含 `@mv-aide/mv-agent`、`@mv-aide/mv-dsh-manager` 和 `@mv-aide/mv-dsh-subworkspace`；缺一项或 `--dump-config` 校验不通过时使用「修复」。IDE 自动注入仍只负责 `mv-agent`，不安装后两者。
 3. 插件图发生变化后，运行中的 DSH 会被协调重启一次。若界面仍是旧模块图，先查看重启报错，再使用命令面板的「重启 mv-agent」。
 4. 用户导入插件始终经由 `dsh plugin add`。该命令、本地路径、`package.json` 名称或 profile manifest 校验失败时，修正原因后重试；不要期待 `file:` 热加载回退，也不要手工追加 patch 行。
 
@@ -779,6 +875,29 @@ API Key 明文存储在 `data.json`，可能随 vault 备份或同步传播。�
 ### 库外文件无法保存
 
 检查 `mv-aide/external-files/mirror` 中是否为有效符号链接。只有出现明确授权提示后才会使用受管副本；同步冲突不会静默覆盖任一侧。可以运行“重试并迁移符号链接”。
+
+### 自动收起不生效
+
+1. 确认对应开关（`browserAutoHideToolbar` / `tabBarAutoHide` / `fileHeaderAutoHide`）已开启。
+2. 检查目标视图（Markdown / Web Viewer / 标签分组）是否被自定义 CSS 或社区插件覆盖；有些主题会重写 `.view-header` 或标签栏样式。
+3. 移开后收起宽限为 120 ms；外扫过感应区属于预期行为，不算失效。
+
+### 自定义网页按钮不工作
+
+1. URL 必须是 `http://` 或 `https://`；其它协议（如 `obsidian://`、`file://`）不会被打开。
+2. Ribbon 图标名无效时已自动回退为 `globe`；可在 Lucide 图标集中更换名称。
+3. 删除条目会即时移除对应命令和 ribbon；如果还能在命令面板里看到旧条目，重新切换插件或重启 Obsidian。
+
+### mv-dsh-subworkspace 拒绝添加关联根
+
+- 目标路径与主 Workspace 相同或是其祖先 / 子孙目录；
+- 目标路径与某个已有关联根 `realpath` 相同，或互为祖先 / 子孙；
+- 目标不存在、不可读，或在新增并发串行复检阶段被另一边的添加抢走；
+- 这些都是有意拒绝。请改用与主根不重叠的独立目录。
+
+### mv-agent 自动更新后旧版本仍在运行
+
+`autoUpdatePlugins` 已经写入新 bundle，但 `autoRestartAfterPluginUpdate` 关闭时不会主动重启 DSH。打开任一 mv-agent 视图或使用「重启 mv-agent」命令即可加载新版本；版本方向始终是"高不被低覆盖"。
 
 <a id="acknowledgements"></a>
 ## 来源与许可

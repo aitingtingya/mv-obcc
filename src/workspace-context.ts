@@ -209,6 +209,25 @@ export async function currentWorkspaceContext(
   if (view instanceof MarkdownView && view.file) {
     const editor = view.editor;
     const vaultRoot = getVaultRoot(app);
+    // 阅读视图（preview）没有 CM 编辑器承载 DOM 选区：view.editor 只镜像
+    // 上一次源码/实时预览编辑态，划词结果恒为空。此时按 DOM 选区读取。
+    // 源码模式与实时预览模式（getMode() === "source"）保持原 editor 路径。
+    const leafMode = (leaf.getViewState() as { state?: { mode?: unknown } })
+      .state?.mode;
+    const mode = view.getMode?.() ?? (typeof leafMode === "string" ? leafMode : null);
+    const domSelection = mode === "preview" ? viewSelection(view) : "";
+    if (domSelection.trim()) {
+      return selectionState(
+        {
+          filePath: path.join(vaultRoot, view.file.path),
+          relativePath: view.file.path,
+          title: view.getDisplayText(),
+          viewType,
+          resourceType: "markdown",
+        },
+        domSelection,
+      );
+    }
     const selection = editorSelectionState(
       editor,
       resolveLogicalSelection?.(view) ?? null,

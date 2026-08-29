@@ -78,8 +78,15 @@ import { normalizeRegexReplaceSettings } from "./src/regex-replace/regex-replace
 import { RegexReplaceFeature } from "./src/regex-replace/regex-replace-feature";
 import { BrowserHistoryButtonFeature } from "./src/browser-history-button";
 import { BrowserDownloadsButtonFeature } from "./src/browser-downloads-button";
+import { ChromeAutoHideFeature } from "./src/chrome-autohide";
 import { FileExplorerPathBarFeature } from "./src/file-explorer-path-bar";
 import { LocalWebPreviewFeature } from "./src/local-web-preview";
+import {
+  createCustomWebPages,
+  normalizeCustomWebPages,
+  type CustomWebPagesHandle,
+} from "./src/custom-web-pages/custom-web-pages";
+import type { CustomWebPage } from "./src/types";
 import { DshFeature } from "./src/agent-integrations/dsh/feature";
 import { normalizeDshSettings } from "./src/agent-integrations/dsh/settings";
 import {
@@ -476,8 +483,10 @@ export default class MvAideIdePlugin extends Plugin {
   private texOutline: TexOutlineFeature | null = null;
   private browserHistoryButton: BrowserHistoryButtonFeature | null = null;
   private browserDownloadsButton: BrowserDownloadsButtonFeature | null = null;
+  private chromeAutoHide: ChromeAutoHideFeature | null = null;
   private fileExplorerPathBar: FileExplorerPathBarFeature | null = null;
   private localWebPreview: LocalWebPreviewFeature | null = null;
+  private customWebPages: CustomWebPagesHandle | null = null;
   private externalFileOpener: ExternalFileOpenerFeature | null = null;
   dshFeature: DshFeature | null = null;
   private readonly externalFileOpenerSystem = new ExternalFileOpenerSystem();
@@ -562,6 +571,13 @@ export default class MvAideIdePlugin extends Plugin {
       // 当前运行时都必须保持原生 Web Viewer 身份。
       webviewStripElectronUa: false,
       hideObsidianStatusBar: loaded.hideObsidianStatusBar === true,
+      browserAutoHideToolbar: loaded.browserAutoHideToolbar === true,
+      fileHeaderAutoHide: loaded.fileHeaderAutoHide === true,
+      tabBarAutoHide: loaded.tabBarAutoHide === true,
+      chromeAutohideDebugMarginPx:
+        typeof loaded.chromeAutohideDebugMarginPx === "number"
+          ? Math.max(0, loaded.chromeAutohideDebugMarginPx)
+          : 0,
       activityTracking: {
         ...DEFAULT_SETTINGS.activityTracking,
         ...(loaded.activityTracking ?? {}),
@@ -617,6 +633,7 @@ export default class MvAideIdePlugin extends Plugin {
         },
       },
       dsh: normalizeDshSettings(loaded.dsh),
+      customWebPages: normalizeCustomWebPages(loaded.customWebPages),
     });
     setLanguage(this.settings.language ?? "zh");
     this.universalMcpStatus = this.settings.universalMcp.enabled
@@ -807,6 +824,11 @@ export default class MvAideIdePlugin extends Plugin {
     this.browserDownloadsButton = new BrowserDownloadsButtonFeature(this);
     this.browserDownloadsButton.register();
     this.browserDownloadsButton.setEnabled(this.settings.browserDownloadsButton);
+    this.chromeAutoHide = new ChromeAutoHideFeature(this);
+    this.chromeAutoHide.register();
+    this.chromeAutoHide.setEnabled("tabBar", this.settings.tabBarAutoHide);
+    this.chromeAutoHide.setEnabled("fileHeader", this.settings.fileHeaderAutoHide);
+    this.chromeAutoHide.setEnabled("webviewerHeader", this.settings.browserAutoHideToolbar);
     this.fileExplorerPathBar = new FileExplorerPathBarFeature(this);
     this.fileExplorerPathBar.register();
     this.fileExplorerPathBar.setEnabled(this.settings.fileExplorerPathBar);
@@ -847,6 +869,9 @@ export default class MvAideIdePlugin extends Plugin {
     this.llmFeature = new LlmFeature(this);
     this.llmFeature.registerCommands();
     this.llmFeature.registerMenus();
+
+    this.customWebPages = createCustomWebPages(this);
+    this.customWebPages.sync();
 
     this.fileTypeIconView = new FileTypeIconView({
       app: this.app,
@@ -914,6 +939,8 @@ export default class MvAideIdePlugin extends Plugin {
     this.fileTypeIconView = null;
     this.localWebPreview?.dispose();
     this.localWebPreview = null;
+    this.customWebPages?.unload();
+    this.customWebPages = null;
     this.dshFeature?.dispose();
     this.dshFeature = null;
     this.removeWebSelectionReporters();
@@ -956,6 +983,8 @@ export default class MvAideIdePlugin extends Plugin {
 
   applyObsidianStatusBarVisibility(): void {
     applyNativeStatusBarVisibility(document, this.settings.hideObsidianStatusBar);
+    // 原生状态栏显隐会切换编辑器内 vim 悬浮状态的强制启用规则。
+    this.vimFeature?.refreshStatusChrome();
   }
 
   refreshTerminalThemes(): void {
@@ -1120,6 +1149,7 @@ export default class MvAideIdePlugin extends Plugin {
         this.inlineCompletion?.shouldHandleKeyBeforeVim(view, event) ?? false,
       onEnterVisual: (view) => this.inlineCompletion?.dismissForVimVisual(view),
       createStatusBarItem: () => this.addStatusBarItem(),
+      nativeStatusBarHidden: () => this.settings.hideObsidianStatusBar,
       registerEditorExtension: (extension) =>
         this.registerEditorExtension(extension),
       refreshEditorExtensions: () => this.app.workspace.updateOptions(),
@@ -1387,6 +1417,7 @@ export default class MvAideIdePlugin extends Plugin {
     this.lintFeature?.registerCommand();
     this.regexReplace?.registerCommands();
     this.dshFeature?.refreshCommand();
+    this.customWebPages?.sync();
   }
 
   private refreshRibbonIcons(): void {
@@ -1824,6 +1855,24 @@ export default class MvAideIdePlugin extends Plugin {
     await this.saveData(this.settings);
   }
 
+  async setBrowserAutoHideToolbarEnabled(enabled: boolean): Promise<void> {
+    this.settings.browserAutoHideToolbar = enabled;
+    this.chromeAutoHide?.setEnabled("webviewerHeader", enabled);
+    await this.saveData(this.settings);
+  }
+
+  async setFileHeaderAutoHideEnabled(enabled: boolean): Promise<void> {
+    this.settings.fileHeaderAutoHide = enabled;
+    this.chromeAutoHide?.setEnabled("fileHeader", enabled);
+    await this.saveData(this.settings);
+  }
+
+  async setTabBarAutoHideEnabled(enabled: boolean): Promise<void> {
+    this.settings.tabBarAutoHide = enabled;
+    this.chromeAutoHide?.setEnabled("tabBar", enabled);
+    await this.saveData(this.settings);
+  }
+
   async setFileExplorerPathBarEnabled(enabled: boolean): Promise<void> {
     this.settings.fileExplorerPathBar = enabled;
     this.fileExplorerPathBar?.setEnabled(enabled);
@@ -1838,6 +1887,16 @@ export default class MvAideIdePlugin extends Plugin {
     await this.localWebPreview?.setEnabled(enabled);
     if (!enabled) this.localWebPreview = null;
     await this.saveData(this.settings);
+  }
+
+  /**
+   * 自定义网页列表（自定义命令 + 功能区图标）。设置页调用方负责重新渲染。
+   * 原样保存（含编辑中的半成品行）；无效条目仅在加载时与 sync() 消费侧过滤。
+   */
+  async setCustomWebPages(pages: CustomWebPage[]): Promise<void> {
+    this.settings.customWebPages = pages;
+    await this.saveData(this.settings);
+    this.customWebPages?.sync();
   }
 
   /** 路径栏与下载弹窗共享的「全量显示」开关状态（会话级，不持久化）。 */
@@ -2969,6 +3028,9 @@ export default class MvAideIdePlugin extends Plugin {
       await this.startupPerformance.measure("post-layout.dsh-ide-reconcile", async () => {
         await this.dshFeature?.reconcileIdeIntegration({ restartRunningDsh: false });
       });
+      await this.startupPerformance.measure("post-layout.dsh-plugin-auto-update", () =>
+        this.dshFeature?.runPluginAutoUpdateAfterReconcile() ?? Promise.resolve(),
+      );
       await this.startupPerformance.measure("post-layout.codex-provider", () =>
         this.syncCodexIdeProvider(),
       );

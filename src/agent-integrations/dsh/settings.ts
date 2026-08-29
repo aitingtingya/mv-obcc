@@ -26,6 +26,18 @@ export interface DshSettings {
   terminalAwarenessEnhanced: boolean;
   /** Downscale DSH request images so their longest edge never exceeds 2000px. */
   autoFitImageSize: boolean;
+  /**
+   * After every startup dependency check, automatically update the injected
+   * DSH plugins when their version differs from this mv-AIDE build. Newer
+   * injections are never downgraded. Default off.
+   */
+  autoUpdatePlugins: boolean;
+  /**
+   * When an automatic plugin update changed files, restart the already
+   * running DSH backend so it loads the new bundle. Never opens a new
+   * mv-agent view. Default off.
+   */
+  autoRestartAfterPluginUpdate: boolean;
   /** 状态栏「打开」勾选框：独立控制文件/页面位置信息的被动推送。 */
   pushLocation: boolean;
   /** 状态栏「选中」勾选框：独立控制选中文本的被动推送。 */
@@ -48,6 +60,8 @@ export const DEFAULT_DSH_SETTINGS: DshSettings = {
   reviewOutsideVault: false,
   terminalAwarenessEnhanced: false,
   autoFitImageSize: true,
+  autoUpdatePlugins: false,
+  autoRestartAfterPluginUpdate: false,
   pushLocation: true,
   pushSelection: true,
   outsideToolPolicy: {},
@@ -98,6 +112,8 @@ export function normalizeDshSettings(raw: unknown): DshSettings {
     reviewOutsideVault: value.reviewOutsideVault === true,
     terminalAwarenessEnhanced: value.terminalAwarenessEnhanced === true,
     autoFitImageSize: value.autoFitImageSize !== false,
+    autoUpdatePlugins: value.autoUpdatePlugins === true,
+    autoRestartAfterPluginUpdate: value.autoRestartAfterPluginUpdate === true,
     pushLocation: value.pushLocation !== false,
     pushSelection: value.pushSelection !== false,
     outsideToolPolicy: normalizeOutsideToolPolicy(value.outsideToolPolicy),

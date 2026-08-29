@@ -1,0 +1,35 @@
+{
+  "name": "@mv-aide/mv-dsh-subworkspace",
+  "version": "0.1.0",
+  "description": "Independent DeepSeek Harness plugin for associated workspace roots and per-tool multi-root dispatch",
+  "license": "MIT",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-runtime"
+      ],
+      "external": [
+        "react"
+      ],
+      "platform": "web"
+    }
+  },
+  "files": [
+    "lib/*.js"
+  ],
+  "scripts": {
+    "test": "node --test"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "*",
+    "@deepseek-ai/schemastery": "*",
+    "@deepseek-ai/dsh-tools": "*"
+  }
+}

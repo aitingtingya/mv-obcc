@@ -34,7 +34,7 @@ import {
   type LlmWebHotkeyPending,
   type LlmWebPendingInvoke,
 } from "./llm-web-menu-script";
-import { activeWorkspaceLeaf, currentWorkspaceContext } from "./workspace-context";
+import { activeWorkspaceLeaf, isBrowserViewType } from "./workspace-context";
 import type { LlmPromptTemplate } from "./types";
 
 /** Minimum shape we need from an Obsidian Web Viewer view. */
@@ -232,9 +232,13 @@ export class LlmFeature {
   /**
    * Register context-menu entries.
    *
-   * Markdown gets Obsidian's `editor-menu` event. PDF needs a DOM-level
-   * `contextmenu` listener (PDF.js doesn't fire editor-menu) plus a cached
-   * selection. Webviewer optionally injects a script into the page.
+   * Markdown 源码/实时预览编辑视图：Obsidian 的 `editor-menu` 事件。
+   * Markdown 阅读视图与任意同源自定义 ItemView：`editor-menu` 不派发，
+   * 走 workspace 容器上 capture 阶段的 `contextmenu` 后备（见
+   * onFallbackContextMenu）。
+   * PDF needs a DOM `contextmenu` listener（PDF.js doesn't fire editor-menu）
+   * plus a cached selection. Webviewer optionally injects a script into the
+   * page.
    */
   registerMenus(): void {
     this.plugin.registerEvent(
@@ -243,6 +247,13 @@ export class LlmFeature {
         if (!this.hasSelectionNow()) return;
         this.appendTemplates(menu);
       }),
+    );
+
+    this.plugin.registerDomEvent(
+      this.app.workspace.containerEl,
+      "contextmenu",
+      (evt: MouseEvent) => this.onFallbackContextMenu(evt),
+      true,
     );
 
     // Re-scan for new PDF/webviewer leaves on layout changes.
@@ -375,6 +386,54 @@ export class LlmFeature {
   }
 
   // ---- Markdown ------------------------------------------------------------
+
+  /**
+   * DOM-level contextmenu fallback for views that never fire `editor-menu`:
+   * Markdown 阅读视图与任意同源自定义 ItemView。PDF / webviewer / 编辑态
+   * markdown 各有现属管线，这里一律不接管；事件已被消费（defaultPrevented）
+   * 时同样不动，避免顶替 xterm 之类的自有右键。
+   */
+  private onFallbackContextMenu(evt: MouseEvent): void {
+    if (!this.settings.enabled) return;
+    if (evt.defaultPrevented) return;
+    const target = evt.target as Node | null;
+    const ownerDocument = target?.ownerDocument ?? null;
+    if (!ownerDocument) return;
+    const leaf = this.sameOriginLeafForTarget(ownerDocument, target);
+    if (!leaf) return;
+    const viewType = leaf.view.getViewType();
+    if (isBrowserViewType(viewType) || viewType === "pdf") return;
+    if (
+      leaf.view instanceof MarkdownView &&
+      viewType === "markdown" &&
+      leaf.view.getMode?.() !== "preview"
+    ) {
+      return;
+    }
+    if (this.isResultSurfaceTarget(target)) return;
+    if (!this.settings.templates.some((template) => template.enabled)) return;
+    const selection = ownerDocument.getSelection();
+    if (
+      !selection ||
+      selection.rangeCount === 0 ||
+      !selection.toString().trim()
+    ) {
+      return;
+    }
+    const range = selection.getRangeAt(0);
+    const container = leaf.view.containerEl;
+    if (
+      !container.contains(range.startContainer) &&
+      !container.contains(range.endContainer)
+    ) {
+      return;
+    }
+    evt.preventDefault();
+    evt.stopPropagation();
+    const menu = new Menu();
+    this.appendTemplates(menu);
+    menu.showAtMouseEvent(evt);
+  }
 
   private appendTemplates(menu: Menu): void {
     const templates = this.settings.templates.filter((t) => t.enabled);
@@ -1284,6 +1343,8 @@ export class LlmFeature {
   ): MarkdownEditTarget | null {
     const view = leaf?.view;
     if (!(view instanceof MarkdownView)) return null;
+    // 阅读视图没有可用的编辑句柄：隐藏“插入/替换”按钮，只展示结果。
+    if (view.getMode?.() === "preview") return null;
     const editor = view.editor;
     return {
       editor,

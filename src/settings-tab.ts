@@ -12,6 +12,7 @@ import {
   formatInlineHotkeyLabel,
 } from "./inline-completion/inline-hotkey-format";
 import type {
+  CustomWebPage,
   LlmModelEntry,
   LlmPromptTemplate,
   LlmProviderConfig,
@@ -829,6 +830,7 @@ export class MvAideIdeSettingTab extends PluginSettingTab {
   private readonly openSettingsSections = new Set<MainSettingsSectionId>();
   private readonly openIdeSubsectionIds = new Set<string>();
   private readonly openInDocumentAiSubsectionIds = new Set<string>();
+  private readonly openCustomWebPageIds = new Set<string>();
   private readonly openSourceAssistProfileIds = new Set<string>();
   private readonly openVimSourceProfileExtensions = new Set<string>();
   private readonly sourceAssistSnippetEditors: EditorView[] = [];
@@ -2215,6 +2217,155 @@ export class MvAideIdeSettingTab extends PluginSettingTab {
           }),
       );
 
+    new Setting(containerEl)
+      .setName(t("自动收起网页顶部工具栏"))
+      .setDesc(
+        t(
+          "内置浏览器页面的顶部工具栏（前进后退、地址栏等）默认收起；鼠标移到页面顶部时自动展开。",
+        ),
+      )
+      .addToggle((toggle) =>
+        toggle
+          .setValue(this.plugin.settings.browserAutoHideToolbar)
+          .onChange(async (value) => {
+            await this.plugin.setBrowserAutoHideToolbarEnabled(value);
+          }),
+      );
+
+    new Setting(containerEl)
+      .setName(t("自动收起标签页工具栏"))
+      .setDesc(
+        t(
+          "各标签组的标签页栏默认收起为顶部一条细感应区；鼠标移到顶部边缘时自动展开。",
+        ),
+      )
+      .addToggle((toggle) =>
+        toggle
+          .setValue(this.plugin.settings.tabBarAutoHide)
+          .onChange(async (value) => {
+            await this.plugin.setTabBarAutoHideEnabled(value);
+          }),
+      );
+
+    addHeading(containerEl, t("快捷打开网页"));
+
+    new Setting(containerEl)
+      .setName(t("自定义网页按钮"))
+      .setDesc(
+        t(
+          "为常用网页创建命令和功能区图标按钮，使用内置浏览器在左侧边栏、中间区域或右侧边栏打开。",
+        ),
+      )
+      .addButton((button) =>
+        button
+          .setButtonText(t("添加网页"))
+          .setCta()
+          .onClick(async () => {
+            const newPage: CustomWebPage = {
+              id: `page-${Date.now().toString(36)}`,
+              name: t("新网页"),
+              url: "https://example.com",
+              icon: "globe",
+              ribbon: false,
+              position: "center",
+            };
+            const next: CustomWebPage[] = [
+              ...this.plugin.settings.customWebPages,
+              newPage,
+            ];
+            // 新增条目默认展开，便于立即编辑；既有条目保持折叠。
+            this.openCustomWebPageIds.add(`custom-web-page-${newPage.id}`);
+            await this.plugin.setCustomWebPages(next);
+            this.rerenderSettings("filesystem-browser");
+          }),
+      );
+
+    this.plugin.settings.customWebPages.forEach((page, index) => {
+      const updatePage = async (patch: Partial<CustomWebPage>) => {
+        const next = this.plugin.settings.customWebPages.slice();
+        next[index] = { ...next[index], ...patch };
+        await this.plugin.setCustomWebPages(next);
+      };
+      const summaryTitle =
+        (page.name.trim() || t("未命名网页")) +
+        (page.url.trim() ? `（${page.url.trim()}）` : "");
+      const pageBody = createRememberedSettingsSubsection(
+        containerEl,
+        `custom-web-page-${page.id}`,
+        summaryTitle,
+        this.openCustomWebPageIds,
+      );
+
+      // 一行一个控件，避免预设行横向溢出设置面板。
+      new Setting(pageBody)
+        .setName(t("名称"))
+        .addText((text) =>
+          text
+            .setPlaceholder(t("名称"))
+            .setValue(page.name)
+            .onChange((value) => void updatePage({ name: value })),
+        );
+
+      new Setting(pageBody)
+        .setName(t("网址（http/https）"))
+        .addText((text) =>
+          text
+            .setPlaceholder("https://example.com")
+            .setValue(page.url)
+            .onChange((value) => void updatePage({ url: value })),
+        );
+
+      new Setting(pageBody)
+        .setName(t("图标（Lucide 名称）"))
+        .setDesc(t("用于功能区按钮，未知名称自动回退为 globe。"))
+        .addText((text) =>
+          text
+            .setPlaceholder("Globe")
+            .setValue(page.icon)
+            .onChange((value) => void updatePage({ icon: value })),
+        );
+
+      new Setting(pageBody)
+        .setName(t("打开位置"))
+        .addDropdown((dropdown) =>
+          dropdown
+            .addOption("left", t("左边栏"))
+            .addOption("center", t("中间区域"))
+            .addOption("right", t("右边栏"))
+            .setValue(page.position)
+            .onChange(
+              (value) =>
+                void updatePage({
+                  position: value as CustomWebPage["position"],
+                }),
+            ),
+        );
+
+      new Setting(pageBody)
+        .setName(t("功能区图标按钮"))
+        .setDesc(t("在左侧功能区显示一键打开此网页的图标按钮。"))
+        .addToggle((toggle) =>
+          toggle
+            .setValue(page.ribbon)
+            .onChange((value) => void updatePage({ ribbon: value })),
+        );
+
+      new Setting(pageBody)
+        .setName(t("删除此网页"))
+        .addButton((button) =>
+          button
+            .setButtonText(t("删除此网页"))
+            .setClass("mod-warning")
+            .onClick(async () => {
+              const next = this.plugin.settings.customWebPages.filter(
+                (_entry, entryIndex) => entryIndex !== index,
+              );
+              await this.plugin.setCustomWebPages(next);
+              this.rerenderSettings("filesystem-browser");
+            }),
+        );
+    });
+
     addHeading(containerEl, t("文件资源管理器"));
 
     new Setting(containerEl)
@@ -2464,6 +2615,21 @@ export class MvAideIdeSettingTab extends PluginSettingTab {
           }),
       );
 
+    new Setting(containerEl)
+      .setName(t("自动收起文件顶部状态栏"))
+      .setDesc(
+        t(
+          "Markdown 文件视图顶部的前进/后退、文件名与操作栏默认收起；鼠标移到页面顶部时自动展开。",
+        ),
+      )
+      .addToggle((toggle) =>
+        toggle
+          .setValue(this.plugin.settings.fileHeaderAutoHide)
+          .onChange(async (value) => {
+            await this.plugin.setFileHeaderAutoHideEnabled(value);
+          }),
+      );
+
     for (let i = 0; i < settings.profiles.length; i += 1) {
       const profile = settings.profiles[i];
       if (!profile) continue;
@@ -2516,6 +2682,24 @@ export class MvAideIdeSettingTab extends PluginSettingTab {
           .setValue(settings.statusDisplay)
           .onChange(async (value) => {
             settings.statusDisplay = value === "color" ? "color" : "text";
+            await this.plugin.saveVimSettings();
+          }),
+      );
+
+    const nativeStatusBarHidden = this.plugin.settings.hideObsidianStatusBar;
+    new Setting(containerEl)
+      .setName(t("编辑器内显示 Vim 状态"))
+      .setDesc(
+        nativeStatusBarHidden
+          ? t("原生状态栏已隐藏，此显示已强制启用。")
+          : t("在编辑器视图左下角悬浮显示当前 Vim 模式；原生状态栏隐藏时会强制启用。"),
+      )
+      .addToggle((toggle) =>
+        toggle
+          .setValue(nativeStatusBarHidden ? true : settings.editorStatusBar)
+          .setDisabled(nativeStatusBarHidden)
+          .onChange(async (value) => {
+            settings.editorStatusBar = value;
             await this.plugin.saveVimSettings();
           }),
       );

@@ -263,6 +263,19 @@ export type ExternalFileOpenerExtensionMode =
   | "markdown-only"
   | "markdown-and-source-assist";
 
+export interface CustomWebPage {
+  /** 稳定 id：驱动命令 id / ribbon 句柄；缺省时回落为名称。 */
+  id: string;
+  name: string;
+  url: string;
+  /** Lucide 图标名（可带 lucide- 前缀），空则回退 globe。 */
+  icon: string;
+  /** 是否在左侧 ribbon 显示按钮。 */
+  ribbon: boolean;
+  /** 打开位置：左边栏 / 中间 / 右边栏；每次均新建标签页。 */
+  position: "left" | "center" | "right";
+}
+
 export interface ExternalFileMapping {
   externalPath: string;
   vaultPath: string;
@@ -337,6 +350,16 @@ export interface BridgeSettings {
   fileExplorerPathBar: boolean;
   /** 文件系统与浏览器：本地文件预览（内置浏览器打开 file:// / 本机绝对路径 / HTML 右键菜单）。 */
   browserLocalFilePreview: boolean;
+  /** 文件系统与浏览器：内置浏览器页顶工具栏自动收起，鼠标移到页面顶部悬停展开。 */
+  browserAutoHideToolbar: boolean;
+  /** 源码编写辅助区：Markdown 文件视图顶部状态栏自动收起，鼠标移到页面顶部悬停展开。 */
+  fileHeaderAutoHide: boolean;
+  /** 文件系统与浏览器：标签页栏自动收起为 4px 细感应条，鼠标移到顶部边缘展开。 */
+  tabBarAutoHide: boolean;
+  /** 旧版自动隐藏横向补偿；保留读取兼容，不再影响运行时判定。 */
+  chromeAutohideDebugMarginPx?: number;
+  /** 文件系统与浏览器：自定义网页按钮（命令面板 + 可选 ribbon）。 */
+  customWebPages: CustomWebPage[];
   /** @deprecated 旧版 UA 补丁设置；保留读取兼容，不再产生运行时行为。 */
   webviewStripElectronUa: boolean;
   toolToggles: ToolToggles;

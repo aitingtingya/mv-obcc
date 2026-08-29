@@ -177,7 +177,7 @@ function injectedLayerDetail(label: string, status: DshLayerStatus, currentVersi
 function injectedAggregateDetail(status: DshLayerStatus): string {
   if (status.restartRequired) return t("磁盘插件与当前 DSH 运行插件不同，运行版本待重启。");
   switch (status.state) {
-    case "ready": return t("mv-agent 与 mv-dsh-manager 均已就绪。");
+    case "ready": return t("三个 mv-AIDE DSH 插件均已就绪。");
     case "outdated": return t("至少一个受管插件版本较旧；检测不会覆盖，请点击升级。");
     case "newer": return t("至少一个受管插件高于当前 mv-AIDE；当前版本不会降级覆盖。");
     case "unknown": return t("至少一个受管插件版本未知；建议点击升级。");
@@ -441,7 +441,7 @@ export function renderDshSection(
     const update = environment.updates[layer];
     const setting = new Setting(installEl)
       .setName(name)
-      .setDesc(update.error || status.detail || t("点击“检测”刷新实际状态。"))
+      .setDesc(update.error || status.commandPath || status.detail || t("点击“检测”刷新实际状态。"))
       .addButton((button) => {
         environmentButtons.push(button);
         const sourceDshReady = layer === "dsh" && locations.custom?.state === "ready";
@@ -528,6 +528,7 @@ export function renderDshSection(
     injectedAggregateDetail(pluginStatus),
     injectedLayerDetail("mv-agent", environment.plugins.agent, plugin.manifest.version),
     injectedLayerDetail("mv-dsh-manager", environment.plugins.manager, plugin.manifest.version),
+    injectedLayerDetail("mv-dsh-subworkspace", environment.plugins.subworkspace, plugin.manifest.version),
   ].join("\n");
   const pluginSetting = new Setting(installEl)
     .setName(t("插件注入"))
@@ -545,6 +546,36 @@ export function renderDshSection(
     layerStatusText(pluginStatus),
     layerStatusClass(pluginStatus),
   );
+
+  new Setting(installEl)
+    .setName(t("自动更新注入插件"))
+    .setDesc(
+      t("开启后，每次启动 Obsidian 的依赖检测结束时，若发现注入到 DSH 的插件与当前 mv-AIDE 版本不一致（或注入不完整），将自动更新注入；更高版本的注入永远不会被覆盖。"),
+    )
+    .addToggle((toggle) =>
+      toggle
+        .setValue(plugin.settings.dsh.autoUpdatePlugins)
+        .onChange(async (value) => {
+          plugin.settings.dsh.autoUpdatePlugins = value;
+          await plugin.saveData(plugin.settings);
+          rerender();
+        }),
+    );
+
+  new Setting(installEl)
+    .setName(t("自动更新后重启 mv-agent"))
+    .setDesc(
+      t("自动更新完成后，自动重启正在运行的 mv-agent 使新版本生效；关闭时新版本在下次打开 mv-agent 时生效。"),
+    )
+    .addToggle((toggle) =>
+      toggle
+        .setValue(plugin.settings.dsh.autoRestartAfterPluginUpdate)
+        .setDisabled(!plugin.settings.dsh.autoUpdatePlugins)
+        .onChange(async (value) => {
+          plugin.settings.dsh.autoRestartAfterPluginUpdate = value;
+          await plugin.saveData(plugin.settings);
+        }),
+    );
 
   new Setting(installEl)
     .setName(t("端口"))

@@ -31,6 +31,17 @@ import dshManagerPlanReviewControl from "inline:../../../../mv-dsh-manager/lib/p
 import dshManagerSettingsClient from "inline:../../../../mv-dsh-manager/lib/settings-client.js";
 import dshManagerUiScript from "inline:../../../../mv-dsh-manager/lib/ui-script.js";
 
+import subworkspacePackageJson from "inline:../../../../mv-dsh-subworkspace/package.json?text";
+import subworkspaceReadme from "inline:../../../../mv-dsh-subworkspace/README.md";
+import subworkspaceClient from "inline:../../../../mv-dsh-subworkspace/lib/client.js";
+import subworkspaceSettingsClient from "inline:../../../../mv-dsh-subworkspace/lib/settings-client.js";
+import subworkspaceIndex from "inline:../../../../mv-dsh-subworkspace/lib/index.js";
+import subworkspaceServer from "inline:../../../../mv-dsh-subworkspace/lib/server.js";
+import subworkspaceSettings from "inline:../../../../mv-dsh-subworkspace/lib/settings.js";
+import subworkspaceStore from "inline:../../../../mv-dsh-subworkspace/lib/store.js";
+import subworkspaceRuntimeWorkspace from "inline:../../../../mv-dsh-subworkspace/lib/runtime-workspace.js";
+import subworkspaceTools from "inline:../../../../mv-dsh-subworkspace/lib/tools.js";
+
 /** Release builds inline the complete dual-face mv-agent package into main.js. */
 export const MV_AGENT_PLUGIN_FILES: Readonly<Record<string, string>> = {
   "package.json": agentPackageJson,
@@ -67,6 +78,19 @@ export const MV_DSH_MANAGER_PLUGIN_FILES: Readonly<Record<string, string>> = {
   "lib/model-capabilities-client.js": dshManagerModelCapabilitiesClient,
   "lib/client.js": `${dshManagerSettingsClient}\n${dshManagerPlanReviewClient}\n${dshManagerModelCapabilitiesClient}\n${dshManagerFileDropClient}\n${dshManagerClient}`,
   "lib/ui-script.js": dshManagerUiScript,
+};
+
+export const MV_DSH_SUBWORKSPACE_PLUGIN_FILES: Readonly<Record<string, string>> = {
+  "package.json": subworkspacePackageJson,
+  "README.md": subworkspaceReadme,
+  "lib/client.js": `${subworkspaceSettingsClient}\n${subworkspaceClient}`,
+  "lib/index.js": subworkspaceIndex,
+  "lib/server.js": subworkspaceServer,
+  "lib/settings.js": subworkspaceSettings,
+  "lib/settings-client.js": subworkspaceSettingsClient,
+  "lib/store.js": subworkspaceStore,
+  "lib/runtime-workspace.js": subworkspaceRuntimeWorkspace,
+  "lib/tools.js": subworkspaceTools,
 };
 
 /** Backwards-compatible alias for existing imports */

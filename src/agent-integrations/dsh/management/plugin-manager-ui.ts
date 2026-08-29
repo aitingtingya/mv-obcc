@@ -313,7 +313,12 @@ export function renderDshPluginManager(
           .setIcon("trash")
           .setTooltip(t("卸载插件"))
           .onClick(async () => {
-            const isCore = entry.id.startsWith("@deepseek-ai/") || entry.id === "mv-dsh-manager" || entry.id === "mv-agent" || entry.id.includes("mv-dsh-manager");
+            const isCore = entry.id.startsWith("@deepseek-ai/")
+              || entry.id === "mv-dsh-manager"
+              || entry.id === "mv-agent"
+              || entry.id === "mv-dsh-subworkspace"
+              || entry.id.includes("mv-dsh-manager")
+              || entry.id.includes("mv-dsh-subworkspace");
             let force = false;
             if (isCore) {
               if (!confirm(t("⚠️ 高危警告：插件 {id} 属于系统核心/官方或管理器插件，删除可能导致会话或管理功能异常！确定要强制删除吗？", { id: entry.id }))) return;

@@ -88,11 +88,15 @@ window.__ModuleLoader__.load({
       // through the window marker, so the sheet is installed exactly once.
       if (typeof document === 'undefined' || typeof CSSStyleSheet !== 'function' || !Array.isArray(document.adoptedStyleSheets)) return;
       const marker = window;
-      if (marker.__MVA_SPC_CARD_STYLE__ === true) return;
       const sheet = new CSSStyleSheet();
+      // Per-plugin guard: sibling cards (mv-agent / mv-dsh-manager / mv-dsh-subworkspace)
+      // share the page but own disjoint class sets, so each must inject its own sheet
+      // regardless of the others. Self-heal when the window marker survives an HMR
+      // reload that dropped the adopted sheet.
+      if (marker.__MVA_DSH_MANAGER_CARD_STYLE__ && document.adoptedStyleSheets.includes(marker.__MVA_DSH_MANAGER_CARD_STYLE__)) return;
       sheet.replaceSync(CARD_CSS);
       document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
-      marker.__MVA_SPC_CARD_STYLE__ = true;
+      marker.__MVA_DSH_MANAGER_CARD_STYLE__ = sheet;
     };
     // Byte-for-byte copy of DSH's IconChevronDownOutline14 glyph, so the card
     // needs no extra module require to draw the native disclosure chevron.

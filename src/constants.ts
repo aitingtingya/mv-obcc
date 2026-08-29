@@ -64,6 +64,10 @@ export const DEFAULT_SETTINGS = {
   browserDownloadsButton: true,
   fileExplorerPathBar: true,
   browserLocalFilePreview: true,
+  browserAutoHideToolbar: false,
+  fileHeaderAutoHide: false,
+  tabBarAutoHide: false,
+  customWebPages: [],
   webviewStripElectronUa: false,
   toolToggles: {
     getLatestSelection: true,
@@ -191,6 +195,7 @@ export const DEFAULT_SETTINGS = {
   vim: {
     allowExternalCommands: false,
     statusDisplay: "text" as const,
+    editorStatusBar: false,
     cursorColorTheme: "default",
     cursorColorCustom: { r: 148, g: 103, b: 189 },
     sources: {},

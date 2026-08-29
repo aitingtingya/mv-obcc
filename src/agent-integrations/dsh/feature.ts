@@ -55,6 +55,7 @@ import {
   type DshCleanupFailure,
 } from "./runtime/install-workspace";
 import type { DshInstallTarget } from "./settings";
+import { DshPluginAutoUpdater } from "./plugin-auto-updater";
 import {
   renderDshAgentEntry,
   renderDshSection,
@@ -155,6 +156,7 @@ function blockedPluginStatuses(detail: string): DshEnvironmentStatus["plugins"] 
   return {
     agent: { state: "blocked", detail },
     manager: { state: "blocked", detail },
+    subworkspace: { state: "blocked", detail },
     full: { state: "blocked", detail },
   };
 }
@@ -217,6 +219,7 @@ async function probeDshWebViaRequestUrl(
  */
 export class DshFeature {
   private readonly processManager: DshProcessManager;
+  private readonly pluginAutoUpdater: DshPluginAutoUpdater;
   private commandRegistered = false;
   private environment: DshEnvironmentStatus = structuredClone(UNKNOWN_DSH_ENVIRONMENT);
   private environmentBusy = false;
@@ -266,6 +269,17 @@ export class DshFeature {
       DSH_WEB_VIEW_TYPE,
       (leaf) => new DshWebView(leaf, this.plugin),
     );
+    // Modular auto-updater for the injected DSH plugins. It only consumes
+    // the startup reconcile's cached status plus the two capability methods
+    // below, so existing reconcile/manual flows stay byte-identical.
+    this.pluginAutoUpdater = new DshPluginAutoUpdater({
+      isAutoUpdateEnabled: () => this.plugin.settings.dsh.autoUpdatePlugins === true,
+      isAutoRestartEnabled: () => this.plugin.settings.dsh.autoRestartAfterPluginUpdate === true,
+      fullStatus: () => this.environment.plugins.full,
+      runFullInjection: () => this.runFullInjectionForAutoUpdate(),
+      restartRunningMvAgent: () => this.restartRunningMvAgentForAutoUpdate(),
+      notify: (message) => new Notice(message, 8000),
+    });
   }
 
   /** Whether the mv-AIDE IDE bridge must run for this feature (lock file + tools). */
@@ -339,30 +353,8 @@ export class DshFeature {
     const next = structuredClone(plugins);
     let dshUrl = this.processManager.currentUrl();
     if (!dshUrl) dshUrl = await this.processManager.findDshUrl().catch(() => null);
-    if (!dshUrl || next.agent.state === "missing") return next;
+    if (!dshUrl) return next;
 
-    let payload: unknown;
-    try {
-      const endpoint = new URL("/api/mv-agent/runtime", dshUrl).toString();
-      const response = await withTimeout(
-        requestUrl({ url: endpoint, method: "GET", throw: false }),
-        2_000,
-      );
-      if (response.status !== 200) {
-        if (next.agent.relation === "current") {
-          next.agent.restartRequired = true;
-          next.agent.detail = `${next.agent.detail ?? ""} 当前 DSH 未提供运行 bundle 身份；运行版本待重启。`.trim();
-          next.full.restartRequired = true;
-          next.full.detail = `${next.full.detail ?? ""} 当前 DSH 运行版本待重启。`.trim();
-        }
-        return next;
-      }
-      payload = response.json;
-    } catch {
-      return next;
-    }
-
-    const root = payload && typeof payload === "object" ? payload as Record<string, unknown> : {};
     const describe = (value: unknown): { mvAideVersion: string | null; fingerprint: string | null } | null => {
       if (!value || typeof value !== "object") return null;
       const row = value as Record<string, unknown>;
@@ -371,13 +363,32 @@ export class DshFeature {
         fingerprint: typeof row.fingerprint === "string" ? row.fingerprint : null,
       };
     };
+    const fetchRuntime = async (pathname: string): Promise<Record<string, unknown>> => {
+      try {
+        const endpoint = new URL(pathname, dshUrl).toString();
+        const response = await withTimeout(
+          requestUrl({ url: endpoint, method: "GET", throw: false }),
+          2_000,
+        );
+        return response.status === 200 && response.json && typeof response.json === "object"
+          ? response.json as Record<string, unknown>
+          : {};
+      } catch {
+        return {};
+      }
+    };
+    const [mvRuntime, subworkspaceRuntime] = await Promise.all([
+      fetchRuntime("/api/mv-agent/runtime"),
+      fetchRuntime("/api/mv-dsh-subworkspace/runtime"),
+    ]);
     // Accept the short-lived flat descriptor shape while every current bundle
     // publishes the stable { agent, manager } structure.
     const runtime = {
-      agent: describe(root.agent) ?? describe(root),
-      manager: describe(root.manager),
+      agent: describe(mvRuntime.agent) ?? describe(mvRuntime),
+      manager: describe(mvRuntime.manager),
+      subworkspace: describe(subworkspaceRuntime.runtime),
     };
-    for (const kind of ["agent", "manager"] as const) {
+    for (const kind of ["agent", "manager", "subworkspace"] as const) {
       const disk = next[kind];
       const running = runtime[kind];
       if (disk.state === "missing") continue;
@@ -396,7 +407,9 @@ export class DshFeature {
         ? `${disk.detail ?? ""} 磁盘版本 ${disk.version ?? "未知"}，当前 DSH 已加载 ${running.mvAideVersion ?? "未知"}；运行版本待重启。`.trim()
         : `${disk.detail ?? ""} 当前 DSH 已加载同一 bundle。`.trim();
     }
-    next.full.restartRequired = next.agent.restartRequired === true || next.manager.restartRequired === true;
+    next.full.restartRequired = next.agent.restartRequired === true
+      || next.manager.restartRequired === true
+      || next.subworkspace.restartRequired === true;
     if (next.full.restartRequired) {
       next.full.detail = `${next.full.detail ?? ""} 磁盘包与当前 DSH 运行包不同，运行版本待重启。`.trim();
     }
@@ -700,6 +713,101 @@ export class DshFeature {
     const openViews = this.plugin.app.workspace.getLeavesOfType(DSH_WEB_VIEW_TYPE);
     if (openViews.length === 0) return;
     await this.restartDshWithNotice();
+  }
+
+  /**
+   * Run the modular plugin auto-updater once the startup dependency check
+   * (reconcileIdeIntegration) settled. Called from main.ts post-layout
+   * startup. All failures are contained; this never affects the startup
+   * chain or the IDE bridge.
+   */
+  async runPluginAutoUpdateAfterReconcile(): Promise<void> {
+    if (!this.plugin.settings.dsh.enabled) return;
+    if (this.idePluginRuntimeState.state !== "ready") return;
+    try {
+      await this.pluginAutoUpdater.runAfterStartupReconcile();
+    } catch (error) {
+      console.error("[mv-aide] DSH plugin auto-update failed", error);
+    }
+  }
+
+  /**
+   * Auto-updater capability: run the explicit full three-plugin injection
+   * (same semantics as the manual 「更新/升级/修复」 button) WITHOUT any
+   * restart — the updater decides about restarts itself. Only invoked when
+   * the cached injection status already qualified, so `environmentBusy`
+   * (a race with a manual environment action) degrades to a skipped run
+   * rather than an injected mid-flight mutation.
+   */
+  private async runFullInjectionForAutoUpdate(): Promise<{
+    ok: boolean;
+    changed?: boolean;
+    message: string;
+  }> {
+    if (this.environmentBusy) {
+      return { ok: false, changed: false, message: t("DSH 环境操作正在进行，自动更新跳过本次执行。") };
+    }
+    this.environmentBusy = true;
+    try {
+      const vaultRoot = getVaultRoot(this.plugin.app);
+      const detected = await this.inspectActualEnvironment(vaultRoot);
+      if (!detected.runtime.command) {
+        return {
+          ok: false,
+          changed: false,
+          message: t("未解析到 DSH 命令，自动更新跳过本次执行。"),
+        };
+      }
+      const result = await ensureDshFullInjection(
+        vaultRoot,
+        detected.runtime.command,
+        this.plugin.manifest.version,
+        { explicit: true },
+      );
+      if (result.ok && result.changed === true) {
+        await this.refreshEnvironmentAfterAutoUpdate();
+      }
+      return result;
+    } finally {
+      this.environmentBusy = false;
+    }
+  }
+
+  /**
+   * After `ensureDshFullInjection` actually wrote new bundles to disk the
+   * startup-reconcile snapshot in `this.environment` is stale (typically
+   * still showing 「需要修复」). Re-run the standard environment inspection
+   * once so the settings panel reflects the injected plugins as 「已就绪」
+   * without waiting for a manual re-check. The refresh itself re-enters
+   * `inspectActualEnvironment`, which re-computes `environmentFrom(...)`,
+   * `annotateRunningBundleStatus(...)` and persists `settings.dsh.injected`;
+   * any failure is contained to a console entry so the startup chain and the
+   * updater's success notice stay unaffected.
+   */
+  private async refreshEnvironmentAfterAutoUpdate(): Promise<void> {
+    try {
+      const vaultRoot = getVaultRoot(this.plugin.app);
+      await this.inspectActualEnvironment(vaultRoot);
+    } catch (error) {
+      console.error("[mv-aide] DSH plugin auto-update environment refresh failed", error);
+    }
+  }
+
+  /**
+   * Auto-updater capability: restart the DSH backend ONLY when one is
+   * actually running (current or discoverable endpoint), so it loads the
+   * freshly injected bundle. Unlike restartOpenMvAgentAfterInjection this is
+   * gated on a running backend rather than an open view, but it never opens
+   * a new mv-agent view — existing tabs are simply navigated back to their
+   * endpoint. Returns true when a running instance was found and restarted.
+   */
+  private async restartRunningMvAgentForAutoUpdate(): Promise<boolean> {
+    let dshUrl = this.processManager.currentUrl();
+    if (!dshUrl) dshUrl = await this.processManager.findDshUrl().catch(() => null);
+    if (!dshUrl) return false;
+    const url = await this.processManager.restartForObsidian(this.collectActiveDshUrls());
+    this.navigateOpenViewsTo(url);
+    return true;
   }
 
   async reconcileIdeIntegration(options: {

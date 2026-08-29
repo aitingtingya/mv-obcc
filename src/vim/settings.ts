@@ -13,6 +13,8 @@ export interface VimCursorColorCustom {
 export interface VimSettings {
   allowExternalCommands: boolean;
   statusDisplay: "text" | "color";
+  // 编辑器内左下角悬浮 vim 状态（Obsidian 原生状态栏隐藏时强制启用）。
+  editorStatusBar: boolean;
   // 非插入模式块光标配色："default"（跟随文本色）| 内置主题 id | "custom"
   cursorColorTheme: string;
   cursorColorCustom: VimCursorColorCustom;
@@ -22,6 +24,7 @@ export interface VimSettings {
 export const DEFAULT_VIM_SETTINGS: VimSettings = {
   allowExternalCommands: false,
   statusDisplay: "text",
+  editorStatusBar: false,
   cursorColorTheme: "default",
   cursorColorCustom: { r: 148, g: 103, b: 189 },
   sources: {},
@@ -46,6 +49,7 @@ export function normalizeVimSettings(value: unknown): VimSettings {
   return {
     allowExternalCommands: raw.allowExternalCommands === true,
     statusDisplay: raw.statusDisplay === "color" ? "color" : "text",
+    editorStatusBar: raw.editorStatusBar === true,
     cursorColorTheme: typeof raw.cursorColorTheme === "string" &&
       raw.cursorColorTheme.length > 0
       ? raw.cursorColorTheme

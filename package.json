@@ -1,6 +1,6 @@
 {
   "name": "mv-obcc",
-  "version": "0.9.14",
+  "version": "0.9.15",
   "description": "mv-AIDE: an AI IDE bridge connecting Claude Code, Codex CLI and universal MCP agents to local vaults.",
   "main": "main.js",
   "type": "module",
@@ -8,10 +8,10 @@
     "build": "node esbuild.config.mjs production",
     "dev": "node esbuild.config.mjs",
     "lint": "npm run lint:obsidian",
-    "lint:obsidian": "eslint main.ts src mv-agent/lib mv-dsh-manager/lib manifest.json --suppressions-location .github/eslint-suppressions.json --no-warn-ignored",
+    "lint:obsidian": "eslint main.ts src mv-agent/lib mv-dsh-manager/lib mv-dsh-subworkspace/lib manifest.json --suppressions-location .github/eslint-suppressions.json --no-warn-ignored",
     "lint:vim-official": "eslint --config eslint.vim.config.mjs src/vim src/vim-host",
     "typecheck": "tsc --noEmit",
-    "test:packages": "npm --prefix mv-agent test && npm --prefix mv-dsh-manager test",
+    "test:packages": "npm --prefix mv-agent test && npm --prefix mv-dsh-manager test && npm --prefix mv-dsh-subworkspace test",
     "verify": "npm run lint && npm run lint:vim-official && npm run typecheck && npm run build"
   },
   "dependencies": {

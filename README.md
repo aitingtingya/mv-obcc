@@ -4,7 +4,7 @@
 
 **把 Obsidian 变成面向写作、研究与开发的 AI IDE。** mv-AIDE 让 Agent 感知你正在阅读和编辑的内容，并把 AI 编辑、源码工具、终端、Vim 与桌面文件工作流放进同一个界面。
 
-> 当前版本：**0.9.13**。仅支持桌面端，要求 Obsidian 1.7.2 及以上。
+> 仅支持桌面端，要求 Obsidian 1.7.2 及以上。
 
 [GitHub 仓库](https://github.com/aitingtingya/mv-obcc)
 
@@ -24,13 +24,6 @@ Claude Code、Codex CLI 和任意 MCP Agent 可以读取当前标签、选区、
 
 同一插件内可以编辑 TeX 等源码、运行终端、使用独立 Vim 引擎、浏览电脑文件，并让库外文件由指定 Obsidian 仓库打开。每个模块都能单独关闭。
 
-## 0.9.13 更新重点
-
-- **DSH 多仓库连接更可靠**：每个对话独立选择并恢复一个 Vault；不同对话可以连接不同 Vault，也可以同时连接同一个 Vault。
-- **源码版 DSH 可被完整管理**：支持自动识别正在运行的源码仓库，也可手动指定仓库根目录或 `apps/cli`，检测、启停、更新与插件注入共用同一来源。
-- **模型与图片能力补齐**：DSH 模型目录可声明图片输入、思考等级映射和专家兼容参数；超限图片可在写入 DSH 历史前等比缩放。
-- **终端增强形成闭环**：mv-agent 可列出、读取、输入、可靠运行命令、新建、聚焦并真正关闭终端标签；重启后唤醒的标签会等待新 shell 提示符可读。
-
 ## 八个设置分区
 
 以下顺序与 **设置 → mv-AIDE** 一致。具体默认值、平台边界和排障见[完整功能手册](docs/features.md)。
@@ -38,6 +31,8 @@ Claude Code、Codex CLI 和任意 MCP Agent 可以读取当前标签、选区、
 ### 1. IDE 桥接
 
 当前文件、选区和编辑器状态会被动同步给 Agent：选中文字后直接提问即可，不需要先要求 Agent 调用工具读取现场。支持 Claude Code、Codex CLI、通用 MCP 客户端和 DeepSeek Harness（DSH）。开启「启用 dsh IDE 功能」后，DSH 内的 mv-AIDE 插件经同一本地桥接获得现场上下文、IDE 工具、被动通知与 Diff 审核。
+
+![Claude Code 在 mv-AIDE 终端中读取当前文件与选区并直接回答](media/readme/ide-bridge.gif)
 
 [查看 IDE 桥接边界](docs/features.md#ide-bridge)
 
@@ -54,7 +49,9 @@ mv-agent 把 DSH Web 界面直接放进 Obsidian。视图底部状态栏显示�
 - 上传前图片缩放，以及模型图片输入、思考等级和兼容参数设置；
 - 默认关闭、可按通道开放的库外工具与被动上下文。
 
-DSH 原生「插件配置」中会显示 mv-agent 和 mv-dsh-manager 两张配置卡，可独立开关桥接、上下文、页面增强、模型能力和文件拖入等模块。所有项默认保持现有行为；文件拖入与 IDE 桥接独立，桥接关闭时仍可向当前 DSH 草稿添加本机文件。
+mv-AIDE 完整注入会管理 mv-agent、mv-dsh-manager 和独立的 mv-dsh-subworkspace 三个 DSH 插件。DSH 原生「插件配置」中显示前两者的配置卡；子工作区在工作区行内管理，不依赖 IDE 桥接。文件拖入与 IDE 桥接也保持独立，桥接关闭时仍可向当前 DSH 草稿添加本机文件。
+
+注入的 DSH 插件支持自动更新对齐到当前 mv-AIDE 版本（默认关闭），可选地在更新完成后自动重启 mv-agent；Obsidian 原生状态栏可在 mv-agent 分区一键隐藏。
 
 ![真实 DSH 根据当前选区回答并展开 mv-agent 现场状态](media/readme/mv-agent.gif)
 
@@ -70,7 +67,7 @@ DSH 原生「插件配置」中会显示 mv-agent 和 mv-dsh-manager 两张配�
 
 #### 划词助手
 
-在 Markdown、PDF 或网页中选中文字，调用自己的提示词模板，流式结果可以继续编辑、插入或替换原文。下面是在英文 PDF 中划词并用 DeepSeek 翻译。
+在 Markdown、PDF 或网页中选中文字，调用自己的提示词模板，流式结果可以继续编辑、插入或替换原文。网页视图（Web Viewer）受跨域隔离，可开启注入式右键菜单（实验性）；关闭时插件会把已绑定的「LLM: xxx」快捷键同步注入网页。下面是在英文 PDF 中划词并用 DeepSeek 翻译。
 
 ![英文 PDF 全页视图中划词并流式返回中文翻译](media/readme/selection-assistant.gif)
 
@@ -94,7 +91,7 @@ DSH 原生「插件配置」中会显示 mv-agent 和 mv-dsh-manager 两张配�
 
 ### 5. 源码编写辅助
 
-按后缀注册非 Markdown 源码，配置高亮、Lint、正则替换、`mv-run`、Code Suite 和可选 TeX 数学增强。
+按后缀注册非 Markdown 源码，配置高亮、Lint、正则替换、`mv-run`、Code Suite 和可选 TeX 数学增强。Markdown 视图顶部状态栏也可在此分区一键设为自动收起。
 
 ![TeX Code Suite 与数学预览](media/readme/source-assist.gif)
 
@@ -102,7 +99,7 @@ DSH 原生「插件配置」中会显示 mv-agent 和 mv-dsh-manager 两张配�
 
 ### 6. Vim 增强
 
-独立实现的 Vim 编辑核心支持主要模式、motion、operator、text object、寄存器、宏、搜索、Ex 命令和仓库级 `.vimrc`。
+独立实现的 Vim 编辑核心支持主要模式、motion、operator、text object、寄存器、宏、搜索、Ex 命令和仓库级 `.vimrc`。隐藏 Obsidian 原生状态栏时，Vim 模式徽章自动切换为编辑器内悬浮显示。
 
 ![Vim 模式、相对行号与真实编辑](media/readme/vim.gif)
 
@@ -120,7 +117,7 @@ DSH 原生「插件配置」中会显示 mv-agent 和 mv-dsh-manager 两张配�
 
 ### 8. 文件系统与浏览器
 
-从 Obsidian 直接浏览任意目录、打开下载文件，并给内置网页浏览器补充下载与历史入口。
+从 Obsidian 直接浏览任意目录、打开下载文件，并给内置网页浏览器补充下载与历史入口。三个独立的「自动收起」开关可分别精简网页顶栏、Markdown 顶栏与标签页栏；**自定义网页按钮**把常用网址注册成 Ribbon 图标或命令面板命令，在左 / 中 / 右任一区域一键用内置浏览器打开。
 
 ![文件系统浏览弹窗与浏览器工具栏入口](media/readme/filesystem-browser.png)
 

@@ -25,6 +25,10 @@ export function dshManagerPackageDirectory(): string {
   return path.join(dshWebProfileDirectory(), "node_modules", "@mv-aide", "mv-dsh-manager");
 }
 
+export function dshSubworkspacePackageDirectory(): string {
+  return path.join(dshWebProfileDirectory(), "node_modules", "@mv-aide", "mv-dsh-subworkspace");
+}
+
 export function dshVaultDirectory(vaultRoot: string): string {
   return path.join(mvAideVaultRoot(vaultRoot), "dsh");
 }
