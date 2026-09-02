@@ -12,10 +12,13 @@ import {
 } from "../../../universal-mcp-stdio-command";
 import { DSH_PACKAGE, type DshCommand, type DshWebProbeFn } from "./process";
 import type { DshInstallTarget } from "../settings";
-import { dshVaultRuntimeDirectory } from "../paths";
+import {
+  dshVaultRuntimeDirectory,
+  resolveDshHomeDirectory,
+  withDshHomeEnvironment,
+} from "../paths";
 import {
   classifyNodeOrigin,
-  dshNodeDir,
   managedNodeExecutable,
   managedNpmExecutable,
   runElevatedCommand,
@@ -517,6 +520,9 @@ export interface DshRuntimeInspection {
 
 export interface DshRuntimeInspectOptions {
   customDirectory?: string;
+  /** Explicit absolute DSH data root selected for this Vault/runtime. */
+  homeDirectory?: string;
+  requireRuntimeOwner?: boolean;
   preferredPort?: number;
   sourceProbe?: DshWebProbeFn;
   sourceDiscovery?: DshProcessDiscoveryAdapter;
@@ -554,9 +560,10 @@ function commandEnvironment(
   vaultRoot: string,
   includeVaultPnpm: boolean,
   node: DshNodeStatus | undefined,
+  homeDirectory: string,
   baseEnvironment: NodeJS.ProcessEnv = process.env,
 ): NodeJS.ProcessEnv {
-  let environment = { ...baseEnvironment };
+  let environment = withDshHomeEnvironment(baseEnvironment, homeDirectory);
   if (node?.executable) environment = prependExecutableDirectory(environment, node.executable);
   if (includeVaultPnpm) {
     environment = prependExecutableDirectory(
@@ -574,12 +581,16 @@ export function selectPreferredDshCommand(
   vaultPnpmReady: boolean,
   node?: DshNodeStatus,
   baseEnvironment: NodeJS.ProcessEnv = process.env,
+  homeDirectory = resolveDshHomeDirectory(undefined, baseEnvironment),
+  requireRuntimeOwner = false,
 ): DshCommand | null {
   const selected = vault ?? global;
   if (!selected) return null;
   return {
     ...selected,
-    env: commandEnvironment(vaultRoot, vaultPnpmReady, node, baseEnvironment),
+    env: commandEnvironment(vaultRoot, vaultPnpmReady, node, homeDirectory, baseEnvironment),
+    homeDirectory,
+    requireRuntimeOwner,
   };
 }
 
@@ -714,9 +725,13 @@ export async function inspectDshRuntime(
   options: DshRuntimeInspectOptions = {},
 ): Promise<DshRuntimeInspection> {
   const commandEnv = environment ?? await resolveUserCommandEnvironment(process.platform, process.env, runner);
+  const homeDirectory = resolveDshHomeDirectory(options.homeDirectory, commandEnv);
   const node = selectedNodeStatus(nodes);
   const globalNode = nodes.global.state === "ready" ? nodes.global : undefined;
-  const globalCommandEnv = prependExecutableDirectory(commandEnv, globalNode?.executable);
+  const globalCommandEnv = prependExecutableDirectory(
+    withDshHomeEnvironment(commandEnv, homeDirectory),
+    globalNode?.executable,
+  );
   const globalNpmExecutable = globalNode?.npmExecutable;
   const prefix = await npmGlobalPrefix(globalNpmExecutable, runner, globalCommandEnv);
   // Volta's Windows shims represent the CLI the user actually invokes. Its npm
@@ -782,7 +797,9 @@ export async function inspectDshRuntime(
         command: {
           executable: node.executable,
           argsPrefix: [dshCliPath(vaultRoot)],
-          env: commandEnvironment(vaultRoot, false, node, commandEnv),
+          env: commandEnvironment(vaultRoot, false, node, homeDirectory, commandEnv),
+          homeDirectory,
+          requireRuntimeOwner: options.requireRuntimeOwner === true,
           origin: "vault",
         },
       }
@@ -793,7 +810,9 @@ export async function inspectDshRuntime(
         command: {
           executable: globalDshExecutable,
           argsPrefix: [],
-          env: commandEnvironment(vaultRoot, false, globalNode ?? node, commandEnv),
+          env: commandEnvironment(vaultRoot, false, globalNode ?? node, homeDirectory, commandEnv),
+          homeDirectory,
+          requireRuntimeOwner: options.requireRuntimeOwner === true,
           origin: "global",
         },
       }
@@ -802,14 +821,18 @@ export async function inspectDshRuntime(
     ? {
         executable: vaultPnpmExecutable,
         argsPrefix: [],
-        env: commandEnvironment(vaultRoot, false, node, commandEnv),
+        env: commandEnvironment(vaultRoot, false, node, homeDirectory, commandEnv),
+        homeDirectory,
+        requireRuntimeOwner: options.requireRuntimeOwner === true,
       }
     : null;
   const globalPnpm: DshCommand | null = globalPnpmExecutable
     ? {
         executable: globalPnpmExecutable,
         argsPrefix: [],
-        env: commandEnvironment(vaultRoot, false, globalNode ?? node, commandEnv),
+        env: commandEnvironment(vaultRoot, false, globalNode ?? node, homeDirectory, commandEnv),
+        homeDirectory,
+        requireRuntimeOwner: options.requireRuntimeOwner === true,
       }
     : null;
 
@@ -817,6 +840,7 @@ export async function inspectDshRuntime(
     vaultRoot,
     vaultPnpmExecutable !== null,
     node,
+    homeDirectory,
     commandEnv,
   );
   let sourceRuntime: DshSourceRuntime | undefined;
@@ -828,6 +852,8 @@ export async function inspectDshRuntime(
       sourceRuntime = await resolveDshSourceRuntime(options.customDirectory, {
         nodeExecutable: node.executable,
         environment: sourceEnvironment,
+        homeDirectory,
+        requireRuntimeOwner: options.requireRuntimeOwner,
         origin: "custom-manual",
         runner,
       });
@@ -838,35 +864,6 @@ export async function inspectDshRuntime(
         commandPath: sourceRuntime.rootDirectory,
         detail: t("自定义源码目录：{path}", { path: sourceRuntime.rootDirectory }),
       };
-      if (options.preferredPort) {
-        const running = await discoverRunningDshSource(options.preferredPort, {
-          nodeExecutable: node.executable,
-          environment: sourceEnvironment,
-          runner,
-          probe: options.sourceProbe,
-          discovery: options.sourceDiscovery,
-        });
-        runningDshUrl = running.url ?? undefined;
-        if (
-          running.url
-          && (
-            !running.runtime
-            || path.resolve(running.runtime.rootDirectory) !== path.resolve(sourceRuntime.rootDirectory)
-          )
-        ) {
-          const runningSource = running.runtime?.rootDirectory
-            ?? t("无法验证来源的运行实例 {url}", { url: running.url });
-          customStatus = {
-            state: "conflict",
-            installed: true,
-            detail: t("运行中的 DSH 来自 {running}，与所选自定义目录 {selected} 不同。请先停止或更正运行实例。", {
-              running: runningSource,
-              selected: sourceRuntime.rootDirectory,
-            }),
-          };
-          sourceRuntime = undefined;
-        }
-      }
     } catch (error) {
       customStatus = {
         state: "error",
@@ -874,10 +871,32 @@ export async function inspectDshRuntime(
         detail: error instanceof Error ? error.message : String(error),
       };
     }
-  } else if (options.preferredPort) {
+  }
+
+  const [vaultDshStatus, globalDshStatus, vaultPnpmStatus, globalPnpmStatus] =
+    await Promise.all([
+      probeCommand(vaultDsh?.command ?? null, runner, vaultDsh ? dshCliPath(vaultRoot) : undefined),
+      globalDsh?.command
+        ? probeCommand(globalDsh.command, runner, globalDsh.command.executable)
+        : Promise.resolve(statusFromBinaryIssue(globalDshIssue)),
+      vaultPnpm
+        ? probeCommand(vaultPnpm, runner, vaultPnpm.executable)
+        : Promise.resolve(statusFromBinaryIssue(vaultPnpmIssue)),
+      globalPnpm
+        ? probeCommand(globalPnpm, runner, globalPnpm.executable)
+        : Promise.resolve(statusFromBinaryIssue(globalPnpmIssue)),
+    ]);
+  if (
+    !options.customDirectory
+    && vaultDshStatus.state !== "ready"
+    && globalDshStatus.state !== "ready"
+    && options.preferredPort
+  ) {
     const discovered = await discoverRunningDshSource(options.preferredPort, {
       nodeExecutable: node.executable,
       environment: sourceEnvironment,
+      homeDirectory,
+      requireRuntimeOwner: options.requireRuntimeOwner,
       runner,
       probe: options.sourceProbe,
       discovery: options.sourceDiscovery,
@@ -899,26 +918,26 @@ export async function inspectDshRuntime(
         || t("已检测到运行中的 DSH，但尚未配置可管理 CLI。");
     }
   }
-
-  const [vaultDshStatus, globalDshStatus, vaultPnpmStatus, globalPnpmStatus] =
-    await Promise.all([
-      probeCommand(vaultDsh?.command ?? null, runner, vaultDsh ? dshCliPath(vaultRoot) : undefined),
-      globalDsh?.command
-        ? probeCommand(globalDsh.command, runner, globalDsh.command.executable)
-        : Promise.resolve(statusFromBinaryIssue(globalDshIssue)),
-      vaultPnpm
-        ? probeCommand(vaultPnpm, runner, vaultPnpm.executable)
-        : Promise.resolve(statusFromBinaryIssue(vaultPnpmIssue)),
-      globalPnpm
-        ? probeCommand(globalPnpm, runner, globalPnpm.executable)
-        : Promise.resolve(statusFromBinaryIssue(globalPnpmIssue)),
-    ]);
   const dsh: DshToolLocations = {
     vault: vaultDshStatus,
     global: globalDshStatus,
     ...(customStatus ? { custom: customStatus } : {}),
   };
-  const pnpm = { vault: vaultPnpmStatus, global: globalPnpmStatus };
+  const pnpm: DshToolLocations = {
+    vault: vaultPnpmStatus,
+    global: globalPnpmStatus,
+    ...(sourceRuntime?.pnpmExecutable && sourceRuntime.pnpmVersion
+      ? {
+          custom: {
+            state: "ready" as const,
+            version: sourceRuntime.pnpmVersion,
+            installed: true,
+            commandPath: sourceRuntime.pnpmExecutable,
+            detail: t("自定义源码仓库的 pnpm：{path}", { path: sourceRuntime.pnpmExecutable }),
+          },
+        }
+      : {}),
+  };
   const automaticCommand = selectPreferredDshCommand(
     vaultRoot,
     vaultDshStatus.state === "ready" ? vaultDsh?.command ?? null : null,
@@ -926,6 +945,8 @@ export async function inspectDshRuntime(
     pnpm.vault.state === "ready",
     node,
     commandEnv,
+    homeDirectory,
+    options.requireRuntimeOwner === true,
   );
   if (!sourceRuntime && runningUnmanagedDetail && !automaticCommand) {
     dsh.custom = { state: "blocked", installed: true, detail: runningUnmanagedDetail };

@@ -6,6 +6,7 @@ import path from "node:path";
 import { processOutput, runProcess } from "../../../process-runner";
 import {
   MV_AGENT_PLUGIN_FILES,
+  MV_DSH_COMPAT_FILES,
   MV_DSH_MANAGER_PLUGIN_FILES,
   MV_DSH_SUBWORKSPACE_PLUGIN_FILES,
 } from "./plugin-bundle";
@@ -19,14 +20,17 @@ import { compareRuntimeVersions } from "../runtime/package-update";
 import type { DshCommand } from "../runtime/process";
 import {
   dshAgentPackageDirectory,
+  dshCompatPackageDirectory,
   dshManagerPackageDirectory,
   dshSubworkspacePackageDirectory,
   dshVaultDirectory,
   dshWebProfileDirectory,
   dshWebProfilePatchPath,
+  resolveDshHomeDirectory,
 } from "../paths";
 
 export const DSH_AGENT_BUNDLE_FINGERPRINT = dshPluginBundleFingerprint(MV_AGENT_PLUGIN_FILES);
+export const DSH_COMPAT_BUNDLE_FINGERPRINT = dshPluginBundleFingerprint(MV_DSH_COMPAT_FILES);
 export const DSH_MANAGER_BUNDLE_FINGERPRINT = dshPluginBundleFingerprint(MV_DSH_MANAGER_PLUGIN_FILES);
 export const DSH_SUBWORKSPACE_BUNDLE_FINGERPRINT = dshPluginBundleFingerprint(MV_DSH_SUBWORKSPACE_PLUGIN_FILES);
 
@@ -87,6 +91,10 @@ interface ProfileManifest {
 
 type ManagedPluginKind = keyof typeof DSH_MANAGED_PLUGINS;
 type InjectionTarget = "ide" | "full";
+
+function commandHomeDirectory(command?: DshCommand): string {
+  return resolveDshHomeDirectory(command?.homeDirectory, command?.env);
+}
 
 async function pathExists(filePath: string): Promise<boolean> {
   try {
@@ -231,10 +239,11 @@ export function healPatchFile(content: string): string {
   return isHealthyPatchFile(content) ? content : ensureFullPatchRows(content);
 }
 
-async function writePatchRows(target: InjectionTarget): Promise<void> {
-  const existing = await fs.readFile(dshWebProfilePatchPath(), "utf8").catch(() => DEFAULT_PATCH_FILE);
+async function writePatchRows(target: InjectionTarget, homeDirectory: string): Promise<void> {
+  const patchPath = dshWebProfilePatchPath(homeDirectory);
+  const existing = await fs.readFile(patchPath, "utf8").catch(() => DEFAULT_PATCH_FILE);
   const next = target === "ide" ? ensureAgentPatchRow(existing) : ensureFullPatchRows(existing);
-  if (next !== existing) await atomicWriteText(dshWebProfilePatchPath(), next);
+  if (next !== existing) await atomicWriteText(patchPath, next);
 }
 
 function bundleNamesFor(kind: ManagedPluginKind): readonly string[] {
@@ -248,8 +257,8 @@ function bundlesContainPlugin(manifest: ProfileManifest, kind: ManagedPluginKind
   return bundleNamesFor(kind).some((name) => bundles.includes(name));
 }
 
-async function cleanupBundles(target: InjectionTarget): Promise<void> {
-  const profileDir = dshWebProfileDirectory();
+async function cleanupBundles(target: InjectionTarget, homeDirectory: string): Promise<void> {
+  const profileDir = dshWebProfileDirectory(homeDirectory);
   const manifest = await readProfileManifest(profileDir);
   if (!manifest) return;
   const bundles = manifest.dsh?.profile?.bundles ?? [];
@@ -351,10 +360,11 @@ async function recoverInterruptedPackageTransaction(installedDir: string): Promi
   ));
 }
 
-async function recoverInterruptedInjectionTransactions(): Promise<void> {
-  await recoverInterruptedPackageTransaction(dshAgentPackageDirectory());
-  await recoverInterruptedPackageTransaction(dshManagerPackageDirectory());
-  await recoverInterruptedPackageTransaction(dshSubworkspacePackageDirectory());
+async function recoverInterruptedInjectionTransactions(homeDirectory: string): Promise<void> {
+  await recoverInterruptedPackageTransaction(dshCompatPackageDirectory(homeDirectory));
+  await recoverInterruptedPackageTransaction(dshAgentPackageDirectory(homeDirectory));
+  await recoverInterruptedPackageTransaction(dshManagerPackageDirectory(homeDirectory));
+  await recoverInterruptedPackageTransaction(dshSubworkspacePackageDirectory(homeDirectory));
 }
 
 // Lock holders run the full verify path (`--profile web --dump-config`, up to
@@ -363,8 +373,8 @@ async function recoverInterruptedInjectionTransactions(): Promise<void> {
 const INJECTION_LOCK_TIMEOUT_MS = 130_000;
 const INJECTION_LOCK_STALE_MS = 120_000;
 
-function injectionLockPath(): string {
-  return path.join(dshWebProfileDirectory(), ".mv-aide-injection.lock");
+function injectionLockPath(homeDirectory: string): string {
+  return path.join(dshWebProfileDirectory(homeDirectory), ".mv-aide-injection.lock");
 }
 
 function processIsAlive(pid: number): boolean {
@@ -381,8 +391,11 @@ async function waitBriefly(delayMs: number): Promise<void> {
   await waitFor(delayMs);
 }
 
-export async function withDshInjectionLock<T>(operation: () => Promise<T>): Promise<T> {
-  const lock = injectionLockPath();
+export async function withDshInjectionLock<T>(
+  operation: () => Promise<T>,
+  homeDirectory = commandHomeDirectory(),
+): Promise<T> {
+  const lock = injectionLockPath(homeDirectory);
   const ownerFile = path.join(lock, "owner.json");
   const started = Date.now();
   const owner = `${JSON.stringify({ pid: process.pid, id: randomUUID(), createdAt: started })}\n`;
@@ -433,41 +446,91 @@ export async function withDshInjectionLock<T>(operation: () => Promise<T>): Prom
   }
 }
 
-export async function materializeAgentPlugin(mvAideVersion: string): Promise<void> {
-  await fs.mkdir(dshWebProfileDirectory(), { recursive: true });
+export async function materializeCompatLibrary(
+  mvAideVersion: string,
+  homeDirectory = commandHomeDirectory(),
+): Promise<void> {
+  await fs.mkdir(dshWebProfileDirectory(homeDirectory), { recursive: true });
+  const installedDir = dshCompatPackageDirectory(homeDirectory);
+  const marker = await readDshPluginBundleMarker(installedDir);
+  if (marker?.mvAideVersion) {
+    const relation = markerRelation(marker.mvAideVersion, mvAideVersion);
+    if (relation === "newer") {
+      if (await compatPackageReadable(homeDirectory)) return;
+      throw new Error(`更高版本共享兼容库 ${marker.mvAideVersion} 已损坏，当前版本拒绝降级覆盖。`);
+    }
+    if (relation === "current" && marker.fingerprint !== DSH_COMPAT_BUNDLE_FINGERPRINT) {
+      throw new Error(`共享兼容库 ${mvAideVersion} 存在同版本内容冲突，拒绝静默覆盖。`);
+    }
+  }
   await writePackage(
-    dshAgentPackageDirectory(),
+    installedDir,
+    MV_DSH_COMPAT_FILES,
+    DSH_COMPAT_BUNDLE_FINGERPRINT,
+    mvAideVersion,
+  );
+}
+
+async function writeAgentPlugin(mvAideVersion: string, homeDirectory: string): Promise<void> {
+  await writePackage(
+    dshAgentPackageDirectory(homeDirectory),
     MV_AGENT_PLUGIN_FILES,
     DSH_AGENT_BUNDLE_FINGERPRINT,
     mvAideVersion,
   );
 }
 
-export async function materializeManagerPlugin(mvAideVersion: string): Promise<void> {
-  await fs.mkdir(dshWebProfileDirectory(), { recursive: true });
+async function writeManagerPlugin(mvAideVersion: string, homeDirectory: string): Promise<void> {
   await writePackage(
-    dshManagerPackageDirectory(),
+    dshManagerPackageDirectory(homeDirectory),
     MV_DSH_MANAGER_PLUGIN_FILES,
     DSH_MANAGER_BUNDLE_FINGERPRINT,
     mvAideVersion,
   );
 }
 
-export async function materializeSubworkspacePlugin(mvAideVersion: string): Promise<void> {
-  await fs.mkdir(dshWebProfileDirectory(), { recursive: true });
+async function writeSubworkspacePlugin(mvAideVersion: string, homeDirectory: string): Promise<void> {
   await writePackage(
-    dshSubworkspacePackageDirectory(),
+    dshSubworkspacePackageDirectory(homeDirectory),
     MV_DSH_SUBWORKSPACE_PLUGIN_FILES,
     DSH_SUBWORKSPACE_BUNDLE_FINGERPRINT,
     mvAideVersion,
   );
 }
 
-export async function materializeFullPluginSet(mvAideVersion: string): Promise<void> {
+export async function materializeAgentPlugin(
+  mvAideVersion: string,
+  homeDirectory = commandHomeDirectory(),
+): Promise<void> {
+  await materializeCompatLibrary(mvAideVersion, homeDirectory);
+  await writeAgentPlugin(mvAideVersion, homeDirectory);
+}
+
+export async function materializeManagerPlugin(
+  mvAideVersion: string,
+  homeDirectory = commandHomeDirectory(),
+): Promise<void> {
+  await materializeCompatLibrary(mvAideVersion, homeDirectory);
+  await writeManagerPlugin(mvAideVersion, homeDirectory);
+}
+
+export async function materializeSubworkspacePlugin(
+  mvAideVersion: string,
+  homeDirectory = commandHomeDirectory(),
+): Promise<void> {
+  await materializeCompatLibrary(mvAideVersion, homeDirectory);
+  await writeSubworkspacePlugin(mvAideVersion, homeDirectory);
+}
+
+export async function materializeFullPluginSet(
+  mvAideVersion: string,
+  homeDirectory = commandHomeDirectory(),
+): Promise<void> {
+  await materializeCompatLibrary(mvAideVersion, homeDirectory);
   await Promise.all([
-    materializeAgentPlugin(mvAideVersion),
-    materializeManagerPlugin(mvAideVersion),
-    materializeSubworkspacePlugin(mvAideVersion),
+    writeAgentPlugin(mvAideVersion, homeDirectory),
+    writeManagerPlugin(mvAideVersion, homeDirectory),
+    writeSubworkspacePlugin(mvAideVersion, homeDirectory),
   ]);
 }
 
@@ -483,12 +546,12 @@ async function legacyVaultPluginExists(vaultRoot: string, kind: ManagedPluginKin
   return false;
 }
 
-async function managedPackageReadable(kind: ManagedPluginKind): Promise<boolean> {
+async function managedPackageReadable(kind: ManagedPluginKind, homeDirectory: string): Promise<boolean> {
   const installedDir = kind === "agent"
-    ? dshAgentPackageDirectory()
+    ? dshAgentPackageDirectory(homeDirectory)
     : kind === "manager"
-      ? dshManagerPackageDirectory()
-      : dshSubworkspacePackageDirectory();
+      ? dshManagerPackageDirectory(homeDirectory)
+      : dshSubworkspacePackageDirectory(homeDirectory);
   const expectedName = DSH_MANAGED_PLUGINS[kind].name;
   try {
     const manifest = JSON.parse(await fs.readFile(path.join(installedDir, "package.json"), "utf8")) as {
@@ -505,6 +568,42 @@ async function managedPackageReadable(kind: ManagedPluginKind): Promise<boolean>
     }
     await fs.access(entry);
     return true;
+  } catch {
+    return false;
+  }
+}
+
+async function managedPackageRequiresCompat(kind: ManagedPluginKind, homeDirectory: string): Promise<boolean> {
+  const installedDir = kind === "agent"
+    ? dshAgentPackageDirectory(homeDirectory)
+    : kind === "manager"
+      ? dshManagerPackageDirectory(homeDirectory)
+      : dshSubworkspacePackageDirectory(homeDirectory);
+  try {
+    const manifest = JSON.parse(await fs.readFile(path.join(installedDir, "package.json"), "utf8")) as {
+      dependencies?: Record<string, unknown>;
+      peerDependencies?: Record<string, unknown>;
+    };
+    return Object.hasOwn(manifest.dependencies ?? {}, "@mv-aide/mv-dsh-compat")
+      || Object.hasOwn(manifest.peerDependencies ?? {}, "@mv-aide/mv-dsh-compat");
+  } catch {
+    return false;
+  }
+}
+
+async function compatPackageReadable(homeDirectory: string): Promise<boolean> {
+  const installedDir = dshCompatPackageDirectory(homeDirectory);
+  try {
+    const manifest = JSON.parse(await fs.readFile(path.join(installedDir, "package.json"), "utf8")) as {
+      name?: unknown;
+      exports?: Record<string, unknown>;
+      dsh?: unknown;
+    };
+    if (manifest.name !== "@mv-aide/mv-dsh-compat" || manifest.dsh !== undefined) return false;
+    for (const entry of ["contracts.js", "obsidian.js", "host.js", "client.js"]) {
+      await fs.access(path.join(installedDir, "lib", entry));
+    }
+    return manifest.exports !== undefined;
   } catch {
     return false;
   }
@@ -528,8 +627,12 @@ async function legacyProfileArtifactsExist(profileDir: string, kind: ManagedPlug
   return false;
 }
 
-async function cleanupLegacyInjection(vaultRoot: string, target: InjectionTarget): Promise<void> {
-  const profileDir = dshWebProfileDirectory();
+async function cleanupLegacyInjection(
+  vaultRoot: string,
+  target: InjectionTarget,
+  homeDirectory: string,
+): Promise<void> {
+  const profileDir = dshWebProfileDirectory(homeDirectory);
   const kinds: readonly ManagedPluginKind[] = target === "ide" ? ["agent"] : ["agent", "manager", "subworkspace"];
   for (const kind of kinds) {
     const legacyPackages = kind === "agent" ? ["dsh-plugin"] : kind === "manager" ? ["mv-plugin-manager"] : [];
@@ -623,6 +726,20 @@ function requireActuallyLoaded(
     detail: status.relation === "newer"
       ? `检测到更高版本 ${label}（${status.version ?? "未知"}），但${suffix}请使用对应高版本 mv-AIDE 处理。`
       : `${label} 磁盘注入存在，但${suffix}`,
+  };
+}
+
+function requireCompatDependency(
+  status: DshInjectionStatus,
+  required: boolean,
+  compatible: boolean,
+): DshInjectionStatus {
+  if (!required || compatible || status.state === "missing") return status;
+  return {
+    ...status,
+    state: "partial",
+    usable: false,
+    detail: `${status.detail} 共享兼容库缺失、损坏或版本不匹配。`,
   };
 }
 
@@ -726,18 +843,21 @@ export async function inspectDshInjection(
   currentMvAideVersion?: string,
   command?: DshCommand,
 ): Promise<DshInjectionStatuses> {
-  const profileDir = dshWebProfileDirectory();
+  const homeDirectory = commandHomeDirectory(command);
+  const profileDir = dshWebProfileDirectory(homeDirectory);
   const manifest = await readProfileManifest(profileDir);
-  const patch = await fs.readFile(dshWebProfilePatchPath(), "utf8").catch(() => "");
-  const [agentInstalled, managerInstalled, subworkspaceInstalled] = await Promise.all([
-    managedPackageReadable("agent"),
-    managedPackageReadable("manager"),
-    managedPackageReadable("subworkspace"),
+  const patch = await fs.readFile(dshWebProfilePatchPath(homeDirectory), "utf8").catch(() => "");
+  const [agentInstalled, managerInstalled, subworkspaceInstalled, compatInstalled] = await Promise.all([
+    managedPackageReadable("agent", homeDirectory),
+    managedPackageReadable("manager", homeDirectory),
+    managedPackageReadable("subworkspace", homeDirectory),
+    compatPackageReadable(homeDirectory),
   ]);
-  const [agentMarker, managerMarker, subworkspaceMarker] = await Promise.all([
-    readDshPluginBundleMarker(dshAgentPackageDirectory()),
-    readDshPluginBundleMarker(dshManagerPackageDirectory()),
-    readDshPluginBundleMarker(dshSubworkspacePackageDirectory()),
+  const [agentMarker, managerMarker, subworkspaceMarker, compatMarker] = await Promise.all([
+    readDshPluginBundleMarker(dshAgentPackageDirectory(homeDirectory)),
+    readDshPluginBundleMarker(dshManagerPackageDirectory(homeDirectory)),
+    readDshPluginBundleMarker(dshSubworkspacePackageDirectory(homeDirectory)),
+    readDshPluginBundleMarker(dshCompatPackageDirectory(homeDirectory)),
   ]);
   const verifyAgentContent = currentMvAideVersion === undefined
     || markerRelation(agentMarker?.mvAideVersion, currentMvAideVersion) === "current";
@@ -745,10 +865,20 @@ export async function inspectDshInjection(
     || markerRelation(managerMarker?.mvAideVersion, currentMvAideVersion) === "current";
   const verifySubworkspaceContent = currentMvAideVersion === undefined
     || markerRelation(subworkspaceMarker?.mvAideVersion, currentMvAideVersion) === "current";
-  const [agentCurrent, managerCurrent, subworkspaceCurrent] = await Promise.all([
+  const verifyCompatContent = currentMvAideVersion === undefined
+    || markerRelation(compatMarker?.mvAideVersion, currentMvAideVersion) === "current";
+  const [
+    agentCurrent,
+    managerCurrent,
+    subworkspaceCurrent,
+    compatCurrent,
+    agentRequiresCompat,
+    managerRequiresCompat,
+    subworkspaceRequiresCompat,
+  ] = await Promise.all([
     agentInstalled && verifyAgentContent
       ? installedDshPluginBundleMatches(
-          dshAgentPackageDirectory(),
+          dshAgentPackageDirectory(homeDirectory),
           MV_AGENT_PLUGIN_FILES,
           DSH_AGENT_BUNDLE_FINGERPRINT,
           currentMvAideVersion,
@@ -756,7 +886,7 @@ export async function inspectDshInjection(
       : Promise.resolve(false),
     managerInstalled && verifyManagerContent
       ? installedDshPluginBundleMatches(
-          dshManagerPackageDirectory(),
+          dshManagerPackageDirectory(homeDirectory),
           MV_DSH_MANAGER_PLUGIN_FILES,
           DSH_MANAGER_BUNDLE_FINGERPRINT,
           currentMvAideVersion,
@@ -764,13 +894,26 @@ export async function inspectDshInjection(
       : Promise.resolve(false),
     subworkspaceInstalled && verifySubworkspaceContent
       ? installedDshPluginBundleMatches(
-          dshSubworkspacePackageDirectory(),
+          dshSubworkspacePackageDirectory(homeDirectory),
           MV_DSH_SUBWORKSPACE_PLUGIN_FILES,
           DSH_SUBWORKSPACE_BUNDLE_FINGERPRINT,
           currentMvAideVersion,
         )
       : Promise.resolve(false),
+    compatInstalled && verifyCompatContent
+      ? installedDshPluginBundleMatches(
+          dshCompatPackageDirectory(homeDirectory),
+          MV_DSH_COMPAT_FILES,
+          DSH_COMPAT_BUNDLE_FINGERPRINT,
+          currentMvAideVersion,
+        )
+      : Promise.resolve(false),
+    managedPackageRequiresCompat("agent", homeDirectory),
+    managedPackageRequiresCompat("manager", homeDirectory),
+    managedPackageRequiresCompat("subworkspace", homeDirectory),
   ]);
+  const compatRelation = markerRelation(compatMarker?.mvAideVersion, currentMvAideVersion);
+  const compatUsable = compatInstalled && (compatCurrent || compatRelation === "newer");
   const [
     agentLegacyVault,
     managerLegacyVault,
@@ -831,6 +974,9 @@ export async function inspectDshInjection(
     }),
     ...(subworkspaceMarker ? { fingerprint: subworkspaceMarker.fingerprint } : {}),
   };
+  agent = requireCompatDependency(agent, agentRequiresCompat, compatUsable);
+  manager = requireCompatDependency(manager, managerRequiresCompat, compatUsable);
+  subworkspace = requireCompatDependency(subworkspace, subworkspaceRequiresCompat, compatUsable);
   if (command && (agent.state !== "missing" || manager.state !== "missing" || subworkspace.state !== "missing")) {
     const loaded = await inspectLoadedPlugins(command);
     agent = requireActuallyLoaded(agent, loaded.hasAgent, loaded.ok, "mv-agent", loaded.detail);
@@ -888,8 +1034,9 @@ async function ensureInjection(
   currentMvAideVersion: string,
   options: { explicit?: boolean } = {},
 ): Promise<InjectResult> {
+  const homeDirectory = commandHomeDirectory(command);
   return withDshInjectionLock(async () => {
-    await recoverInterruptedInjectionTransactions();
+    await recoverInterruptedInjectionTransactions(homeDirectory);
     const before = await inspectDshInjection(vaultRoot, currentMvAideVersion, command);
     const beforeTarget = target === "ide" ? before.agent : before.full;
     if (beforeTarget.state === "newer" || (beforeTarget.state === "partial" && beforeTarget.relation === "newer")) {
@@ -915,11 +1062,11 @@ async function ensureInjection(
     }
 
     try {
-      if (target === "ide") await materializeAgentPlugin(currentMvAideVersion);
-      else await materializeFullPluginSet(currentMvAideVersion);
-      await fs.mkdir(dshWebProfileDirectory(), { recursive: true });
-      await writePatchRows(target);
-      await cleanupBundles(target);
+      if (target === "ide") await materializeAgentPlugin(currentMvAideVersion, homeDirectory);
+      else await materializeFullPluginSet(currentMvAideVersion, homeDirectory);
+      await fs.mkdir(dshWebProfileDirectory(homeDirectory), { recursive: true });
+      await writePatchRows(target, homeDirectory);
+      await cleanupBundles(target, homeDirectory);
     } catch (error) {
       return {
         ok: false,
@@ -938,7 +1085,7 @@ async function ensureInjection(
     }
 
     try {
-      await cleanupLegacyInjection(vaultRoot, target);
+      await cleanupLegacyInjection(vaultRoot, target, homeDirectory);
     } catch (error) {
       return {
         ok: false,
@@ -947,7 +1094,7 @@ async function ensureInjection(
       };
     }
 
-    const disk = await inspectDshInjection(vaultRoot, currentMvAideVersion);
+    const disk = await inspectDshInjection(vaultRoot, currentMvAideVersion, command);
     const reverified = await verifyInjection(command, target);
     const finalTarget = target === "ide" ? disk.agent : disk.full;
     if (finalTarget.state === "ready" && reverified.ok) {
@@ -964,7 +1111,7 @@ async function ensureInjection(
       changed: true,
       message: `插件已写入，但清理后校验失败：${reverified.detail.slice(-600) || finalTarget.detail}`,
     };
-  });
+  }, homeDirectory);
 }
 
 export async function ensureDshAgentInjection(

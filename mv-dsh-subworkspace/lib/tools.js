@@ -1,6 +1,8 @@
 // Tool-schema decoration and per-root parallel dispatch.
 
 import { WorkspaceRuntimeProjection } from './runtime-workspace.js';
+import { parseSelectorString } from './store.js';
+import { resolveHostTools } from '../../mv-dsh-compat/lib/host.js';
 
 export const WORKSPACE_SELECTOR_DESCRIPTION = 'Select the workspace roots for this tool call. Omit this parameter to use the session\'s current workspace. Pass one workspace ID to run once in that workspace. Pass an array of workspace IDs to run the same native tool call independently and concurrently in every selected workspace. Pass "all" to run it independently and concurrently in the primary workspace and every configured subworkspace. Relative paths and the default shell working directory are resolved separately under each workspace; absolute paths are left unchanged. Multi-workspace results are reported separately for every workspace, and a failure in one workspace does not cancel or alter the others. This parameter affects only this call and does not change the session\'s current workspace. Use the workspace tool with action "list" to obtain valid workspace IDs.';
 
@@ -98,7 +100,13 @@ function renderBatch(value) {
 
 function batchSelector(args) {
   const selector = isObject(args) ? args._workspace : undefined;
-  return selector === 'all' || Array.isArray(selector);
+  // A stringified JSON array selects a batch exactly like the array it
+  // encodes (see parseSelectorString); presentations must be suppressed for
+  // both shapes or the native presenter renders against a batch envelope it
+  // does not understand.
+  return selector === 'all'
+    || Array.isArray(selector)
+    || Array.isArray(parseSelectorString(selector));
 }
 
 export function decorateToolDefinition(original) {
@@ -459,6 +467,15 @@ export function registerWorkspaceTool(ctx, store) {
 }
 
 export function installToolDispatcher(ctx, store, options = {}) {
+  const host = resolveHostTools(ctx);
+  if (!host) {
+    throw new Error('DSH tool lifecycle is incompatible with mv-dsh-subworkspace');
+  }
+  const runtime = Object.create(ctx);
+  Object.defineProperties(runtime, {
+    tools: { configurable: true, enumerable: true, value: host.tools },
+    on: { configurable: true, enumerable: true, value: host.on },
+  });
   const excludedNames = new Set([WORKSPACE_TOOL_NAME, ...(options.excludeToolNames ?? [])]);
   const agentTools = new WeakMap();
   const decoratedAgents = new Set();
@@ -474,12 +491,34 @@ export function installToolDispatcher(ctx, store, options = {}) {
 
   const toolsFor = (agent) => agentTools.get(agent);
 
-  function nativeDefinitions() {
+  // Reserved presentation transport (code/PTC mode). ToolRuntime injects it
+  // into the visible set for scopes whose presentation is not "native"; it is
+  // not a registrable tool and must never be decorated.
+  const RESERVED_TOOL_NAMES = new Set(['run_code']);
+
+  function nativeDefinitions(agent) {
     const definitions = new Map();
-    for (const schema of ctx.tools.schemas?.() ?? []) {
+    // Enumerate through the AGENT, not the global view. Under the web profile
+    // the base bundle's tool rows are disabled and the standard preset re-registers
+    // them inside its standing scope; the agent joins that scope by parentage
+    // (bindScopeParent), so the agent-scoped view is the only one that sees
+    // the native tools. The no-argument global view remains as the fallback
+    // for hosts whose scoped lookup throws (older/unknown service faces).
+    let schemas;
+    let lookup;
+    try {
+      schemas = typeof agent === 'object' && agent !== null
+        ? runtime.tools.schemas?.(agent) ?? []
+        : [];
+      lookup = (name) => runtime.tools.get(name, agent);
+    } catch {
+      schemas = runtime.tools.schemas?.() ?? [];
+      lookup = (name) => runtime.tools.get(name);
+    }
+    for (const schema of schemas) {
       const name = schema?.name;
-      if (typeof name !== 'string' || excludedNames.has(name)) continue;
-      const original = ctx.tools.get(name);
+      if (typeof name !== 'string' || excludedNames.has(name) || RESERVED_TOOL_NAMES.has(name)) continue;
+      const original = lookup(name);
       if (original) definitions.set(name, original);
     }
     return definitions;
@@ -531,7 +570,19 @@ export function installToolDispatcher(ctx, store, options = {}) {
       ctx.logger?.warn?.('mv-dsh-subworkspace: refreshAgent skipped — tools service is not yet reachable from agent scope');
       return;
     }
-    const native = nativeDefinitions();
+    // Tear down this agent's native shadows BEFORE enumerating. The decorated
+    // copies live in the agent's own scope layer, which overlays everything
+    // the agent-scoped view resolves — enumerating first would read our own
+    // decorations back as "originals" and decorate the decoration. Disposing
+    // first exposes the preset/global originals again. register() returns its
+    // disposer synchronously, so this whole function stays synchronous: no
+    // dispatch can interleave between teardown and rebuild.
+    for (const [name, prior] of current) {
+      if (name === WORKSPACE_TOOL_NAME) continue;
+      try { prior.dispose?.(); } catch { /* already gone */ }
+      current.delete(name);
+    }
+    const native = nativeDefinitions(agent);
     // The scope's own `workspace` registration, registered on the same
     // plane as the shadows so it turns on and off with them.
     if (!current.has(WORKSPACE_TOOL_NAME)) {
@@ -543,22 +594,12 @@ export function installToolDispatcher(ctx, store, options = {}) {
       }
     }
     for (const [name, original] of native) {
-      const prior = current.get(name);
-      if (original === prior?.original) continue;
-      prior?.dispose?.();
-      current.delete(name);
-      if (!original) continue;
       try {
         const dispose = scopedTools.register(decorateToolDefinition(original));
         current.set(name, { original, dispose });
       } catch (error) {
         ctx.logger?.warn?.(`mv-dsh-subworkspace: cannot decorate tool ${name}: ${error instanceof Error ? error.message : String(error)}`);
       }
-    }
-    for (const [name, prior] of current) {
-      if (name === WORKSPACE_TOOL_NAME || native.has(name)) continue;
-      prior.dispose?.();
-      current.delete(name);
     }
     agentTools.set(agent, current);
     const isNewlyEnabled = !decoratedAgents.has(agent);
@@ -580,7 +621,7 @@ export function installToolDispatcher(ctx, store, options = {}) {
     refreshing = true;
     try {
       const known = new Set(decoratedAgents);
-      for (const agent of options.enumerateAgents?.() ?? ctx.get?.('agents')?.list?.() ?? []) known.add(agent);
+      for (const agent of options.enumerateAgents?.() ?? host.agents?.list?.() ?? []) known.add(agent);
       for (const agent of known) refreshAgent(agent);
     } finally {
       refreshing = false;
@@ -596,32 +637,40 @@ export function installToolDispatcher(ctx, store, options = {}) {
     });
   }
 
-  const disposePreExecute = ctx.on(
+  const disposePreExecute = runtime.on(
     'tools/pre-execute',
     createWorkspacePreExecuteInterceptor(store, disabledRoots),
     { prepend: true },
   );
-  const disposePostExecute = ctx.on(
+  const disposePostExecute = runtime.on(
     'tools/post-execute',
     createWorkspacePostExecuteInterceptor(batchExecutions),
     { prepend: true },
   );
-  const disposeExecute = ctx.on(
+  const disposeExecute = runtime.on(
     'tools/execute',
-    createWorkspaceExecuteInterceptor(ctx, store, projection, batchExecutions, disabledRoots),
+    createWorkspaceExecuteInterceptor(runtime, store, projection, batchExecutions, disabledRoots),
   );
-  const disposeCreated = ctx.on('agent/created', ({ agent }) => {
+  const disposeCreated = runtime.on('agent/created', ({ agent }) => {
     refreshing = true;
     try { refreshAgent(agent); } finally { refreshing = false; }
   });
-  const disposeDisposed = ctx.on('agent/disposed', ({ agent }) => {
+  const disposeDisposed = runtime.on('agent/disposed', ({ agent }) => {
     agentTools.delete(agent);
     decoratedAgents.delete(agent);
     disabledRoots.delete(sessionKeyOf(agent));
     projection.disposeAgent(agent);
     store.clearSession?.(sessionIdOf(agent));
   });
-  const disposeChanged = ctx.on('tools/change', scheduleRefresh);
+  const disposeChanged = runtime.on('tools/change', scheduleRefresh);
+  // Joining a preset only re-parents the agent's scope key
+  // (bindScopeParent); it does not touch any tool layer, so no tools/change
+  // fires and the agent/created-time refresh (which ran before the join)
+  // enumerated nothing. The roster does emit this public session event on
+  // every mount/recompose, which is the hook to re-decorate from.
+  const disposePresetSelected = runtime.on('session/event', (session, event) => {
+    if (event?.type === 'agent-preset/selected') scheduleRefresh();
+  });
   const disposeEnabledChanged = typeof store?.subscribe === 'function'
     ? store.subscribe(() => scheduleRefresh())
     : null;
@@ -630,6 +679,7 @@ export function installToolDispatcher(ctx, store, options = {}) {
   return () => {
     disposeEnabledChanged?.();
     disposeChanged?.();
+    disposePresetSelected?.();
     disposeDisposed?.();
     disposeCreated?.();
     disposeExecute?.();

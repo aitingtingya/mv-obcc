@@ -5,6 +5,7 @@ window.__ModuleLoader__.load({
   factory: (require) => {
     const module = { exports: {} };
     const React = require('react');
+    const compat = require('@mv-aide/mv-dsh-compat/client/manager');
     const NS = 'mv-dsh-manager';
     const EVENT = 'mv-aide:manager-feature-policy';
     const DEFAULTS = Object.freeze({
@@ -15,6 +16,7 @@ window.__ModuleLoader__.load({
       fileDropEnabled: true,
       recursiveCommandPickerEnabled: true,
       planReviewEnhancementEnabled: true,
+      historyRecallEnabled: true,
       commandPickerMaxLeaves: 50,
     });
     const FIELDS = [
@@ -25,6 +27,7 @@ window.__ModuleLoader__.load({
       ['fileDropEnabled', 'boolean', 'Obsidian 文件拖入', 'Obsidian file drop', '与 IDE 桥接完全独立。', 'Fully independent of the IDE bridge.'],
       ['recursiveCommandPickerEnabled', 'boolean', '递归命令选择器', 'Recursive command picker', '不影响命令本身。', 'Does not disable the commands themselves.'],
       ['planReviewEnhancementEnabled', 'boolean', '计划审核增强', 'Plan-review enhancement', '控制 Escape 取消及对应 Host 续步。', 'Controls Escape cancellation and its Host continuation gate.'],
+      ['historyRecallEnabled', 'boolean', '历史消息上键召回', 'Arrow-up history recall', '在 composer 按上键回溯本次对话的发送历史。', 'Cycle through sent messages with ArrowUp in the composer.'],
       ['commandPickerMaxLeaves', 'number', '选择器最大叶子数', 'Maximum picker leaves', '10–200。', '10–200.'],
     ];
     const safeObject = (value) => value && typeof value === 'object' && !Array.isArray(value) ? value : {};
@@ -227,9 +230,9 @@ window.__ModuleLoader__.load({
       const policy = createPolicy();
       if (typeof ctx?.inject !== 'function') return policy;
       ctx.inject(['slots', 'settingsScope'], (settingsCtx) => {
-        const slots = settingsCtx.get?.('slots') ?? settingsCtx.slots;
-        const settingsScope = settingsCtx.get?.('settingsScope') ?? settingsCtx.settingsScope;
-        if (!slots || !settingsScope) return;
+        const host = compat.resolveSettingsCardHost(settingsCtx);
+        if (!host) return;
+        const { slots, settingsScope } = host;
         const scope = settingsScope.bind({ namespace: NS });
         const sync = () => {
           const snapshot = scope.getSnapshot();

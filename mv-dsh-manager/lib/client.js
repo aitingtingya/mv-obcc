@@ -29,6 +29,9 @@ window.__ModuleLoader__.load({
     const planReviewClient = require('@mv-aide/mv-dsh-manager/plan-review-client');
     const modelCapabilitiesClient = require('@mv-aide/mv-dsh-manager/model-capabilities-client');
     const fileDropClient = require('@mv-aide/mv-dsh-manager/file-drop-client');
+    require('@mv-aide/mv-dsh-manager/clipboard-client');
+    const historyRecallClient = require('@mv-aide/mv-dsh-manager/history-recall-client');
+    const compat = require('@mv-aide/mv-dsh-compat/client/manager');
     let settingsClient;
     try {
       settingsClient = require('@mv-aide/mv-dsh-manager/settings-client');
@@ -38,6 +41,7 @@ window.__ModuleLoader__.load({
         fileDropEnabled: true,
         recursiveCommandPickerEnabled: true,
         planReviewEnhancementEnabled: true,
+        historyRecallEnabled: true,
         commandPickerMaxLeaves: 50,
       });
       settingsClient = {
@@ -253,16 +257,6 @@ window.__ModuleLoader__.load({
     // `activeLine`, regardless of popup depth.
     const pickerFlows = new WeakMap();
 
-    function composerTextarea() {
-      try {
-        if (typeof document === 'undefined' || typeof document.querySelector !== 'function') return null;
-        const el = document.querySelector('textarea[data-phase]');
-        return typeof HTMLTextAreaElement !== 'undefined' && el instanceof HTMLTextAreaElement ? el : null;
-      } catch {
-        return null;
-      }
-    }
-
     /**
      * Snapshot the composer right before the first popup level opens. The
      * caret is read from the focused textarea when available; otherwise it
@@ -272,6 +266,7 @@ window.__ModuleLoader__.load({
       const input = inputFor(sessionId, ctx);
       if (!input) return null;
       try {
+        const composer = compat.resolveComposer(ctx, typeof document === 'undefined' ? undefined : document, sessionId);
         const state = input.state && typeof input.state.getSnapshot === 'function'
           ? input.state.getSnapshot()
           : undefined;
@@ -296,12 +291,11 @@ window.__ModuleLoader__.load({
           commandStart = span.start;
           preserveSurrounding = true;
         }
-        const active = typeof document !== 'undefined' && typeof HTMLTextAreaElement !== 'undefined' && document.activeElement instanceof HTMLTextAreaElement
-          ? document.activeElement
-          : null;
+        const active = composer?.element && document.activeElement === composer.element
+          ? composer : null;
         if (active) {
-          element = active;
-          if (typeof active.selectionStart === 'number') caret = active.selectionStart;
+          element = active.element;
+          caret = active.selection().start;
         } else if (spanIsUsable) {
           caret = span.end;
         }
@@ -334,21 +328,23 @@ window.__ModuleLoader__.load({
      */
     function focusComposerAt(sessionId, captured, caret, ctx) {
       const setCaret = () => {
-        const el = captured && captured.element && captured.element.isConnected
-          ? captured.element
-          : composerTextarea();
-        if (!el) return;
         try {
-          el.focus({ preventScroll: true });
+          if (typeof window === 'undefined' || window.closed === true || typeof document === 'undefined') return;
+          if (typeof document.hasFocus === 'function' && document.hasFocus() !== true) return;
+          const currentSessionId = compat.currentSessionId(ctx);
+          if (currentSessionId && currentSessionId !== sessionId) return;
+          const composer = compat.resolveComposer(ctx, typeof document === 'undefined' ? undefined : document, sessionId);
+          if (!composer) return;
+          const state = composer.snapshot();
           const target = caret === null || caret === undefined
-            ? (el.value ? el.value.length : 0)
-            : Math.min(caret, el.value ? el.value.length : 0);
-          el.setSelectionRange(target, target);
+            ? state.draft.length
+            : Math.min(caret, state.draft.length);
+          composer.focusAt(target);
         } catch {
           // Caret restoration is best-effort.
         }
       };
-      if (typeof requestAnimationFrame === 'function') requestAnimationFrame(setCaret);
+      if (typeof window?.requestAnimationFrame === 'function') window.requestAnimationFrame(setCaret);
       else setCaret();
     }
 
@@ -375,46 +371,11 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * Focus the composer after dismissing a deeper-level picker. Unlike the
-     * first-level cancel, this keeps the already-confirmed draft line and only
-     * returns focus with the caret at the end of the line.
-     */
-    function focusComposerAfterDismiss(sessionId, captured, ctx) {
-      const setCaret = () => {
-        const el = captured && captured.element && captured.element.isConnected
-          ? captured.element
-          : composerTextarea();
-        if (!el) return;
-        try {
-          el.focus({ preventScroll: true });
-          const caret = el.value ? el.value.length : 0;
-          el.setSelectionRange(caret, caret);
-        } catch {
-          // Caret restoration is best-effort.
-        }
-      };
-      if (typeof requestAnimationFrame === 'function') requestAnimationFrame(setCaret);
-      else setCaret();
-    }
-
-    /**
      * Resolve the session's composer input facade. DSH exposes this through
      * the session-scoped `conversation` service; absence degrades gracefully.
      */
     function inputFor(sessionId, ctx) {
-      try {
-        const sessions = ctx.get('sessions');
-        const actx = sessions && typeof sessions.scope === 'function' ? sessions.scope(sessionId) : undefined;
-        if (!actx || typeof actx.get !== 'function') return undefined;
-        const conversation = actx.get('conversation');
-        const input = conversation && conversation.input && typeof conversation.input.for === 'function'
-          ? conversation.input.for(actx)
-          : undefined;
-        if (!input || typeof input.setDraft !== 'function') return undefined;
-        return input;
-      } catch {
-        return undefined;
-      }
+      return compat.resolveConversation(ctx, sessionId)?.input;
     }
 
     function restoreSurroundingDraft(sessionId, captured, ctx) {
@@ -440,6 +401,45 @@ window.__ModuleLoader__.load({
       const input = inputFor(sessionId, ctx);
       if (!input) return;
       input.setDraft(composePickerDraft(captured, spec.draftLine));
+    }
+
+    /**
+     * Snapshot the popup search input's focus before a chained open. Returns
+     * null when the popup is not already open (first-level open: the DSH view
+     * focuses the fresh popup itself) or when the DOM facts are unavailable.
+     */
+    function snapshotChainedPopupFocus(controller) {
+      try {
+        if (typeof document === 'undefined') return null;
+        const state = controller?.state;
+        const snapshot = typeof state?.getSnapshot === 'function' ? state.getSnapshot() : undefined;
+        if (snapshot?.open !== true) return null;
+        const active = document.activeElement;
+        if (!active || typeof active.focus !== 'function' || typeof active.isConnected !== 'boolean') return null;
+        return active;
+      } catch {
+        return null;
+      }
+    }
+
+    /**
+     * Restore the popup search input's focus after a chained open. The view's
+     * focus effect only reruns on a closed→open transition, which a chained
+     * open never produces, so without this the caret lands in the composer and
+     * the arrow keys stop moving the popup highlight. Lazy no-op on hosts whose
+     * draft write never touches focus (preview builds).
+     */
+    function restoreChainedPopupFocus(focused) {
+      try {
+        if (!focused) return;
+        if (typeof window === 'undefined' || window.closed === true) return;
+        if (typeof document === 'undefined' || document.activeElement === focused) return;
+        if (focused.isConnected !== true) return;
+        if (typeof document.hasFocus === 'function' && document.hasFocus() !== true) return;
+        focused.focus({ preventScroll: true });
+      } catch {
+        // Focus restoration is best-effort.
+      }
     }
 
     function prepareSession(sessionId, ctx, commandUi) {
@@ -469,9 +469,17 @@ window.__ModuleLoader__.load({
         const commandLine = spec && typeof spec.draftLine === 'string' ? spec.draftLine : '';
         flow.activeLine = composePickerDraft(flow.captured, commandLine);
         flow.activeCaret = pickerCommandCaret(flow.captured, commandLine);
+        // A chained open (popup already open) bypasses the view's focus effect:
+        // state stays open through the swap, and the previous settle returns
+        // early on binding identity. completeDraft's composer write also
+        // steals DOM focus synchronously (Lexical selectEnd on Alpha). Capture
+        // the focused element and restore it once the child popup is open.
+        const chainedFocus = snapshotChainedPopupFocus(controller);
         // Land the completed command text first, then publish the next popup.
         completeDraft(sid, spec, flow.captured, ctx);
-        return originalOpen(command, spec, context, segment);
+        const result = originalOpen(command, spec, context, segment);
+        restoreChainedPopupFocus(chainedFocus);
+        return result;
       };
       if (typeof controller.dismiss === 'function') {
         const originalDismiss = controller.dismiss.bind(controller);
@@ -768,6 +776,8 @@ window.__ModuleLoader__.load({
     const hintDecorations = new Map();
 
     function currentSessionId(ctx) {
+      const current = compat.currentSessionId(ctx);
+      if (current) return current;
       try {
         const sessions = ctx.get('sessions');
         const list = sessions && sessions.list;
@@ -939,6 +949,7 @@ window.__ModuleLoader__.load({
       planReviewClient.apply(ctx, policyOptions);
       modelCapabilitiesClient.apply(ctx, policyOptions);
       fileDropClient.apply(ctx, policyOptions);
+      historyRecallClient.apply(ctx, policyOptions);
       registerCommandTree(DEFAULT_PICKER_COMMAND, defaultMvAideTree());
       decorateCommand(ctx, DEFAULT_PICKER_COMMAND);
       startHintDirectoryPicker(ctx);

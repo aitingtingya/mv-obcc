@@ -10,10 +10,14 @@ import { listPresets, togglePreset, copyPreset, deletePreset, openPresetDocument
 import { discoverBridges, listTools } from './bridge-service.js';
 import { installPlanReviewControl } from './plan-review-control.js';
 import { createModelCapabilitiesService, ModelCapabilitiesError } from './model-capabilities-service.js';
+import { createHistoryRecallService, HistoryRecallError } from './history-recall-service.js';
 import { UI_SCRIPT_TAG } from './ui-script.js';
 import { installManagerFeatureSettings } from './feature-settings.js';
 
 export const name = 'mv-dsh-manager';
+// Keep the frozen preview loader contract: optional capabilities are resolved
+// structurally through mv-dsh-compat instead of being declared as hard boot
+// dependencies.
 export const inject = ['webServer'];
 
 const RUNTIME_REGISTRY = Symbol.for('@mv-aide/runtime-bundle-registry');
@@ -69,6 +73,7 @@ export function apply(ctx) {
     return;
   }
   const modelCapabilities = createModelCapabilitiesService(ctx);
+  const historyRecall = createHistoryRecallService(ctx);
 
   // ─────────────────────────────────────────────────────────────
   // 1. Unified Router for /api/mv-aide/*
@@ -117,6 +122,16 @@ export function apply(ctx) {
         });
 
       try {
+        if (pathname === '/api/mv-aide/history-recall' && !isSameOriginBrowserRequest(req)) {
+          return sendJson(403, { ok: false, error: 'History recall is same-origin only.' });
+        }
+
+        if (pathname === '/api/mv-aide/history-recall' && method === 'POST') {
+          const payload = await readJsonBody();
+          const data = await historyRecall.read(payload);
+          return sendJson(200, data);
+        }
+
         // ── llm-pi-ai model capability API ──
         if (pathname.startsWith('/api/mv-aide/model-capabilities') && !isSameOriginBrowserRequest(req)) {
           return sendJson(403, { ok: false, error: 'Model capability settings are same-origin only.' });
@@ -246,11 +261,12 @@ export function apply(ctx) {
 
         return sendJson(404, { ok: false, error: `Route not found: ${method} ${pathname}` });
       } catch (err) {
-        const status = err instanceof ModelCapabilitiesError ? err.status : 500;
+        const knownError = err instanceof ModelCapabilitiesError || err instanceof HistoryRecallError;
+        const status = knownError ? err.status : 500;
         return sendJson(status, {
           ok: false,
           error: err instanceof Error ? err.message : String(err),
-          ...(err instanceof ModelCapabilitiesError ? { code: err.code } : {}),
+          ...(knownError ? { code: err.code } : {}),
         });
       }
     },

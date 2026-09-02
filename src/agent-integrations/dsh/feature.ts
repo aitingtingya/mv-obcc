@@ -13,11 +13,12 @@ import {
   type InjectResult,
 } from "./ide/injection";
 import {
-  classifyProbe,
+  createRequestUrlDshProbe,
   DshStartCancelledError,
   DshProcessManager,
   isDshStartCancelled,
   normalizeDshWebUrl,
+  sameDshWebUrl,
   type DshWebProbe,
 } from "./runtime/process";
 import {
@@ -72,6 +73,7 @@ import {
   inspectDshSourceUpdate,
   rebuildOrUpgradeDshSource,
 } from "./runtime/source-runtime";
+import { effectiveDshHomeDirectory } from "./paths";
 
 const COMMAND_ID = "open-mv-agent-for-obsidian";
 
@@ -145,8 +147,8 @@ function toolVersionAtPreferredLocation(
   runtime: DshRuntimeInspection,
   name: DshPackageName,
 ): { target: DshInstallTarget | "custom"; version?: string } | null {
-  if (name === "dsh" && runtime.dsh.custom?.state === "ready") {
-    return { target: "custom", version: runtime.dsh.custom.version };
+  if (runtime[name].custom?.state === "ready") {
+    return { target: "custom", version: runtime[name].custom.version };
   }
   const target = preferredToolLocation(runtime[name]);
   return target ? { target, version: runtime[name][target].version } : null;
@@ -193,23 +195,7 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
  * immune to the CORS/mixed-content blocking that stops plain `fetch` from the
  * plugin runtime.
  */
-async function probeDshWebViaRequestUrl(
-  url: string,
-  timeoutMs: number,
-): Promise<DshWebProbe> {
-  try {
-    const response = await withTimeout(
-      requestUrl({ url, method: "GET", throw: false }),
-      timeoutMs,
-    );
-    const cls = classifyProbe(
-      typeof response.text === "string" ? response.text : null,
-    );
-    return { reachable: cls !== "unreachable", isDsh: cls === "dsh" };
-  } catch {
-    return { reachable: false, isDsh: false };
-  }
-}
+const probeDshWebViaRequestUrl = createRequestUrlDshProbe(requestUrl);
 
 /**
  * Self-contained `mv-agent` (DSH-driven) feature, wired by `main.ts` only.
@@ -223,6 +209,7 @@ export class DshFeature {
   private commandRegistered = false;
   private environment: DshEnvironmentStatus = structuredClone(UNKNOWN_DSH_ENVIRONMENT);
   private environmentBusy = false;
+  private runtimeSelectionRestartRequired = false;
   private idePluginRuntimeState: DshIdePluginRuntimeState = { state: "disabled" };
   private mvAgentOperationGeneration = 0;
   /**
@@ -231,6 +218,16 @@ export class DshFeature {
    * in-session only.
    */
   private readonly openSubsectionIds = new Set<string>();
+
+  private markRuntimeSelectionChanged(): void {
+    if (
+      this.processManager.currentUrl()
+      || this.processManager.isRunning()
+      || this.plugin.app.workspace.getLeavesOfType(DSH_WEB_VIEW_TYPE).length > 0
+    ) {
+      this.runtimeSelectionRestartRequired = true;
+    }
+  }
 
   constructor(private readonly plugin: MvAideIdePlugin) {
     if (this.plugin.settings.dsh.enabled) {
@@ -242,13 +239,20 @@ export class DshFeature {
       probeDshWebViaRequestUrl,
       async () => {
         const vaultRoot = getVaultRoot(this.plugin.app);
-        const nodes = await inspectNodeRuntimes(vaultRoot);
+        const commandEnv = await resolveUserCommandEnvironment();
+        const nodes = await inspectNodeRuntimes(vaultRoot, runProcess, commandEnv);
         const node = selectedNodeStatus(nodes);
         if (node.state !== "ready") {
           throw new Error(node.detail || t("未检测到兼容的 Node.js。"));
         }
-        const runtime = await inspectDshRuntime(vaultRoot, nodes, runProcess, undefined, {
+        const runtime = await inspectDshRuntime(vaultRoot, nodes, runProcess, commandEnv, {
           customDirectory: this.plugin.settings.dsh.customDirectory,
+          homeDirectory: effectiveDshHomeDirectory(
+            vaultRoot,
+            this.plugin.settings.dsh.useVaultDshHome,
+            commandEnv,
+          ),
+          requireRuntimeOwner: this.plugin.settings.dsh.useVaultDshHome,
           preferredPort: this.plugin.settings.dsh.port,
           sourceProbe: probeDshWebViaRequestUrl,
         });
@@ -268,6 +272,17 @@ export class DshFeature {
     this.plugin.registerView(
       DSH_WEB_VIEW_TYPE,
       (leaf) => new DshWebView(leaf, this.plugin),
+    );
+    this.plugin.registerEvent(
+      this.plugin.app.workspace.on("layout-change", () => {
+        this.syncOpenViewWindowContexts();
+      }),
+    );
+    this.plugin.registerEvent(
+      this.plugin.app.workspace.on("window-open", (_workspaceWindow, hostWindow) => {
+        this.syncOpenViewWindowContexts();
+        hostWindow.queueMicrotask(() => this.syncOpenViewWindowContexts());
+      }),
     );
     // Modular auto-updater for the injected DSH plugins. It only consumes
     // the startup reconcile's cached status plus the two capability methods
@@ -289,6 +304,17 @@ export class DshFeature {
 
   ideIntegrationState(): DshIdePluginRuntimeState {
     return this.idePluginRuntimeState;
+  }
+
+  private syncOpenViewWindowContexts(): void {
+    const leaves = this.plugin.app.workspace.getLeavesOfType(DSH_WEB_VIEW_TYPE);
+    for (const leaf of leaves) {
+      try {
+        (leaf.view as DshWebView | null)?.syncWindowContext?.();
+      } catch {
+        /* Per-view containment: one closing window must not block the rest. */
+      }
+    }
   }
 
   private registerCommand(): void {
@@ -452,6 +478,12 @@ export class DshFeature {
       const node = selectedNodeStatus(nodes);
       const runtime = await inspectDshRuntime(vaultRoot, nodes, runProcess, commandEnv, {
         customDirectory: this.plugin.settings.dsh.customDirectory,
+        homeDirectory: effectiveDshHomeDirectory(
+          vaultRoot,
+          this.plugin.settings.dsh.useVaultDshHome,
+          commandEnv,
+        ),
+        requireRuntimeOwner: this.plugin.settings.dsh.useVaultDshHome,
         preferredPort: this.plugin.settings.dsh.port,
         sourceProbe: probeDshWebViaRequestUrl,
       });
@@ -522,6 +554,12 @@ export class DshFeature {
     const nodes = await inspectNodeRuntimes(vaultRoot, runProcess, commandEnv);
     const runtime = await inspectDshRuntime(vaultRoot, nodes, runProcess, commandEnv, {
       customDirectory: this.plugin.settings.dsh.customDirectory,
+      homeDirectory: effectiveDshHomeDirectory(
+        vaultRoot,
+        this.plugin.settings.dsh.useVaultDshHome,
+        commandEnv,
+      ),
+      requireRuntimeOwner: this.plugin.settings.dsh.useVaultDshHome,
       preferredPort: this.plugin.settings.dsh.port,
       sourceProbe: probeDshWebViaRequestUrl,
     });
@@ -806,7 +844,7 @@ export class DshFeature {
     if (!dshUrl) dshUrl = await this.processManager.findDshUrl().catch(() => null);
     if (!dshUrl) return false;
     const url = await this.processManager.restartForObsidian(this.collectActiveDshUrls());
-    this.navigateOpenViewsTo(url);
+    void this.navigateOpenViewsTo(url);
     return true;
   }
 
@@ -821,9 +859,16 @@ export class DshFeature {
     this.idePluginRuntimeState = { state: "checking" };
     const vaultRoot = getVaultRoot(this.plugin.app);
     try {
-      const nodes = await inspectNodeRuntimes(vaultRoot);
-      const runtime = await inspectDshRuntime(vaultRoot, nodes, runProcess, undefined, {
+      const commandEnv = await resolveUserCommandEnvironment();
+      const nodes = await inspectNodeRuntimes(vaultRoot, runProcess, commandEnv);
+      const runtime = await inspectDshRuntime(vaultRoot, nodes, runProcess, commandEnv, {
         customDirectory: this.plugin.settings.dsh.customDirectory,
+        homeDirectory: effectiveDshHomeDirectory(
+          vaultRoot,
+          this.plugin.settings.dsh.useVaultDshHome,
+          commandEnv,
+        ),
+        requireRuntimeOwner: this.plugin.settings.dsh.useVaultDshHome,
         preferredPort: this.plugin.settings.dsh.port,
         sourceProbe: probeDshWebViaRequestUrl,
       });
@@ -894,6 +939,12 @@ export class DshFeature {
       const nodes = await inspectNodeRuntimes(vaultRoot, runProcess, commandEnv);
       const runtime = await inspectDshRuntime(vaultRoot, nodes, runProcess, commandEnv, {
         customDirectory: input,
+        homeDirectory: effectiveDshHomeDirectory(
+          vaultRoot,
+          this.plugin.settings.dsh.useVaultDshHome,
+          commandEnv,
+        ),
+        requireRuntimeOwner: this.plugin.settings.dsh.useVaultDshHome,
         preferredPort: this.plugin.settings.dsh.port,
         sourceProbe: probeDshWebViaRequestUrl,
       });
@@ -920,6 +971,7 @@ export class DshFeature {
       }
       this.plugin.settings.dsh.customDirectory = runtime.sourceRuntime.rootDirectory;
       await this.plugin.saveData(this.plugin.settings);
+      this.markRuntimeSelectionChanged();
       this.environment.updates.dsh = { checked: false };
       await this.inspectActualEnvironment(vaultRoot);
       await this.reconcileEnabledIdeAfterEnvironmentChange(false);
@@ -942,6 +994,7 @@ export class DshFeature {
     try {
       this.plugin.settings.dsh.customDirectory = "";
       await this.plugin.saveData(this.plugin.settings);
+      this.markRuntimeSelectionChanged();
       this.environment.updates.dsh = { checked: false };
       const vaultRoot = getVaultRoot(this.plugin.app);
       await this.inspectActualEnvironment(vaultRoot);
@@ -950,6 +1003,46 @@ export class DshFeature {
     } finally {
       this.environmentBusy = false;
     }
+  }
+
+  async setUseVaultDshHome(enabled: boolean): Promise<void> {
+    if (this.plugin.settings.dsh.useVaultDshHome === enabled) return;
+    if (this.environmentBusy) {
+      throw new Error(t("DSH 环境操作正在进行，请等待完成。"));
+    }
+    this.environmentBusy = true;
+    try {
+      const preserveFullInjection = this.plugin.settings.dsh.injected
+        || injectionStateIsUsable(this.environment.plugins.full);
+      this.plugin.settings.dsh.useVaultDshHome = enabled;
+      await this.plugin.saveData(this.plugin.settings);
+      this.markRuntimeSelectionChanged();
+      const vaultRoot = getVaultRoot(this.plugin.app);
+      const inspected = await this.inspectActualEnvironment(vaultRoot);
+      if (preserveFullInjection && inspected.runtime.command) {
+        const result = await ensureDshFullInjection(
+          vaultRoot,
+          inspected.runtime.command,
+          this.plugin.manifest.version,
+          { explicit: true },
+        );
+        if (!result.ok) throw new Error(result.message);
+        await this.inspectActualEnvironment(vaultRoot);
+      }
+    } finally {
+      this.environmentBusy = false;
+    }
+  }
+
+  async setDshPort(port: number): Promise<void> {
+    if (this.plugin.settings.dsh.port === port) return;
+    this.plugin.settings.dsh.port = port;
+    await this.plugin.saveData(this.plugin.settings);
+    this.markRuntimeSelectionChanged();
+  }
+
+  runtimeSelectionNeedsRestart(): boolean {
+    return this.runtimeSelectionRestartRequired;
   }
 
   private async reconcileEnabledIdeAfterEnvironmentChange(restartRunningDsh: boolean): Promise<void> {
@@ -1011,7 +1104,8 @@ export class DshFeature {
         if (inspected.runtime.sourceRuntime) {
           const source = inspected.runtime.sourceRuntime;
           const commandEnvironment = source.command.env ?? inspected.commandEnv;
-          const pnpmExecutable = findSystemExecutable("pnpm", process.platform, commandEnvironment);
+          const pnpmExecutable = source.pnpmExecutable
+            ?? findSystemExecutable("pnpm", process.platform, commandEnvironment);
           if (!pnpmExecutable) throw new Error(t("未检测到可用于 DSH 源码构建的 pnpm。"));
           const requestedUpgrade = this.environment.updates.dsh.updateAvailable === true;
           const sourceUpdate = requestedUpgrade
@@ -1121,20 +1215,26 @@ export class DshFeature {
 
   private async openDshForOperation(generation: number): Promise<void> {
     const connectedUrls = this.collectActiveDshUrls();
-    let restartRequired = false;
+    let restartRequired = this.runtimeSelectionRestartRequired;
     if (this.plugin.settings.dsh.enabled) {
       const reconciled = await this.reconcileIdeIntegration({ restartRunningDsh: false });
       if (!reconciled.ok) throw new Error(reconciled.message);
-      restartRequired = reconciled.changed === true || this.environment.plugins.full.restartRequired === true;
+      restartRequired = restartRequired
+        || reconciled.changed === true
+        || this.environment.plugins.full.restartRequired === true;
     }
     const url = restartRequired
       ? await this.processManager.restartForObsidian(connectedUrls)
       : await this.processManager.ensureStartedForOpen(connectedUrls);
     if (generation !== this.mvAgentOperationGeneration) return;
+    if (restartRequired) {
+      this.runtimeSelectionRestartRequired = false;
+      await this.navigateOpenViewsTo(url);
+    }
     const leaf = await openDshWebviewInNewLeaf(
       this.plugin.app.workspace,
       this.plugin.settings.dsh.autoOpenRegion,
-      url,
+      await this.frameUrlFor(url),
     );
     if (generation !== this.mvAgentOperationGeneration) leaf.detach();
   }
@@ -1147,6 +1247,40 @@ export class DshFeature {
   /** dsh 实例当前 URL（未运行返回 null），供状态栏展示。 */
   currentDshUrl(): string | null {
     return this.processManager.currentUrl();
+  }
+
+  /**
+   * The URL an mv-agent iframe should load for a semantic endpoint URL: the
+   * plugin-owned loopback proxy when that endpoint is auth-gated (Alpha),
+   * otherwise the endpoint itself. Falls back to the given URL when the
+   * endpoint is not the currently managed one.
+   */
+  async frameUrlFor(semanticUrl: string): Promise<string> {
+    const normalized = normalizeDshWebUrl(semanticUrl);
+    if (!normalized) return semanticUrl;
+    const current = this.processManager.currentUrl();
+    if (current && sameDshWebUrl(current, normalized)) {
+      const webViewUrl = await this.processManager.webViewUrl();
+      if (webViewUrl) return webViewUrl;
+    }
+    return normalized;
+  }
+
+  /**
+   * Map a frame URL back to the semantic DSH endpoint URL (proxy-origin
+   * frames resolve to the real fronted endpoint).
+   */
+  semanticUrlOf(frameUrl: string): string | null {
+    return this.processManager.semanticUrlOf(frameUrl);
+  }
+
+  /**
+   * The URL for 「浏览器打开」/「复制 DSH 地址」: the launch URL when token
+   * authority is held (a top-level navigation lands the cookie normally),
+   * else the identity URL.
+   */
+  externalDshUrl(): string | null {
+    return this.processManager.externalLaunchUrl();
   }
 
   /**
@@ -1212,11 +1346,12 @@ export class DshFeature {
   }
 
   /** Point every open mv-agent view at the same restarted endpoint. */
-  private navigateOpenViewsTo(url: string): void {
+  private async navigateOpenViewsTo(url: string): Promise<void> {
+    const frameUrl = await this.frameUrlFor(url);
     const leaves = this.plugin.app.workspace.getLeavesOfType(DSH_WEB_VIEW_TYPE);
     for (const leaf of leaves) {
       try {
-        (leaf.view as DshWebView | null)?.navigateTo?.(url);
+        void (leaf.view as DshWebView | null)?.navigateTo?.(frameUrl);
       } catch {
         /* per-view containment */
       }
@@ -1235,7 +1370,9 @@ export class DshFeature {
       try {
         const view = leaf.view as DshWebView | null;
         const url = view?.currentViewUrl?.();
-        if (url) view?.navigateTo?.(url);
+        if (url) void this.frameUrlFor(url).then((frameUrl) => {
+          void view?.navigateTo?.(frameUrl);
+        });
       } catch {
         /* per-view containment */
       }
@@ -1271,6 +1408,7 @@ export class DshFeature {
       const summary = await this.processManager.stopAllTargetDshInstances(connectedUrls);
       if (generation !== this.mvAgentOperationGeneration) return;
       const stoppedViewCount = stopOpenMvAgentViews(this.plugin.app.workspace);
+      this.runtimeSelectionRestartRequired = false;
       const viewMessage = stoppedViewCount > 0
         ? t("已停止 {count} 个 mv-agent 界面。", { count: stoppedViewCount })
         : t("没有打开的 mv-agent 界面。");
@@ -1299,14 +1437,15 @@ export class DshFeature {
       const connectedUrls = this.collectActiveDshUrls();
       const url = await this.processManager.restartForObsidian(connectedUrls);
       if (generation !== this.mvAgentOperationGeneration) return;
+      this.runtimeSelectionRestartRequired = false;
       const currentLeaves = this.plugin.app.workspace.getLeavesOfType(DSH_WEB_VIEW_TYPE);
       if (currentLeaves.length > 0) {
-        this.navigateOpenViewsTo(url);
+        await this.navigateOpenViewsTo(url);
       } else {
         const leaf = await openDshWebviewInNewLeaf(
           this.plugin.app.workspace,
           this.plugin.settings.dsh.autoOpenRegion,
-          url,
+          await this.frameUrlFor(url),
         );
         if (generation !== this.mvAgentOperationGeneration) leaf.detach();
       }

@@ -1,6 +1,6 @@
 # @mv-aide/mv-dsh-manager
 
-DSH runtime integration for plugin, skill, subagent, model-capability, and Obsidian file-drop management. It also hosts a **recursive slash-command field picker** for DSH commands.
+DSH runtime integration for plugin, skill, subagent, model-capability, and Obsidian file-drop management. It also hosts a **recursive slash-command field picker** for DSH commands, **ArrowUp history recall**, and a **clipboard write fallback** for the mv-agent iframe.
 
 ## Model capability editor
 
@@ -20,11 +20,28 @@ Capability changes are staged behind DSH's native Save action. Native provider/m
 `lib/file-drop-client.js` is the isolated DSH-side half of mv-agent file drops. The Obsidian host resolves and validates native paths; this module accepts only an authenticated, per-iframe `postMessage` channel and uses DSH's current session APIs to:
 
 - append regular files as native structured `@file` references, using a workspace-relative path when possible and an absolute path otherwise;
+- append dropped folders as native directory references following the upstream `@path/` grammar (`@"path with spaces/` keeps the quote open), rendered with the folder chip appearance;
 - register PNG, JPEG, WebP, and GIF bytes in DSH's native draft-image store;
 - enforce the current session's input phase, block state, and projected image limits;
 - commit mixed batches atomically and restore the original draft plus image IDs on failure.
 
 The module never submits the composer, copies regular-file contents, exposes a path-reading HTTP route, or modifies the source file. The main manager client only invokes its `apply()` lifecycle hook; the settings, plugin, skill, preset, model-capability, plan-review, and slash-picker modules remain independent.
+
+## History recall
+
+`lib/history-recall-client.js` installs an ArrowUp/ArrowDown listener that recalls previously sent messages in the DSH composer. Pressing `↑` in an empty, focused composer first prefills the newest message from the visible conversation projection, then fetches the complete session history through `POST /api/mv-aide/history-recall` served by `lib/history-recall-service.js` and replaces the preview without expanding the visible chat pagination. `↓` walks forward; one more `↓` at the newest message restores the anchored draft and exits recall mode.
+
+The service route is same-origin only (`isSameOriginBrowserRequest`) and reads through `@mv-aide/mv-dsh-compat`'s session inspector (zero-copy for live sessions) with a replay-validated `readSession` fallback. A runtime exposing neither seam answers 503, and the client treats that as fail closed: recall keeps the visible-message range, reports no error, and never mutates pagination.
+
+Trigger guards: the feature policy (`historyRecallEnabled`), IME composition, open command/picker menus, non-empty drafts on `↑` (native caret movement is preserved), composer focus, and a current session. Session switches clear other sessions' recall state.
+
+## Clipboard fallback
+
+`lib/clipboard-client.js` keeps the DSH page on `navigator.clipboard` directly. Only a denied write (`NotAllowedError`) is delegated over the per-view authenticated, generation-rotated `postMessage` channel to the Obsidian host (`src/agent-integrations/dsh/runtime/clipboard-host.ts`), which completes the plain-text write through Electron's `clipboard.writeText`. The channel rides a transferred MessagePort for its full request/reply lifecycle, so moving the iframe between Obsidian windows does not change its identity. Only plain text is delegated; the clipboard is never read, and failures return real errors.
+
+## Feature settings
+
+`lib/feature-settings.js` registers the `mv-dsh-manager` Host settings namespace with a Schemastery schema of nine fields: `pluginManagementUiEnabled`, `skillManagementUiEnabled`, `presetManagementUiEnabled`, `modelCapabilitiesUiEnabled`, `fileDropEnabled`, `recursiveCommandPickerEnabled`, `planReviewEnhancementEnabled`, `historyRecallEnabled` (all booleans, default `true`), and `commandPickerMaxLeaves` (10–200, default 50). Values apply live; out-of-range or wrong-typed writes are rejected without publishing. When the settings service or browser slot is unavailable, every module keeps running with these defaults.
 
 ## Recursive slash-command field picker
 

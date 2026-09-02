@@ -31,6 +31,11 @@ export class ActiveSessionRegistry {
     this.onActivate = options.onActivate ?? (() => {});
     this.onDeactivate = options.onDeactivate ?? (() => {});
     this.onLog = options.onLog ?? (() => {});
+    // Self-healing gate: when a host-side supervisor for a session has not
+    // materialized (a transiently failed single-shot activation), the next
+    // same-id report must re-fire onActivate instead of being deduped away.
+    // Defaults to "always supervised" so existing behavior is unchanged.
+    this.isSupervised = options.isSupervised ?? (() => true);
     this.clients = new Map();
     this.sessions = new Map();
   }
@@ -47,6 +52,21 @@ export class ActiveSessionRegistry {
         previous.cwd = nextCwd;
         const current = this.sessions.get(nextSessionId);
         if (current) current.cwd = nextCwd;
+        safeCallback(
+          this.onActivate,
+          { sessionId: nextSessionId, cwd: nextCwd },
+          this.onLog,
+        );
+      } else if (
+        nextSessionId !== null &&
+        nextCwd &&
+        this.sessions.has(nextSessionId) &&
+        !this.isSupervisedSafe(nextSessionId)
+      ) {
+        // Same id, same cwd, but the host-side supervisor for this staged
+        // session never materialized (or vanished): re-request activation so
+        // the report heartbeat becomes a self-healing signal. Re-entry is
+        // safe — activation is idempotent for an already-live supervisor.
         safeCallback(
           this.onActivate,
           { sessionId: nextSessionId, cwd: nextCwd },
@@ -99,6 +119,15 @@ export class ActiveSessionRegistry {
 
   isActive(sessionId) {
     return typeof sessionId === 'string' && this.sessions.has(sessionId);
+  }
+
+  /** isSupervised with the same fault tolerance as the callback path. */
+  isSupervisedSafe(sessionId) {
+    try {
+      return this.isSupervised(sessionId) === true;
+    } catch {
+      return true;
+    }
   }
 
   reportFor(sessionId) {

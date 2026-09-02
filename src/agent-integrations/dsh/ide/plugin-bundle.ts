@@ -25,10 +25,13 @@ import dshManagerBridgeService from "inline:../../../../mv-dsh-manager/lib/bridg
 import dshManagerPaths from "inline:../../../../mv-dsh-manager/lib/paths.js";
 import dshManagerClient from "inline:../../../../mv-dsh-manager/lib/client.js";
 import dshManagerFileDropClient from "inline:../../../../mv-dsh-manager/lib/file-drop-client.js";
+import dshManagerClipboardClient from "inline:../../../../mv-dsh-manager/lib/clipboard-client.js";
 import dshManagerModelCapabilitiesClient from "inline:../../../../mv-dsh-manager/lib/model-capabilities-client.js";
 import dshManagerPlanReviewClient from "inline:../../../../mv-dsh-manager/lib/plan-review-client.js";
 import dshManagerPlanReviewControl from "inline:../../../../mv-dsh-manager/lib/plan-review-control.js";
 import dshManagerSettingsClient from "inline:../../../../mv-dsh-manager/lib/settings-client.js";
+import dshManagerHistoryRecallClient from "inline:../../../../mv-dsh-manager/lib/history-recall-client.js";
+import dshManagerHistoryRecallService from "inline:../../../../mv-dsh-manager/lib/history-recall-service.js";
 import dshManagerUiScript from "inline:../../../../mv-dsh-manager/lib/ui-script.js";
 
 import subworkspacePackageJson from "inline:../../../../mv-dsh-subworkspace/package.json?text";
@@ -42,13 +45,41 @@ import subworkspaceStore from "inline:../../../../mv-dsh-subworkspace/lib/store.
 import subworkspaceRuntimeWorkspace from "inline:../../../../mv-dsh-subworkspace/lib/runtime-workspace.js";
 import subworkspaceTools from "inline:../../../../mv-dsh-subworkspace/lib/tools.js";
 
+import compatPackageJson from "inline:../../../../mv-dsh-compat/package.json?text";
+import compatContracts from "inline:../../../../mv-dsh-compat/lib/contracts.js";
+import compatContractsTypes from "inline:../../../../mv-dsh-compat/lib/contracts.d.ts?text";
+import compatObsidian from "inline:../../../../mv-dsh-compat/lib/obsidian.js";
+import compatObsidianTypes from "inline:../../../../mv-dsh-compat/lib/obsidian.d.ts?text";
+import compatHost from "inline:../../../../mv-dsh-compat/lib/host.js";
+import compatClient from "inline:../../../../mv-dsh-compat/lib/client.js";
+
+/** Plain shared library: no Cordis entry, client module, settings card, or patch row. */
+export const MV_DSH_COMPAT_FILES: Readonly<Record<string, string>> = {
+  "package.json": compatPackageJson,
+  "lib/contracts.js": compatContracts,
+  "lib/contracts.d.ts": compatContractsTypes,
+  "lib/obsidian.js": compatObsidian,
+  "lib/obsidian.d.ts": compatObsidianTypes,
+  "lib/host.js": compatHost,
+  "lib/client.js": compatClient,
+};
+
+function bundledClientCompat(moduleId: string): string {
+  const body = compatClient.replace(/^export\s+/gmu, "");
+  return `// Generated from @mv-aide/mv-dsh-compat/lib/client.js.\nwindow.__ModuleLoader__.load({\n  id: ${JSON.stringify(moduleId)},\n  factory: () => {\n    var module = { exports: {} };\n    var exports = module.exports;\n    Object.defineProperty(exports, Symbol.toStringTag, { value: 'Module' });\n${body}\n    Object.assign(exports, CLIENT_COMPAT_API);\n    return module.exports;\n  },\n});`;
+}
+
+const agentClientCompat = bundledClientCompat("@mv-aide/mv-dsh-compat/client/agent");
+const managerClientCompat = bundledClientCompat("@mv-aide/mv-dsh-compat/client/manager");
+const subworkspaceClientCompat = bundledClientCompat("@mv-aide/mv-dsh-compat/client/subworkspace");
+
 /** Release builds inline the complete dual-face mv-agent package into main.js. */
 export const MV_AGENT_PLUGIN_FILES: Readonly<Record<string, string>> = {
   "package.json": agentPackageJson,
   "README.md": agentReadme,
   "lib/active-session-control.js": agentActiveSessionControl,
   "lib/bridge-client.js": agentBridgeClient,
-  "lib/client.js": `${agentSettingsClient}\n${agentClient}`,
+  "lib/client.js": `${agentClientCompat}\n${agentSettingsClient}\n${agentClient}`,
   "lib/diff-hook.js": agentDiffHook,
   "lib/feature-settings.js": agentFeatureSettings,
   "lib/hover-sidebar.js": agentHoverSidebar,
@@ -74,16 +105,19 @@ export const MV_DSH_MANAGER_PLUGIN_FILES: Readonly<Record<string, string>> = {
   "lib/plan-review-control.js": dshManagerPlanReviewControl,
   "lib/plan-review-client.js": dshManagerPlanReviewClient,
   "lib/settings-client.js": dshManagerSettingsClient,
+  "lib/history-recall-client.js": dshManagerHistoryRecallClient,
+  "lib/history-recall-service.js": dshManagerHistoryRecallService,
   "lib/file-drop-client.js": dshManagerFileDropClient,
+  "lib/clipboard-client.js": dshManagerClipboardClient,
   "lib/model-capabilities-client.js": dshManagerModelCapabilitiesClient,
-  "lib/client.js": `${dshManagerSettingsClient}\n${dshManagerPlanReviewClient}\n${dshManagerModelCapabilitiesClient}\n${dshManagerFileDropClient}\n${dshManagerClient}`,
+  "lib/client.js": `${managerClientCompat}\n${dshManagerSettingsClient}\n${dshManagerPlanReviewClient}\n${dshManagerModelCapabilitiesClient}\n${dshManagerFileDropClient}\n${dshManagerClipboardClient}\n${dshManagerHistoryRecallClient}\n${dshManagerClient}`,
   "lib/ui-script.js": dshManagerUiScript,
 };
 
 export const MV_DSH_SUBWORKSPACE_PLUGIN_FILES: Readonly<Record<string, string>> = {
   "package.json": subworkspacePackageJson,
   "README.md": subworkspaceReadme,
-  "lib/client.js": `${subworkspaceSettingsClient}\n${subworkspaceClient}`,
+  "lib/client.js": `${subworkspaceClientCompat}\n${subworkspaceSettingsClient}\n${subworkspaceClient}`,
   "lib/index.js": subworkspaceIndex,
   "lib/server.js": subworkspaceServer,
   "lib/settings.js": subworkspaceSettings,

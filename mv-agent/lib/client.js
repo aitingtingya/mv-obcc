@@ -11,6 +11,7 @@ window.__ModuleLoader__.load({
       imageAutoFitEnabled: true,
       hoverSidebarEnabled: true,
     });
+    const compat = require('@mv-aide/mv-dsh-compat/client/agent');
     let settingsClient;
     try {
       settingsClient = typeof require === 'function'
@@ -48,10 +49,8 @@ window.__ModuleLoader__.load({
     const SUPPORTED_UPLOAD_MEDIA_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
 
     function installImageUploadPreprocessor(ctx, featurePolicy) {
-      const conversation = typeof ctx?.get === 'function'
-        ? ctx.get('conversation')
-        : ctx?.conversation;
-      if (!conversation || typeof conversation.encodeImage !== 'function') return;
+      const conversation = compat.resolveConversationImageEncoder(ctx)?.conversation;
+      if (!conversation) return;
       const current = conversation.encodeImage;
       if (current?.[IMAGE_ENCODER_MARK]) return;
       const wrapper = async function encodeImageWithMvAideFit(file) {
@@ -60,7 +59,8 @@ window.__ModuleLoader__.load({
         if (!profileEnabled || sourcePolicy?.autoFitImageSize === false) {
           return current.call(this, file);
         }
-        const sessionId = activeReport(ctx.sessions).sessionId;
+        const sessions = compat.resolveSessions(ctx)?.sessions;
+        const sessionId = sessions ? activeReport(sessions).sessionId : null;
         if (sessionId === null || typeof window.fetch !== 'function') {
           return current.call(this, file);
         }
@@ -124,6 +124,8 @@ window.__ModuleLoader__.load({
     function apply(ctx) {
       const featurePolicy = settingsClient.install(ctx);
       installImageUploadPreprocessor(ctx, featurePolicy);
+      const sessions = compat.resolveSessions(ctx)?.sessions;
+      if (!sessions) return;
       ctx.effect(() => {
         let disposed = false;
         let socket = null;
@@ -140,7 +142,7 @@ window.__ModuleLoader__.load({
         };
 
         const reportCurrent = (force = false) => {
-          const next = activeReport(ctx.sessions);
+          const next = activeReport(sessions);
           if (socket?.readyState !== WebSocket.OPEN) return;
           if (reportedSessionId !== null && reportedSessionId !== next.sessionId) {
             // Revoke first. The host processes WebSocket frames in order, so a
@@ -220,7 +222,7 @@ window.__ModuleLoader__.load({
           });
         };
 
-        const unsubscribe = ctx.sessions.list.subscribe(reportCurrent);
+        const unsubscribe = sessions.list.subscribe(reportCurrent);
         const closeForPageExit = () => {
           if (socket?.readyState === WebSocket.OPEN) {
             send({ type: 'active-session', sessionId: null });

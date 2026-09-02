@@ -28,6 +28,7 @@
     "test": "node --test"
   },
   "peerDependencies": {
+    "@mv-aide/mv-dsh-compat": "*",
     "@deepseek-ai/cordis": "*",
     "@deepseek-ai/schemastery": "*",
     "@deepseek-ai/dsh-tools": "*"

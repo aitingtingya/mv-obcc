@@ -512,6 +512,34 @@ export function renderDshSection(
     });
   customDirectorySetting.settingEl.addClass("mv-aide-dsh-custom-directory-setting");
 
+  new Setting(installEl)
+    .setName(t("使用当前仓库的 DSH 数据目录"))
+    .setDesc(
+      t("开启后，无论 DSH 安装在当前仓库还是全局，都使用当前仓库的 mv-aide/dsh/home 保存配置、会话和注入插件，与全局 DSH 数据完全隔离。"),
+    )
+    .addToggle((toggle) =>
+      toggle
+        .setValue(plugin.settings.dsh.useVaultDshHome)
+        .setDisabled(dshFeature.isEnvironmentBusy())
+        .onChange(async (value) => {
+          try {
+            await dshFeature.setUseVaultDshHome(value);
+          } catch (error) {
+            new Notice(error instanceof Error ? error.message : String(error), 10000);
+          } finally {
+            rerender();
+          }
+        }),
+    );
+
+  if (dshFeature.runtimeSelectionNeedsRestart()) {
+    const restartHint = installEl.createDiv({
+      cls: "setting-item-description mv-aide-dsh-runtime-restart-hint",
+      text: t("运行中的 mv-agent 仍使用原选择；请执行“重启 mv-agent”，或在下次打开 mv-agent 时自动切换。"),
+    });
+    restartHint.setAttr("role", "status");
+  }
+
   const pluginStatus = environment.plugins.full;
   const protectedHigherVersion = pluginStatus.state === "newer"
     || (pluginStatus.state === "partial" && pluginStatus.relation === "newer");
@@ -580,7 +608,7 @@ export function renderDshSection(
   new Setting(installEl)
     .setName(t("端口"))
     .setDesc(
-      t("dsh web 监听的本地端口，默认 3080。若该端口已有 dsh 在运行，将直接复用；被其他程序占用时会自动换空闲端口。"),
+      t("dsh web 监听的首选本地端口，默认 3080。只会复用与当前 DSH 程序和数据目录匹配的实例；端口被其它实例或程序占用时会自动换空闲端口。"),
     )
     .addText((text) =>
       text
@@ -589,8 +617,7 @@ export function renderDshSection(
         .onChange(async (value) => {
           const parsed = Number.parseInt(value, 10);
           if (Number.isInteger(parsed) && parsed > 0 && parsed < 65536) {
-            plugin.settings.dsh.port = parsed;
-            await plugin.saveData(plugin.settings);
+            await dshFeature.setDshPort(parsed);
           }
         }),
     );

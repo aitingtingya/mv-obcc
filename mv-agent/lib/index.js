@@ -129,6 +129,11 @@ export function apply(ctx, config = {}) {
     onActivate: (report) => activateReportedSession(report),
     onDeactivate: ({ sessionId }) => deactivateReportedSession(sessionId),
     onLog: log,
+    // A staged session whose host-side supervisor never materialized (the
+    // first activation attempt hit a transient failure) re-fires onActivate
+    // on the next heartbeat report, making the browser's 5s report loop the
+    // self-healing retry instead of a permanently deduped no-op.
+    isSupervised: (sessionId) => supervisors.has(`session:${sessionId}`),
   });
 
   if (typeof ctx.inject === 'function') {
@@ -324,7 +329,17 @@ export function apply(ctx, config = {}) {
       log(`mv-aide: failed to resolve opened session ${report.sessionId} — ${error instanceof Error ? error.message : String(error)}`);
       return null;
     });
-    if (!agent || activationGenerations.get(report.sessionId) !== generation || !activeSessions.isActive(report.sessionId)) return;
+    if (!agent) {
+      // Not fatal: the session stays staged, and the registry's isSupervised
+      // gate re-fires this activation on the next heartbeat report once the
+      // transient condition (agent registry not yet loaded, persistence list
+      // unavailable) clears.
+      if (activeSessions.isActive(report.sessionId)) {
+        log(`mv-aide: opened session ${report.sessionId} not resolvable yet; will retry on next report`);
+      }
+      return;
+    }
+    if (activationGenerations.get(report.sessionId) !== generation || !activeSessions.isActive(report.sessionId)) return;
     activeAgents.set(report.sessionId, agent);
     if (featureSettings.get().bridgeEnabled === false) return;
     await ensureActiveSupervisor(agent).catch((error) => {

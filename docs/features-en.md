@@ -187,7 +187,8 @@ mv-agent embeds DeepSeek Harness (DSH) directly into Obsidian: use the DSH web U
 - **Enhanced terminal awareness**: off by default and scoped to mv-agent / DSH only. When enabled, mv-agent does not register the basic `mv_aide__getTerminalOutput`; it registers seven native mv-AIDE terminal tools for list/read/send/run/open/focus/close instead. When disabled, those seven disappear and the original `getTerminalOutput` returns. `sendTerminalInput` is the raw path for Ctrl+C, TUI/REPL input, and optional Enter; `runInTerminal` is the reliable shell-command path and preserves quotes, `!`, whitespace, Unicode, multiline commands, and same-shell `cd`/`export` effects. Deferred tabs restored after an Obsidian restart start a fresh shell only: `readTerminal` waits for its new prompt to be committed to xterm and never restores old output. `closeTerminal` requires an explicit id and closes the Obsidian tab and its PTY without waking a deferred tab. Switching refreshes tools live without restarting DSH and never changes the public `tools/list` seen by other IDE clients. Outside-vault access continues to reuse the existing `getTerminalOutput` scope setting.
 - **Automatically fit image size**: on by default. Images are processed before they are sent and written into DSH history. A longest edge above 2000px is proportionally reduced to 2000px; smaller image bytes and the original local file are left unchanged. Turning it off restores DSH's native size limit.
 - **Hide Obsidian native status bar**: off by default. It only toggles a dedicated `body` class that hides Obsidian's own `.status-bar` container; it does not target mv-agent's own status UI and does not reconnect the bridge, restart DSH, or refresh tools.
-- **Address and port**: the DSH web service binds only to `127.0.0.1`, default port `3080`, configurable in settings. The view auto-detects an already running dsh instance; while none is running it shows “mv-agent is not running.”
+- **Address and port**: the DSH web service binds only to `127.0.0.1`, default preferred port `3080`, configurable in settings. Only a running instance whose CLI/source directory and DSH data directory match the current selection is reused; when the port is held by a global DSH, another Vault's DSH, or any other program, mv-AIDE moves to the next free port and never adopts or stops it.
+- **Authorization mode and loopback proxy**: when the DSH endpoint is launch-token authorized (Alpha), the mv-agent iframe actually loads a plugin-owned loopback reverse-proxy origin (OS-assigned port, still bound to `127.0.0.1`). The launch token is redeemed for a session cookie inside the plugin; the cookie lives only in plugin-process memory, never in the page or on disk. Every `/api/` WebSocket is tunneled through the proxy, and a cookie invalidated by an upstream restart is re-exchanged automatically. No-auth endpoints (preview) keep direct iframe URLs. **Open in browser** and **Copy DSH address** always hand out the original launch URL (a top-level navigation lands the cookie normally), never the proxy address.
 
 ### Runtime Environment
 
@@ -200,6 +201,7 @@ Settings exposes Node.js, DSH, pnpm, and plugin injection as four layers. Clicki
 - Final vault-installed runtimes live under `<vault>/mv-aide/dsh/`. Downloads, npm caches, installer scripts, and staging files exist only in an operation-scoped temporary workspace and are removed after success, failure, or cancellation. A global write to a protected directory requests native macOS administrator authorization, Windows UAC, or Linux `pkexec`. Refusing authorization stops the chain and never falls back to the vault.
 - For a global macOS Node installation, the verified public `.pkg` is staged temporarily in `/private/tmp` so the system installer service can read it. The temporary file is removed after success, failure, or cancellation.
 - When both locations exist, the vault installation is preferred. Runtime detection first resolves the user's actual command environment: macOS/Linux use the login interactive shell PATH, while Windows merges the current process PATH with User and Machine PATH values; Node and npm must be paired and runnable. Global DSH/pnpm are resolved from that npm's global prefix first, then from the same user command PATH as a fallback. Version checks, installation, upgrades, and post-install verification all reuse that environment so detection cannot resolve one toolchain while execution silently uses another. Injection targets the shared DSH web profile; mv-agent, mv-dsh-manager, and mv-dsh-subworkspace report their versions, integrity, and actual load state separately.
+- **DSH data directory**: by default the official DSH `$DSH_HOME` environment variable (or `~/.dsh` when unset) rule is preserved. Enabling **Use this Vault's DSH data directory** pins the data root to `<vault>/mv-aide/dsh/home`, fully isolating sessions, settings, the three injected plugins, and the compatibility library from the global DSH. The switch is independent of whether DSH is a vault installation, a global installation, or a custom source checkout; it never moves, copies, or reinstalls the CLI. Changing it while running asks for a restart; the next time mv-agent opens, the new selection takes effect and open views are synchronized.
 - **Source-checkout installations**: a running `pnpm dsh web`, `apps/cli/src/bin.ts`, or built `apps/cli/lib/bin.js` can be identified from its verified endpoint, listener command line, and cwd without scanning the user's disk. If the CLI cannot be reconstructed safely, mv-AIDE reports “DSH is running” separately from “not yet manageable” instead of calling it entirely uninstalled.
 - **Custom DSH directory**: enter either the DeepSeek Harness repository root or `apps/cli`. Validation checks manifest identity, the declared bin entry, real-path containment, Node/pnpm, version output, and `dsh --profile web --dump-config`. A validated custom directory always wins; if it breaks, mv-AIDE reports the failure instead of silently choosing another DSH. Clearing it restores the existing vault-before-global order.
 - Source checkouts retain the same detection, start/stop/restart, injection, and management features. Check uses the Git branch's configured upstream commit as update authority instead of substituting the npm release version. An explicit Upgrade/Reinstall requires a clean Git worktree, a configured upstream, and a fast-forward update before dependencies are installed, the project is built, and the CLI is revalidated. mv-AIDE never auto-stashes, force-merges, or substitutes an npm copy. A cross-process lock keyed by the real source root serializes the operation; a failed post-update build or validation rolls back and rebuilds the original commit, and a failed restoration is reported explicitly.
@@ -244,21 +246,38 @@ When this is on, **§6 Vim Enhancement**'s **Editor-overlay Vim status** is forc
 
 ### Native DSH Plugin Configuration
 
-DSH **Settings → Plugin configuration** contains two default-collapsed cards contributed through the official `settings.plugin.item` slot. Values belong to the current DSH profile and apply live after **Save**. **Reset** removes that field's user-layer override. With no user section, no settings service, or an older DSH without the slot, both plugins run with all defaults enabled, exactly matching their pre-configuration behavior.
+DSH **Settings → Plugin configuration** contains three default-collapsed cards contributed through the official `settings.plugin.item` slot. Values belong to the current DSH profile and apply live after **Save**. **Reset** removes that field's user-layer override. With no user section, no settings service, or an older DSH without the slot, all three plugins run with their defaults, exactly matching their pre-configuration behavior.
 
 - **mv-agent** controls the IDE bridge, IDE tools, seven terminal tools, Obsidian Diff, `/mv-aide`, automatic Vault-workspace entry, selection context, `@` mentions, the selection limit (256–50000; default 6000), debounce (50–3000ms; default 400ms), hover sidebar, and image fitting. Turning off the bridge pauses only bridge-dependent children and preserves their values. `/mv-aide`, the hover sidebar, and image fitting do not require a connected bridge.
-- **mv-dsh-manager** independently controls plugin, skill, and subagent-preset management UI, the model-capability editor, Obsidian file drop, recursive command picking, and the plan-review enhancement. Picker leaves are limited to 10–200 (default 50). Hiding management UI does not disable installed content; Host APIs, runtime identity, and injection integrity remain available.
+- **mv-dsh-manager** independently controls plugin, skill, and subagent-preset management UI, the model-capability editor, Obsidian file drop, recursive command picking, the plan-review enhancement, and ArrowUp history recall (on by default). Picker leaves are limited to 10–200 (default 50). Hiding management UI does not disable installed content; Host APIs, runtime identity, and injection integrity remain available.
+- **mv-dsh-subworkspace** lists the associated directories per primary workspace with an **Enable subworkspace** toggle per row; turning it off stops projecting that primary's associated roots. Adding and removing directories stays in the in-app workspace-row popover, and saves go through the plugin's serialized endpoint so a stale browser snapshot never overwrites the directory list.
 - **Authority**: the DSH profile is the final DSH-side gate. Terminal and image features that also have a Vault setting use the intersection of both authorities. Profiles are isolated; settings are not stored per conversation or Vault.
 
 ### File Drops
 
-With a compatible mv-dsh-manager installed, files can be dropped into the mv-agent conversation from Obsidian's file list or from the operating system's file manager. This channel reads no discovery lock, opens no bridge WebSocket, and calls no supervisor, `initialize`, `tools/list`, or IDE tool. It therefore remains available with the IDE bridge off or a red bridge status, provided the DSH iframe and manager client are ready. Files are appended to the current DSH draft without replacing existing text or sending the message. A batch is limited to 20 files, and duplicate paths are merged after real-path normalization. Folders, device files, and recursive imports are not supported.
+With a compatible mv-dsh-manager installed, files, folders, and files from the operating system's file manager can be dropped into the mv-agent conversation from Obsidian's file list. This channel reads no discovery lock, opens no bridge WebSocket, and calls no supervisor, `initialize`, `tools/list`, or IDE tool. It therefore remains available with the IDE bridge off or a red bridge status, provided the DSH iframe and manager client are ready. Files are appended to the current DSH draft without replacing existing text or sending the message. A batch is limited to 20 files, and duplicate paths are merged after real-path normalization. Device files and recursive imports are not supported.
 
 - **Regular files** become native structured DSH `@file` references. Files inside the current DSH workspace use relative paths; files outside it use absolute paths. These are live disk references, not copies. Content is read only when the agent calls `read`, so later edits, moves, deletion, or permission changes affect the real read result. An external absolute path remains part of the DSH session history as prompt text.
-- **Images** are recognized by their byte signatures. PNG, JPEG, WebP, and GIF enter DSH's native image draft and continue to follow the selected model's image capability, DSH count/byte limits, and **Automatically fit image size**. The source file is never modified. Images and regular files may be mixed in one atomic batch; a failure rolls back the complete batch.
+- **Folders** match DSH's native `@` directory selection: a dropped folder becomes a trailing-slash directory reference (for example `@docs/`, or `@"docs 子/` for paths with spaces) rendered with the folder chip appearance. Only the path is referenced; nothing is imported recursively or read, and the agent accesses directory contents on demand.
+- **Images** are recognized by their byte signatures. PNG, JPEG, WebP, and GIF enter DSH's native image draft and continue to follow the selected model's image capability, DSH count/byte limits, and **Automatically fit image size**. The source file is never modified. Images, regular files, and folders may be mixed in one atomic batch; a failure rolls back the complete batch.
 - **Binary documents** such as PDF, Office, and archive files receive path references only. Whether DSH can read or convert them depends on the available tools; the drop does not upload their contents as generic model attachments.
 - **Cross-platform paths** cover Finder on macOS; drive-letter, UNC, and resolved reparse-point paths from Windows Explorer; and standard `Files` or local `file://` data from Linux file managers. Electron/Obsidian desktop APIs provide the path and the host verifies it. A filename is never used to guess a missing path. Mobile, remote DSH, and hosts that do not share a filesystem with DSH do not support regular-file references.
 - **Isolation and security** use a local `postMessage` handshake with per-view, per-navigation tokens. Both sides validate the source window, exact origin, generation, and request ID; no new HTTP endpoint accepts arbitrary local paths. A missing or old mv-dsh-manager, locked input, session switch, or iframe reload reports a real error and leaves no partial draft.
+
+### ArrowUp History Recall
+
+With a compatible mv-dsh-manager installed (settings-card toggle **Arrow-up history recall**, on by default), pressing `↑` in an empty, focused composer enters recall mode: the most recent sent message from the visible conversation immediately prefills the draft, while the complete session history is fetched in the background through `POST /api/mv-aide/history-recall` (same-origin requests only) and replaces the preview. Further `↑` presses walk back through earlier messages; `↓` walks forward, and one more `↓` at the newest message restores the pre-recall draft and exits recall mode.
+
+Boundaries:
+
+- Only user-sent messages (`user/message` and steering messages) are recalled, ordered by the session's complete event sequence numbers; the visible chat pagination is never read or expanded.
+- Nothing triggers during IME composition, while a command or picker menu is open, from a non-empty draft (`↑` keeps native caret movement), when the composer is not focused, or when no current session exists.
+- Switching sessions clears the other sessions' recall state; the anchored draft is restored on exit.
+- When an older DSH runtime does not expose a complete-session-history read, recall fails closed: it keeps the visible-message range, reports no error, and still never expands the visible pagination.
+
+### Clipboard Fallback
+
+The DSH page always uses the browser's `navigator.clipboard` directly. Only when a write is denied by the system (`NotAllowedError`) does the injected manager client delegate the plain-text write to the Obsidian host over the per-view authenticated, generation-rotated local `postMessage` channel; the host completes it through Electron's `clipboard.writeText`. A failure returns a real error instead of silently dropping the write. The channel carries the complete request/reply lifecycle over a MessagePort, so moving the iframe between the main Obsidian window and a popout does not change its identity. Only plain text is delegated; the clipboard is never read.
 
 ### Image Uploads
 
@@ -660,14 +679,17 @@ Two of the three auto-collapse switches live in this section; the third lives in
 | Setting key | Default | Target | Settings location |
 | --- | --- | --- | --- |
 | `browserAutoHideToolbar` | Off | The Web Viewer top toolbar (back/forward, address bar, and so on) | Filesystem & Browser |
-| `tabBarAutoHide` | Off | The workspace tab bar of every tab group, collapsed to a 4 px sensing strip | Filesystem & Browser |
+| `tabBarAutoHide` | Off | The workspace tab bar of every tab group, collapsed with an ~20px transparent hover sensor left at the group top | Filesystem & Browser |
 | `fileHeaderAutoHide` | Off | The Markdown view's `.view-header` (back/forward, file name, actions) | Source Assist |
 
 Behavior:
 
-- Hovering the thin sensing strip at the top of a tab group (4–8 px) expands the bar; **a 120 ms grace period on leave** prevents flicker when the pointer briefly brushes past.
+- Hovering the sensing strip at the top of a tab group (an ~20px transparent band) expands the bar; **a 120 ms grace period on leave** prevents flicker when the pointer briefly brushes past.
 - Expansion is scoped to a single tab group (`.workspace-tabs`) and never affects stacked tabs or other split panes. Once the pointer leaves the active group the bar collapses again.
-- Implementation: pure CSS class toggling plus `requestAnimationFrame`-registered hover listeners. The plugin attaches one of `mv-aide-chrome-autohide-tab`, `-file`, or `-web` to `document.body`.
+- Collapsing zeroes the in-flow height — the content and in-page toolbars shift up as a whole instead of being covered; expansion restores the native `--header-height`. The height switch is instantaneous and only the opacity is animated.
+- The main window and each popout window hold independent controllers, listeners, and collapse state; turning a switch off or unloading the plugin unwinds them per window.
+- While a native Obsidian tab drag or file drag is in progress, the strips stay expanded; auto-collapse resumes when the drag ends or after a 30-second watchdog.
+- Implementation: pure CSS class toggles; the plugin attaches one of `mv-aide-chrome-autohide-tab`, `-file`, or `-web` to `document.body`. While expanded, the system pointer position is sampled roughly every 32 ms to detect leaving (no reliance on DOM hover events); `requestAnimationFrame` is used only to stabilize geometry measurements around the collapse/expand switch.
 - Each switch is a boolean in `data.json`. None of them makes network requests or runs external scripts; turning one off removes both the class and its listeners.
 
 ### Custom web page buttons
@@ -792,6 +814,7 @@ Only Inline Completion's accept/cancel behavior has default editing keys; mv-AID
 | `~/.mv-aide/file-opener/` | Current default-opener authority: owner, runtime, wrapper, helper, and icon files; excludes OS association databases |
 | `~/.mv-aide/runtime/` | Rebuildable runtime artifacts for Terminal, universal MCP, and Codex integration |
 | `~/.mv-aide/tmp/` | Operation-scoped temporary files for DSH installation, opener preflight, and similar work |
+| `$DSH_HOME/.mv-aide/runtime-owners/<port>.json` | Owner records for DSH instances started by mv-AIDE: secret-free PID, port, and identity fingerprint (directory `0700`, file `0600`, temp-file + rename atomic write), used only to avoid adopting or stopping another DSH |
 | `$CLAUDE_CONFIG_DIR/ide/` (default `~/.claude/ide/`) | Claude Code discovery compatibility mirror; `~/.mv-aide/ide/` remains authoritative |
 | `$CODEX_HOME/config.toml` (default `~/.codex/config.toml`) | Marked, managed `mcp_servers.mv_aide_obsidian` block |
 
@@ -801,6 +824,7 @@ New mv-AIDE cross-process artifacts are written only to the exact subdirectories
 
 - IDE, universal MCP, and default-opener services bind only to `127.0.0.1`.
 - The DSH web service managed by mv-agent binds only to `127.0.0.1`, default port `3080` (configurable in settings).
+- The loopback reverse proxy used in Alpha authorization mode also binds only to `127.0.0.1`, on an OS-assigned port.
 - Universal MCP requires a per-vault Bearer token; rotation invalidates the previous token immediately.
 - Selection Assistant and Inline Completion connect only to the configured API Base URL.
 - Claude/Codex networking, terminal-command networking, and Web Viewer browsing are owned by those programs.
@@ -881,6 +905,11 @@ Check that the entry under `mv-aide/external-files/mirror` is a valid symbolic l
 1. Verify the relevant switch (`browserAutoHideToolbar` / `tabBarAutoHide` / `fileHeaderAutoHide`) is on.
 2. Some themes or community plugins rewrite the styling of `.view-header` or the tab bar; if so, the auto-collapse hooks may find nothing to attach to. Try without custom CSS first.
 3. Leaving the expanded bar has a 120 ms grace — a brief brush past the sensing strip is expected and is not a bug.
+4. The collapsed summon surface is an ~20px transparent sensor at the group top; a popout window needs the pointer moved inside that window's own sensor — the main window's expanded state does not carry over.
+
+### History recall only reaches visible messages
+
+When an older DSH runtime does not expose a complete-session-history read, `↑` recall fails closed to the visible-message range, without errors and without expanding the visible pagination. This is an intentional degradation; upgrading DSH or re-injecting restores full-history recall. Also confirm the **Arrow-up history recall** toggle in the mv-dsh-manager settings card is on, plus the trigger conditions: an empty composer, focus on the composer, no open menus, and no active IME composition.
 
 ### Custom web page button does not work
 

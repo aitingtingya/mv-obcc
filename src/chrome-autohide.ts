@@ -1,4 +1,5 @@
 import type MvAideIdePlugin from "../main";
+import { isObsidianWorkspaceDragEvent } from "./workspace-drag";
 
 export type ChromeAutoHideKind = "tabBar" | "fileHeader" | "webviewerHeader";
 
@@ -25,7 +26,10 @@ const LEAF_CONTENT_SELECTOR = ".workspace-leaf-content";
 const MARKDOWN_TYPE = "markdown";
 const WEBVIEWER_TYPES = new Set(["webviewer", "browser"]);
 const HEADER_SELECTOR = ".view-header";
-const SENSOR_HEIGHT_PX = 8;
+const SENSOR_HEIGHT_PX = 20;
+const GEOMETRY_STABLE_FRAMES = 2;
+const GEOMETRY_STABILIZE_MAX_MS = 750;
+const WORKSPACE_DRAG_WATCHDOG_MS = 30_000;
 const INTERACTIVE_OVERLAY_SELECTOR = [
   ".menu",
   ".suggestion-container",
@@ -64,8 +68,17 @@ interface ElectronRemoteLike {
   screen?: {
     getCursorScreenPoint?: () => Point;
   };
-  getCurrentWindow?: () => {
-    getContentBounds?: () => ElectronRectangle;
+  BrowserWindow?: {
+    getAllWindows?: () => ElectronBrowserWindowLike[];
+  };
+  getCurrentWindow?: () => ElectronBrowserWindowLike;
+}
+
+interface ElectronBrowserWindowLike {
+  getContentBounds?: () => ElectronRectangle;
+  isDestroyed?: () => boolean;
+  webContents?: {
+    getZoomFactor?: () => number;
   };
 }
 
@@ -91,61 +104,176 @@ function finite(value: number): boolean {
 export function createElectronChromeCursorRuntime(
   hostWindow: Window,
 ): ChromeCursorRuntime | null {
-  const requireModule = (hostWindow as Window & { require?: RuntimeRequire }).require;
-  if (typeof requireModule !== "function") return null;
+  return createElectronChromeCursorRuntimeFactory(hostWindow)(hostWindow);
+}
+
+/**
+ * Build one privileged Electron sampler and project it into every Obsidian
+ * window. Popout renderers are sandboxed and intentionally do not need their
+ * own `require`; their standard screen geometry is matched against the native
+ * BrowserWindow list owned by the main renderer.
+ */
+export function createElectronChromeCursorRuntimeFactory(
+  privilegedWindow: Window,
+): ChromeCursorRuntimeFactory {
+  const requireModule = (privilegedWindow as Window & {
+    require?: RuntimeRequire;
+  }).require;
+  if (typeof requireModule !== "function") return () => null;
 
   try {
     const electron = requireModule("electron") as ElectronRendererLike;
     let remote = electron.remote;
+    const hasWindowLookup = (candidate: ElectronRemoteLike | undefined): boolean =>
+      typeof candidate?.BrowserWindow?.getAllWindows === "function" ||
+      typeof candidate?.getCurrentWindow === "function";
     if (
       typeof remote?.screen?.getCursorScreenPoint !== "function" ||
-      typeof remote.getCurrentWindow !== "function"
+      !hasWindowLookup(remote)
     ) {
       remote = requireModule("@electron/remote") as ElectronRemoteLike;
     }
     const screen = remote?.screen;
+    const getAllWindows = remote?.BrowserWindow?.getAllWindows;
     const currentWindow = remote?.getCurrentWindow?.();
     if (
-      typeof screen?.getCursorScreenPoint !== "function" ||
-      typeof currentWindow?.getContentBounds !== "function"
+      typeof screen?.getCursorScreenPoint !== "function"
     ) {
-      return null;
+      return () => null;
     }
 
-    return {
-      sample(): ChromeCursorSample | null {
+    const nativeWindows = (): ElectronBrowserWindowLike[] => {
+      if (typeof getAllWindows === "function") {
         try {
-          const cursor = screen.getCursorScreenPoint!();
-          const bounds = currentWindow.getContentBounds!();
-          const reportedZoom = electron.webFrame?.getZoomFactor?.();
-          const fallbackZoom =
-            hostWindow.innerWidth > 0 ? bounds.width / hostWindow.innerWidth : 1;
-          const zoomFactor =
-            reportedZoom !== undefined && finite(reportedZoom) && reportedZoom > 0
-              ? reportedZoom
-              : fallbackZoom;
-          if (
-            !finite(cursor.x) ||
-            !finite(cursor.y) ||
-            !finite(bounds.x) ||
-            !finite(bounds.y) ||
-            !finite(zoomFactor) ||
-            zoomFactor <= 0
-          ) {
+          const candidates = getAllWindows.call(remote?.BrowserWindow).filter((candidate) =>
+            candidate.isDestroyed?.() !== true &&
+            typeof candidate.getContentBounds === "function");
+          if (candidates.length > 0) return candidates;
+        } catch {
+          // Fall through to the privileged current window when enumeration is
+          // transiently unavailable during a native window lifecycle change.
+        }
+      }
+      return typeof currentWindow?.getContentBounds === "function"
+        ? [currentWindow]
+        : [];
+    };
+
+    return (hostWindow): ChromeCursorRuntime | null => {
+      if (hostWindow !== privilegedWindow && typeof getAllWindows !== "function") {
+        return null;
+      }
+      let nativeWindow: ElectronBrowserWindowLike | null = null;
+
+      const zoomFor = (
+        candidate: ElectronBrowserWindowLike,
+        bounds: ElectronRectangle,
+      ): number => {
+        const nativeZoom = candidate.webContents?.getZoomFactor?.();
+        const privilegedZoom =
+          hostWindow === privilegedWindow && candidate === currentWindow
+            ? electron.webFrame?.getZoomFactor?.()
+            : undefined;
+        const reportedZoom = nativeZoom ?? privilegedZoom;
+        const widthZoom = hostWindow.innerWidth > 0
+          ? bounds.width / hostWindow.innerWidth
+          : 1;
+        return reportedZoom !== undefined && finite(reportedZoom) && reportedZoom > 0
+          ? reportedZoom
+          : widthZoom;
+      };
+
+      const nativeGeometry = (): {
+        bounds: ElectronRectangle;
+        zoomFactor: number;
+      } | null => {
+        const hostX = hostWindow.screenX;
+        const hostY = hostWindow.screenY;
+        const candidates = nativeWindows();
+        let best: {
+          candidate: ElectronBrowserWindowLike;
+          bounds: ElectronRectangle;
+          zoomFactor: number;
+          score: number;
+        } | null = null;
+        for (const candidate of candidates) {
+          let bounds: ElectronRectangle;
+          try {
+            bounds = candidate.getContentBounds!();
+          } catch {
+            continue;
+          }
+          const zoomFactor = zoomFor(candidate, bounds);
+          if (!finite(zoomFactor) || zoomFactor <= 0) continue;
+          const expectedWidth = hostWindow.innerWidth * zoomFactor;
+          const expectedHeight = hostWindow.innerHeight * zoomFactor;
+          const score =
+            Math.abs(bounds.x - hostX) +
+            Math.abs(bounds.y - hostY) +
+            Math.abs(bounds.width - expectedWidth) +
+            Math.abs(bounds.height - expectedHeight);
+          if (!best || score < best.score) {
+            best = { candidate, bounds, zoomFactor, score };
+          }
+        }
+        if (!best) return null;
+        const maximumMatchError = Math.max(
+          96,
+          (best.bounds.width + best.bounds.height) * 0.08,
+        );
+        if (best.score > maximumMatchError) return null;
+        nativeWindow = best.candidate;
+        return { bounds: best.bounds, zoomFactor: best.zoomFactor };
+      };
+
+      return {
+        sample(): ChromeCursorSample | null {
+          try {
+            const cursor = screen.getCursorScreenPoint!();
+            let geometry: {
+              bounds: ElectronRectangle;
+              zoomFactor: number;
+            } | null = null;
+            if (
+              nativeWindow &&
+              nativeWindow.isDestroyed?.() !== true &&
+              typeof nativeWindow.getContentBounds === "function"
+            ) {
+              const bounds = nativeWindow.getContentBounds();
+              const zoomFactor = zoomFor(nativeWindow, bounds);
+              const moved =
+                Math.abs(bounds.x - hostWindow.screenX) > 2 ||
+                Math.abs(bounds.y - hostWindow.screenY) > 2;
+              if (!moved && finite(zoomFactor) && zoomFactor > 0) {
+                geometry = { bounds, zoomFactor };
+              }
+            }
+            geometry ??= nativeGeometry();
+            if (!geometry) return null;
+            const { bounds, zoomFactor } = geometry;
+            if (
+              !finite(cursor.x) ||
+              !finite(cursor.y) ||
+              !finite(bounds.x) ||
+              !finite(bounds.y) ||
+              !finite(zoomFactor) ||
+              zoomFactor <= 0
+            ) {
+              return null;
+            }
+            return {
+              cursor: { x: cursor.x, y: cursor.y },
+              contentOrigin: { x: bounds.x, y: bounds.y },
+              zoomFactor,
+            };
+          } catch {
             return null;
           }
-          return {
-            cursor: { x: cursor.x, y: cursor.y },
-            contentOrigin: { x: bounds.x, y: bounds.y },
-            zoomFactor,
-          };
-        } catch {
-          return null;
-        }
-      },
+        },
+      };
     };
   } catch {
-    return null;
+    return () => null;
   }
 }
 
@@ -156,7 +284,190 @@ export function createElectronChromeCursorRuntime(
  * 指针仍在该组完整标签栏、活动页工具栏或所属弹层内时永不收起；连续离开
  * 120ms 后才收起。标签栏空白的原生窗口 drag 区不需要派发任何 DOM 事件。
  */
+interface DragCoordinator {
+  isActive(): boolean;
+  start(controller: ChromeAutoHideWindowController): void;
+  touch(controller: ChromeAutoHideWindowController): void;
+  finish(controller: ChromeAutoHideWindowController): void;
+}
+
+interface OwnedWindowTimer {
+  readonly owner: Window;
+  readonly id: number;
+}
+
+/** Coordinates independent auto-hide controllers for every Obsidian window. */
 export class ChromeAutoHideFeature {
+  private readonly controllers = new Map<Window, ChromeAutoHideWindowController>();
+  private readonly enabled: Record<ChromeAutoHideKind, boolean> = {
+    tabBar: false,
+    fileHeader: false,
+    webviewerHeader: false,
+  };
+  private registered = false;
+  private workspaceDragActive = false;
+  private workspaceDragGeneration = 0;
+  private workspaceDragWatchdog: OwnedWindowTimer | null = null;
+  private readonly cursorRuntimeFactory: ChromeCursorRuntimeFactory;
+
+  constructor(
+    private readonly plugin: MvAideIdePlugin,
+    cursorRuntimeFactory?: ChromeCursorRuntimeFactory,
+  ) {
+    const privilegedWindow =
+      plugin.app.workspace.containerEl?.ownerDocument.defaultView ??
+      document.defaultView ??
+      window;
+    this.cursorRuntimeFactory = cursorRuntimeFactory ??
+      createElectronChromeCursorRuntimeFactory(privilegedWindow);
+  }
+
+  register(): void {
+    if (this.registered) return;
+    this.registered = true;
+    this.syncWindows();
+    this.plugin.registerEvent(
+      this.plugin.app.workspace.on("layout-change", () => {
+        this.syncWindows();
+        for (const controller of this.controllers.values()) controller.layoutChanged();
+      }),
+    );
+    this.plugin.registerEvent(
+      this.plugin.app.workspace.on("resize", () => {
+        this.syncWindows();
+        for (const controller of this.controllers.values()) controller.viewportChanged();
+      }),
+    );
+    this.plugin.registerEvent(
+      this.plugin.app.workspace.on("active-leaf-change", () => {
+        this.syncWindows();
+        for (const controller of this.controllers.values()) controller.activeLeafChanged();
+      }),
+    );
+    this.plugin.registerEvent(
+      this.plugin.app.workspace.on("window-open", (_workspaceWindow, hostWindow) => {
+        this.ensureController(hostWindow);
+        hostWindow.queueMicrotask(() => this.controllers.get(hostWindow)?.layoutChanged());
+      }),
+    );
+    this.plugin.registerEvent(
+      this.plugin.app.workspace.on("window-close", (_workspaceWindow, hostWindow) => {
+        this.removeController(hostWindow);
+      }),
+    );
+    this.plugin.register(() => this.dispose());
+  }
+
+  setEnabled(kind: ChromeAutoHideKind, enabled: boolean): void {
+    this.enabled[kind] = enabled;
+    this.syncWindows();
+    for (const controller of this.controllers.values()) {
+      controller.setEnabled(kind, enabled);
+    }
+  }
+
+  private readonly dragCoordinator: DragCoordinator = {
+    isActive: () => this.workspaceDragActive,
+    start: (controller) => this.startWorkspaceDrag(controller),
+    touch: (controller) => this.touchWorkspaceDrag(controller),
+    finish: (controller) => this.finishWorkspaceDrag(controller),
+  };
+
+  private syncWindows(): void {
+    const workspace = this.plugin.app.workspace;
+    const mainWindow = workspace.containerEl?.ownerDocument.defaultView ??
+      document.defaultView ?? window;
+    this.ensureController(mainWindow);
+    workspace.iterateAllLeaves?.((leaf) => {
+      const hostWindow = leaf.view?.containerEl?.ownerDocument.defaultView;
+      if (hostWindow) this.ensureController(hostWindow);
+    });
+    for (const [hostWindow] of this.controllers) {
+      if (hostWindow.closed) this.removeController(hostWindow);
+    }
+  }
+
+  private ensureController(hostWindow: Window): ChromeAutoHideWindowController {
+    let controller = this.controllers.get(hostWindow);
+    if (controller) return controller;
+    controller = new ChromeAutoHideWindowController(
+      hostWindow,
+      this.cursorRuntimeFactory,
+      this.dragCoordinator,
+    );
+    this.controllers.set(hostWindow, controller);
+    controller.register(this.enabled);
+    if (this.workspaceDragActive) controller.setWorkspaceDrag(true);
+    return controller;
+  }
+
+  private removeController(hostWindow: Window): void {
+    const controller = this.controllers.get(hostWindow);
+    if (!controller) return;
+    controller.dispose();
+    this.controllers.delete(hostWindow);
+  }
+
+  private startWorkspaceDrag(controller: ChromeAutoHideWindowController): void {
+    this.workspaceDragGeneration += 1;
+    this.workspaceDragActive = true;
+    for (const candidate of this.controllers.values()) candidate.setWorkspaceDrag(true);
+    this.renewWorkspaceDragWatchdog(controller.hostWindow);
+  }
+
+  private touchWorkspaceDrag(controller: ChromeAutoHideWindowController): void {
+    if (!this.workspaceDragActive) {
+      this.startWorkspaceDrag(controller);
+      return;
+    }
+    controller.setWorkspaceDrag(true);
+    this.renewWorkspaceDragWatchdog(controller.hostWindow);
+  }
+
+  private finishWorkspaceDrag(controller: ChromeAutoHideWindowController): void {
+    if (!this.workspaceDragActive) return;
+    const generation = this.workspaceDragGeneration;
+    controller.hostWindow.queueMicrotask(() => {
+      if (
+        !this.workspaceDragActive ||
+        generation !== this.workspaceDragGeneration
+      ) return;
+      this.workspaceDragActive = false;
+      this.clearWorkspaceDragWatchdog();
+      for (const candidate of this.controllers.values()) candidate.setWorkspaceDrag(false);
+    });
+  }
+
+  private renewWorkspaceDragWatchdog(owner: Window): void {
+    this.clearWorkspaceDragWatchdog();
+    const id = owner.setTimeout(() => {
+      this.workspaceDragWatchdog = null;
+      if (!this.workspaceDragActive) return;
+      this.workspaceDragActive = false;
+      for (const controller of this.controllers.values()) controller.setWorkspaceDrag(false);
+    }, WORKSPACE_DRAG_WATCHDOG_MS);
+    this.workspaceDragWatchdog = { owner, id };
+  }
+
+  private clearWorkspaceDragWatchdog(): void {
+    const timer = this.workspaceDragWatchdog;
+    if (!timer) return;
+    timer.owner.clearTimeout(timer.id);
+    this.workspaceDragWatchdog = null;
+  }
+
+  private dispose(): void {
+    this.registered = false;
+    this.workspaceDragActive = false;
+    this.workspaceDragGeneration += 1;
+    this.clearWorkspaceDragWatchdog();
+    for (const controller of this.controllers.values()) controller.dispose();
+    this.controllers.clear();
+  }
+}
+
+/** Existing single-window state machine, scoped to one concrete document. */
+class ChromeAutoHideWindowController {
   private groups: HTMLElement[] = [];
   private sensors = new Map<HTMLElement, HTMLElement>();
   private outsideSince = new Map<HTMLElement, number>();
@@ -165,44 +476,100 @@ export class ChromeAutoHideFeature {
   private overlayOwner: HTMLElement | null = null;
   private ownedOverlays = new Set<HTMLElement>();
   private overlayObserver: MutationObserver | null = null;
+  private resizeObserver: ResizeObserver | null = null;
+  private geometryFrame: number | null = null;
+  private geometryFrameUsesAnimationFrame = false;
+  private geometryStartedAt = 0;
+  private geometryStableFrames = 0;
+  private geometrySignature = "";
+  private workspaceDrag = false;
+  private windowHoverActive = false;
 
   constructor(
-    private readonly plugin: MvAideIdePlugin,
-    private readonly cursorRuntimeFactory: ChromeCursorRuntimeFactory =
-      createElectronChromeCursorRuntime,
+    readonly hostWindow: Window,
+    private readonly cursorRuntimeFactory: ChromeCursorRuntimeFactory,
+    private readonly dragCoordinator: DragCoordinator,
   ) {}
 
-  register(): void {
-    const hostWindow = document.defaultView ?? window;
-    this.cursorRuntime = this.cursorRuntimeFactory(hostWindow);
+  private get ownerDocument(): Document {
+    return this.hostWindow.document;
+  }
+
+  register(enabled: Readonly<Record<ChromeAutoHideKind, boolean>>): void {
+    this.cursorRuntime = this.cursorRuntimeFactory(this.hostWindow);
+    for (const kind of Object.keys(enabled) as ChromeAutoHideKind[]) {
+      this.ownerDocument.body.classList.toggle(
+        CHROME_AUTOHIDE_KIND_CLASS[kind],
+        enabled[kind] && this.cursorRuntime !== null,
+      );
+    }
     this.refreshGroups();
-    this.plugin.registerEvent(
-      this.plugin.app.workspace.on("layout-change", () => this.refreshGroups()),
-    );
-    this.plugin.registerEvent(
-      this.plugin.app.workspace.on("active-leaf-change", () => this.activeLeafChanged()),
-    );
-    this.plugin.registerDomEvent(document, "pointerdown", this.onPointerDown, {
-      capture: true,
+    this.ownerDocument.addEventListener("pointerdown", this.onPointerDown, {
+      capture: true, passive: true,
+    });
+    this.ownerDocument.addEventListener("pointerover", this.onPointerOver, {
+      capture: true, passive: true,
+    });
+    this.hostWindow.addEventListener("mouseenter", this.onWindowMouseEnter, {
       passive: true,
     });
-    this.plugin.registerDomEvent(document, "pointerover", this.onPointerOver, {
-      capture: true,
+    this.hostWindow.addEventListener("mouseleave", this.onWindowMouseLeave, {
       passive: true,
     });
-    this.plugin.registerDomEvent(window, "resize", this.onViewportChanged, {
-      passive: true,
-    });
-    this.plugin.register(() => this.disposeDom());
+    this.ownerDocument.addEventListener("dragstart", this.onDragStart, true);
+    this.ownerDocument.addEventListener("dragover", this.onDragOver, true);
+    this.ownerDocument.addEventListener("dragend", this.onDragFinished, true);
+    this.ownerDocument.addEventListener("drop", this.onDragFinished, true);
+    this.ownerDocument.addEventListener("keydown", this.onKeyDown, true);
+    this.ownerDocument.addEventListener("transitionrun", this.onLayoutTransition, true);
+    this.ownerDocument.addEventListener("transitionend", this.onLayoutTransition, true);
+    this.ownerDocument.addEventListener("transitioncancel", this.onLayoutTransition, true);
+    this.hostWindow.addEventListener("resize", this.onViewportChanged, { passive: true });
   }
 
   setEnabled(kind: ChromeAutoHideKind, enabled: boolean): void {
     const canEnable = enabled && this.cursorRuntime !== null;
-    document.body.classList.toggle(CHROME_AUTOHIDE_KIND_CLASS[kind], canEnable);
+    this.ownerDocument.body.classList.toggle(CHROME_AUTOHIDE_KIND_CLASS[kind], canEnable);
     for (const group of this.groups) {
       if (!this.groupHasArmedLayer(group)) this.collapseGroup(group);
       this.updateSensor(group);
     }
+    if (this.windowHoverActive && this.hasArmedGroup()) this.startCursorPolling();
+    else if (!this.hasExpandedGroup()) this.stopCursorPolling();
+    this.startGeometryStabilization();
+  }
+
+  layoutChanged(): void {
+    this.refreshGroups();
+    this.startGeometryStabilization();
+  }
+
+  viewportChanged(): void {
+    this.syncAllSensors();
+    this.startGeometryStabilization();
+  }
+
+  activeLeafChanged(): void {
+    for (const group of this.groups) {
+      if (!this.groupHasArmedLayer(group)) this.collapseGroup(group);
+      else if (this.workspaceDrag) this.expandGroup(group);
+      this.updateSensor(group);
+    }
+    this.refreshResizeObserver();
+    this.startGeometryStabilization();
+  }
+
+  setWorkspaceDrag(active: boolean): void {
+    if (this.workspaceDrag === active) return;
+    this.workspaceDrag = active;
+    this.outsideSince.clear();
+    if (active) {
+      for (const group of this.groups) {
+        if (this.groupHasArmedLayer(group)) this.expandGroup(group);
+      }
+      return;
+    }
+    if (this.hasExpandedGroup()) this.startCursorPolling();
   }
 
   // ── 系统指针单一真值 ────────────────────────────────────────────────
@@ -223,17 +590,59 @@ export class ChromeAutoHideFeature {
   };
 
   private onPointerOver = (event: PointerEvent): void => {
+    this.activateWindowHover();
     this.captureOwnedOverlay(event.target);
   };
 
+  private readonly onWindowMouseEnter = (): void => {
+    this.activateWindowHover();
+  };
+
+  private readonly onWindowMouseLeave = (): void => {
+    this.windowHoverActive = false;
+    if (!this.hasExpandedGroup()) this.stopCursorPolling();
+  };
+
+  private activateWindowHover(): void {
+    this.windowHoverActive = true;
+    if (this.hasArmedGroup()) this.startCursorPolling();
+  }
+
   private onViewportChanged = (): void => {
-    this.syncAllSensors();
+    this.viewportChanged();
+  };
+
+  private readonly onLayoutTransition = (): void => {
+    this.startGeometryStabilization();
+  };
+
+  private readonly onDragStart = (event: DragEvent): void => {
+    if (!isObsidianWorkspaceDragEvent(this.ownerDocument, event)) return;
+    this.dragCoordinator.start(this);
+  };
+
+  private readonly onDragOver = (event: DragEvent): void => {
+    if (
+      !this.dragCoordinator.isActive() &&
+      !isObsidianWorkspaceDragEvent(this.ownerDocument, event)
+    ) return;
+    this.dragCoordinator.touch(this);
+  };
+
+  private readonly onDragFinished = (): void => {
+    if (this.dragCoordinator.isActive()) this.dragCoordinator.finish(this);
+  };
+
+  private readonly onKeyDown = (event: KeyboardEvent): void => {
+    if (event.key === "Escape" && this.dragCoordinator.isActive()) {
+      this.dragCoordinator.finish(this);
+    }
   };
 
   private startCursorPolling(): void {
     if (this.cursorRuntime === null || this.cursorPollHandle !== null) return;
     this.pollCursor();
-    this.cursorPollHandle = window.setInterval(
+    this.cursorPollHandle = this.hostWindow.setInterval(
       this.pollCursor,
       CHROME_CURSOR_POLL_MS,
     );
@@ -241,15 +650,12 @@ export class ChromeAutoHideFeature {
 
   private stopCursorPolling(): void {
     if (this.cursorPollHandle === null) return;
-    window.clearInterval(this.cursorPollHandle);
+    this.hostWindow.clearInterval(this.cursorPollHandle);
     this.cursorPollHandle = null;
   }
 
   private pollCursor = (): void => {
-    const expandedGroups = this.groups.filter((group) =>
-      group.classList.contains(CHROME_EXPANDED_CLASS),
-    );
-    if (expandedGroups.length === 0) {
+    if (!this.windowHoverActive && !this.hasExpandedGroup()) {
       this.stopCursorPolling();
       return;
     }
@@ -257,18 +663,30 @@ export class ChromeAutoHideFeature {
     const sample = this.cursorRuntime?.sample() ?? null;
     if (!sample) {
       // 无系统坐标时不允许沿用旧位置收起，宁可保持展开也不能误判。
-      for (const group of expandedGroups) this.outsideSince.delete(group);
+      for (const group of this.expandedGroups()) this.outsideSince.delete(group);
       return;
+    }
+
+    const point = this.cursorClientPoint(sample);
+    if (this.windowHoverActive && point) {
+      for (const group of this.groups) {
+        if (
+          !group.classList.contains(CHROME_EXPANDED_CLASS) &&
+          this.pointInCollapsedTrigger(group, point)
+        ) {
+          this.expandGroup(group);
+        }
+      }
     }
 
     this.pruneOwnedOverlays();
     const now = Date.now();
-    for (const group of expandedGroups) {
+    for (const group of this.expandedGroups()) {
       if (!group.isConnected || !this.groupHasArmedLayer(group)) {
         this.collapseGroup(group);
         continue;
       }
-      if (this.cursorInRetainedRegion(group, sample)) {
+      if (this.workspaceDrag || this.cursorInRetainedRegion(group, sample)) {
         this.outsideSince.delete(group);
         continue;
       }
@@ -280,8 +698,31 @@ export class ChromeAutoHideFeature {
       }
     }
 
-    if (!this.hasExpandedGroup()) this.stopCursorPolling();
+    if (!this.hasExpandedGroup() && !this.windowHoverActive) this.stopCursorPolling();
   };
+
+  private expandedGroups(): HTMLElement[] {
+    return this.groups.filter((group) =>
+      group.classList.contains(CHROME_EXPANDED_CLASS),
+    );
+  }
+
+  private pointInCollapsedTrigger(group: HTMLElement, point: Point): boolean {
+    if (!group.isConnected || !this.groupHasArmedLayer(group)) return false;
+    const groupRect = group.getBoundingClientRect();
+    const stripRect = group.querySelector<HTMLElement>(STRIP_SELECTOR)
+      ?.getBoundingClientRect();
+    const top =
+      !this.hasArmedTabStrip(group) && stripRect && stripRect.height > 0
+        ? stripRect.bottom
+        : groupRect.top;
+    return this.pointInRect(point, {
+      left: groupRect.left,
+      right: groupRect.right,
+      top,
+      bottom: top + SENSOR_HEIGHT_PX,
+    });
+  }
 
   private cursorInRetainedRegion(
     group: HTMLElement,
@@ -319,13 +760,17 @@ export class ChromeAutoHideFeature {
     group.classList.remove(CHROME_EXPANDED_CLASS);
     if (this.overlayOwner === group) this.clearOverlayOwnership();
     this.updateSensor(group);
-    if (!this.hasExpandedGroup()) this.stopCursorPolling();
+    if (!this.hasExpandedGroup() && !this.windowHoverActive) this.stopCursorPolling();
   }
 
   private hasExpandedGroup(): boolean {
     return this.groups.some((group) =>
       group.classList.contains(CHROME_EXPANDED_CLASS),
     );
+  }
+
+  private hasArmedGroup(): boolean {
+    return this.groups.some((group) => this.groupHasArmedLayer(group));
   }
 
   // ── 当前真实 chrome 几何 ────────────────────────────────────────────
@@ -363,7 +808,7 @@ export class ChromeAutoHideFeature {
       contents.find((content) => {
         const leaf = content.closest<HTMLElement>(".workspace-leaf");
         if (!leaf) return false;
-        const style = window.getComputedStyle(leaf);
+        const style = this.hostWindow.getComputedStyle(leaf);
         return style.display !== "none" && style.visibility !== "hidden";
       }) ?? null
     );
@@ -382,7 +827,7 @@ export class ChromeAutoHideFeature {
   }
 
   private isKindArmed(kind: ChromeAutoHideKind): boolean {
-    return document.body.classList.contains(CHROME_AUTOHIDE_KIND_CLASS[kind]);
+    return this.ownerDocument.body.classList.contains(CHROME_AUTOHIDE_KIND_CLASS[kind]);
   }
 
   private expandedChromeBand(
@@ -420,11 +865,12 @@ export class ChromeAutoHideFeature {
   }
 
   private groupFromChromeTarget(target: EventTarget | null): HTMLElement | null {
-    if (!(target instanceof Element)) return null;
-    const group = target.closest<HTMLElement>(GROUP_SELECTOR);
+    const element = this.elementFromTarget(target);
+    if (!element) return null;
+    const group = element.closest<HTMLElement>(GROUP_SELECTOR);
     if (!group || !this.groups.includes(group)) return null;
     return this.expandedChromeElements(group).some((element) =>
-      element.contains(target),
+      element.contains(target as Node),
     )
       ? group
       : null;
@@ -446,8 +892,9 @@ export class ChromeAutoHideFeature {
   }
 
   private captureOwnedOverlay(target: EventTarget | null | undefined): boolean {
-    if (!this.overlayOwner || !(target instanceof Element)) return false;
-    const overlay = target.closest<HTMLElement>(INTERACTIVE_OVERLAY_SELECTOR);
+    const element = this.elementFromTarget(target);
+    if (!this.overlayOwner || !element) return false;
+    const overlay = element.closest<HTMLElement>(INTERACTIVE_OVERLAY_SELECTOR);
     if (!overlay || !this.isLiveOverlay(overlay)) return false;
     this.ownedOverlays.add(overlay);
     this.observeOwnedOverlays();
@@ -479,9 +926,13 @@ export class ChromeAutoHideFeature {
   }
 
   private observeOwnedOverlays(): void {
-    if (this.overlayObserver || !document.body) return;
-    this.overlayObserver = new MutationObserver(() => this.pruneOwnedOverlays());
-    this.overlayObserver.observe(document.body, {
+    if (this.overlayObserver || !this.ownerDocument.body) return;
+    const MutationObserverCtor = (this.hostWindow as Window & {
+      MutationObserver: typeof MutationObserver;
+    }).MutationObserver;
+    const observer = new MutationObserverCtor(() => this.pruneOwnedOverlays());
+    this.overlayObserver = observer;
+    observer.observe(this.ownerDocument.body, {
       childList: true,
       subtree: true,
       attributes: true,
@@ -505,15 +956,23 @@ export class ChromeAutoHideFeature {
   private sensorFromTarget(
     target: EventTarget | null | undefined,
   ): HTMLElement | null {
-    return target instanceof HTMLElement &&
-      target.classList.contains(CHROME_SENSOR_CLASS)
-      ? target
+    const element = this.elementFromTarget(target);
+    return element?.classList.contains(CHROME_SENSOR_CLASS)
+      ? element as HTMLElement
+      : null;
+  }
+
+  private elementFromTarget(target: EventTarget | null | undefined): Element | null {
+    const element = target as Partial<Element> | null | undefined;
+    return element?.ownerDocument === this.ownerDocument &&
+      typeof element.closest === "function"
+      ? element as Element
       : null;
   }
 
   private refreshGroups(): void {
     const nextGroups = Array.from(
-      document.querySelectorAll<HTMLElement>(GROUP_SELECTOR),
+      this.ownerDocument.querySelectorAll<HTMLElement>(GROUP_SELECTOR),
     );
     const nextSet = new Set(nextGroups);
     for (const group of this.groups) {
@@ -527,23 +986,18 @@ export class ChromeAutoHideFeature {
     this.groups = nextGroups;
     for (const group of this.groups) {
       if (!this.sensors.has(group)) {
-        const sensor = document.body.createDiv({ cls: CHROME_SENSOR_CLASS });
+        const sensor = this.ownerDocument.body.createDiv({ cls: CHROME_SENSOR_CLASS });
         sensor.addEventListener("pointerenter", this.onSensorPointerEnter, {
           passive: true,
         });
         this.sensors.set(group, sensor);
       }
       this.updateSensor(group);
+      if (this.workspaceDrag && this.groupHasArmedLayer(group)) this.expandGroup(group);
     }
     this.syncAllSensors();
+    this.refreshResizeObserver();
     if (this.hasExpandedGroup()) this.startCursorPolling();
-  }
-
-  private activeLeafChanged(): void {
-    for (const group of this.groups) {
-      if (!this.groupHasArmedLayer(group)) this.collapseGroup(group);
-      this.updateSensor(group);
-    }
   }
 
   private updateSensor(group: HTMLElement): void {
@@ -576,17 +1030,111 @@ export class ChromeAutoHideFeature {
     sensor.style.height = `${SENSOR_HEIGHT_PX}px`;
   }
 
-  private disposeDom(): void {
+  private refreshResizeObserver(): void {
+    this.resizeObserver?.disconnect();
+    const ResizeObserverCtor = (this.hostWindow as Window & {
+      ResizeObserver?: typeof ResizeObserver;
+    }).ResizeObserver;
+    if (typeof ResizeObserverCtor !== "function") {
+      this.resizeObserver = null;
+      return;
+    }
+    const observer = new ResizeObserverCtor(() => {
+      this.syncAllSensors();
+      this.startGeometryStabilization();
+    });
+    this.resizeObserver = observer;
+    for (const group of this.groups) {
+      observer.observe(group);
+      const strip = group.querySelector<HTMLElement>(STRIP_SELECTOR);
+      if (strip) observer.observe(strip);
+    }
+  }
+
+  private startGeometryStabilization(): void {
+    if (this.geometryFrame !== null) return;
+    this.geometryStartedAt = Date.now();
+    this.geometryStableFrames = 0;
+    this.geometrySignature = this.currentGeometrySignature();
+    this.scheduleGeometryFrame();
+  }
+
+  private scheduleGeometryFrame(): void {
+    if (typeof this.hostWindow.requestAnimationFrame === "function") {
+      this.geometryFrameUsesAnimationFrame = true;
+      this.geometryFrame = this.hostWindow.requestAnimationFrame(this.stabilizeGeometry);
+      return;
+    }
+    this.geometryFrameUsesAnimationFrame = false;
+    this.geometryFrame = this.hostWindow.setTimeout(() => this.stabilizeGeometry(), 16);
+  }
+
+  private readonly stabilizeGeometry = (): void => {
+    this.geometryFrame = null;
+    this.syncAllSensors();
+    const signature = this.currentGeometrySignature();
+    if (signature === this.geometrySignature) this.geometryStableFrames += 1;
+    else {
+      this.geometrySignature = signature;
+      this.geometryStableFrames = 0;
+    }
+    if (
+      this.geometryStableFrames >= GEOMETRY_STABLE_FRAMES ||
+      Date.now() - this.geometryStartedAt >= GEOMETRY_STABILIZE_MAX_MS
+    ) return;
+    this.scheduleGeometryFrame();
+  };
+
+  private currentGeometrySignature(): string {
+    return this.groups.map((group) => {
+      const groupRect = group.getBoundingClientRect();
+      const stripRect = group.querySelector<HTMLElement>(STRIP_SELECTOR)
+        ?.getBoundingClientRect();
+      return [
+        groupRect.left, groupRect.top, groupRect.width, groupRect.height,
+        stripRect?.left, stripRect?.top, stripRect?.width, stripRect?.height,
+      ].join(":");
+    }).join("|");
+  }
+
+  private stopGeometryStabilization(): void {
+    if (this.geometryFrame === null) return;
+    if (this.geometryFrameUsesAnimationFrame) {
+      this.hostWindow.cancelAnimationFrame(this.geometryFrame);
+    } else {
+      this.hostWindow.clearTimeout(this.geometryFrame);
+    }
+    this.geometryFrame = null;
+  }
+
+  dispose(): void {
     this.stopCursorPolling();
+    this.stopGeometryStabilization();
+    this.resizeObserver?.disconnect();
+    this.resizeObserver = null;
     this.cursorRuntime = null;
+    this.windowHoverActive = false;
     this.outsideSince.clear();
     this.clearOverlayOwnership();
     for (const kind of Object.keys(CHROME_AUTOHIDE_KIND_CLASS) as ChromeAutoHideKind[]) {
-      document.body.classList.remove(CHROME_AUTOHIDE_KIND_CLASS[kind]);
+      this.ownerDocument.body.classList.remove(CHROME_AUTOHIDE_KIND_CLASS[kind]);
     }
     for (const group of this.groups) group.classList.remove(CHROME_EXPANDED_CLASS);
     for (const sensor of this.sensors.values()) sensor.remove();
     this.sensors.clear();
     this.groups = [];
+    this.ownerDocument.removeEventListener("pointerdown", this.onPointerDown, true);
+    this.ownerDocument.removeEventListener("pointerover", this.onPointerOver, true);
+    this.hostWindow.removeEventListener("mouseenter", this.onWindowMouseEnter);
+    this.hostWindow.removeEventListener("mouseleave", this.onWindowMouseLeave);
+    this.ownerDocument.removeEventListener("dragstart", this.onDragStart, true);
+    this.ownerDocument.removeEventListener("dragover", this.onDragOver, true);
+    this.ownerDocument.removeEventListener("dragend", this.onDragFinished, true);
+    this.ownerDocument.removeEventListener("drop", this.onDragFinished, true);
+    this.ownerDocument.removeEventListener("keydown", this.onKeyDown, true);
+    this.ownerDocument.removeEventListener("transitionrun", this.onLayoutTransition, true);
+    this.ownerDocument.removeEventListener("transitionend", this.onLayoutTransition, true);
+    this.ownerDocument.removeEventListener("transitioncancel", this.onLayoutTransition, true);
+    this.hostWindow.removeEventListener("resize", this.onViewportChanged);
   }
 }

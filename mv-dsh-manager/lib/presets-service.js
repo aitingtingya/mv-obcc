@@ -6,6 +6,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { parse } from 'yaml';
+import { resolveAgentPresets, resolvePresetOpener } from '../../mv-dsh-compat/lib/host.js';
 
 const PRESET_ID = /^[a-z0-9][a-z0-9-]*$/u;
 const USER_PRESET_DIR = '.agent-presets';
@@ -21,37 +22,7 @@ function userPresetRoot() {
 }
 
 function getAgentPresetsService(ctx) {
-  // DSH rc.7 reflect contexts can reject undeclared service property reads.
-  // Dynamic manager consumers must use the official lookup seam.
-  try {
-    const service = ctx?.get?.('agentPresets');
-    if (service && typeof service.list === 'function') return service;
-  } catch {
-    // Fall through to reflection for older access shapes.
-  }
-  try {
-    const service = ctx?.reflect?.get?.('agentPresets');
-    if (service && typeof service.list === 'function') return service;
-  } catch {
-    // No roster service in this context.
-  }
-  return null;
-}
-
-function getApiProxy(ctx) {
-  try {
-    const service = ctx?.get?.('apiProxy');
-    if (service?.agentPresets) return service;
-  } catch {
-    // Fall through to reflection for older access shapes.
-  }
-  try {
-    const service = ctx?.reflect?.get?.('apiProxy');
-    if (service?.agentPresets) return service;
-  } catch {
-    // No host opener service in this composition.
-  }
-  return null;
+  return resolveAgentPresets(ctx);
 }
 
 function mapPreset(item, defaultId, enabled = true) {
@@ -277,20 +248,12 @@ export async function openPresetDocument(ctx, presetId) {
   if (!presetId || !PRESET_ID.test(presetId)) {
     return { ok: false, error: 'presetId is required and must be a valid DSH preset id' };
   }
-  const apiProxy = getApiProxy(ctx);
-  const openDocument = apiProxy?.agentPresets?.openDocument;
-  if (typeof openDocument !== 'function') {
-    return { ok: false, error: 'DSH apiProxy.agentPresets.openDocument is not available in current context' };
+  const opener = resolvePresetOpener(ctx);
+  if (!opener) {
+    return { ok: false, error: 'DSH preset directory opener is not available in current context' };
   }
   try {
-    const response = await openDocument({
-      rpcId: `mv-dsh-manager:${Date.now()}:${Math.random().toString(16).slice(2)}`,
-      payload: { agentPreset: presetId },
-    });
-    if (!response?.result?.ok) {
-      return { ok: false, error: response?.result?.error?.message || `DSH refused to open preset "${presetId}"` };
-    }
-    return { ok: true, ...response.result.value };
+    return { ok: true, ...await opener.open(presetId) };
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error.message : String(error) };
   }

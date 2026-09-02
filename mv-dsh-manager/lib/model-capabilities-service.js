@@ -4,6 +4,8 @@
 // manager entry point only delegates the two private HTTP routes to it, and no
 // other manager feature needs to know how a model profile is represented.
 
+import { resolveModelSettings } from '../../mv-dsh-compat/lib/host.js';
+
 const SETTINGS_NS = 'llm-pi-ai';
 const THINKING_LEVELS = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
 const MODALITIES = ['text', 'image'];
@@ -40,15 +42,26 @@ const BOOLEAN_COMPAT_FIELDS = [
   'allowEmptySignature',
   'supportsStrictTools',
 ];
+const ALPHA_BOOLEAN_COMPAT_FIELDS = [
+  'supportsFinishReason',
+  'supportsThinkingTokenBudget',
+];
+const ALL_BOOLEAN_COMPAT_FIELDS = [...BOOLEAN_COMPAT_FIELDS, ...ALPHA_BOOLEAN_COMPAT_FIELDS];
 const ENUM_COMPAT_FIELDS = {
   thinkingFormat: THINKING_FORMATS,
   maxTokensField: MAX_TOKENS_FIELDS,
   cacheControlFormat: CACHE_CONTROL_FORMATS,
 };
-const COMPAT_FIELDS = [
+const PREVIEW_COMPAT_FIELDS = [
   ...BOOLEAN_COMPAT_FIELDS,
   ...Object.keys(ENUM_COMPAT_FIELDS),
   'chatTemplateKwargs',
+];
+const OBJECT_COMPAT_FIELDS = ['chatTemplateKwargs', 'chatTemplateArgs'];
+const COMPAT_FIELDS = [
+  ...ALL_BOOLEAN_COMPAT_FIELDS,
+  ...Object.keys(ENUM_COMPAT_FIELDS),
+  ...OBJECT_COMPAT_FIELDS,
 ];
 const MODEL_FIELDS = ['name', 'contextWindow', 'maxTokens', 'input', 'reasoningEfforts'];
 const BUILTIN_MODEL_FIELDS = new Set(MODEL_FIELDS);
@@ -100,43 +113,28 @@ function publicModelFields(source) {
 function schemaSupport(descriptor) {
   const serialized = JSON.stringify(descriptor?.schema ?? null);
   const has = (field) => serialized.includes(`"${field}"`);
-  const required = ['models', 'modelOverrides', 'input', 'reasoningEfforts', 'compat', ...COMPAT_FIELDS];
+  const required = ['models', 'modelOverrides', 'input', 'reasoningEfforts', 'compat', ...PREVIEW_COMPAT_FIELDS];
   const missing = required.filter((field) => !has(field));
+  const availableBooleanCompatFields = ALL_BOOLEAN_COMPAT_FIELDS
+    .filter((field) => has(field));
+  const availableObjectCompatFields = OBJECT_COMPAT_FIELDS.filter((field) => has(field));
+  const availableCompatFields = [
+    ...availableBooleanCompatFields,
+    ...Object.keys(ENUM_COMPAT_FIELDS).filter((field) => has(field)),
+    ...availableObjectCompatFields,
+  ];
   return {
     supported: missing.length === 0,
     missing,
-    fields: Object.fromEntries(required.map((field) => [field, has(field)])),
+    fields: Object.fromEntries([...new Set([...required, ...COMPAT_FIELDS])].map((field) => [field, has(field)])),
+    compatFields: availableCompatFields,
+    booleanCompatFields: availableBooleanCompatFields,
+    objectCompatFields: availableObjectCompatFields,
   };
 }
 
-function dynamicService(ctx, name) {
-  // Cordis reflect proxies throw on undeclared service property reads (see
-  // skills-service.js); `ctx.get()` is the official dynamic lookup, and
-  // `ctx.reflect.get()` covers older access shapes. The bare property read is
-  // the last resort for plain-object contexts and is guarded so a throwing
-  // proxy still degrades to the unavailable branch instead of crashing.
-  try {
-    const service = ctx?.get?.(name);
-    if (service != null) return service;
-  } catch {
-    // Fall through to reflection.
-  }
-  try {
-    const service = ctx?.reflect?.get?.(name);
-    if (service != null) return service;
-  } catch {
-    // Fall through to the guarded property read.
-  }
-  try {
-    return ctx?.[name];
-  } catch {
-    return undefined;
-  }
-}
-
 function services(ctx) {
-  const settings = dynamicService(ctx, 'settings');
-  const llm = dynamicService(ctx, 'llm');
+  const { settings, llm } = resolveModelSettings(ctx);
   if (!settings || typeof settings.describe !== 'function' || typeof settings.mutate !== 'function') {
     throw new ModelCapabilitiesError('DSH settings service is unavailable.', 503, 'settings-unavailable');
   }
@@ -266,12 +264,12 @@ function validateCompat(value) {
     if (!COMPAT_FIELDS.includes(field)) {
       throw new ModelCapabilitiesError(`Unsupported compat field: ${field}`);
     }
-    if (BOOLEAN_COMPAT_FIELDS.includes(field)) {
+    if (ALL_BOOLEAN_COMPAT_FIELDS.includes(field)) {
       if (typeof entry !== 'boolean') throw new ModelCapabilitiesError(`${field} must be true or false.`);
       result[field] = entry;
       continue;
     }
-    if (field === 'chatTemplateKwargs') {
+    if (OBJECT_COMPAT_FIELDS.includes(field)) {
       result[field] = validateChatTemplateKwargs(entry);
       continue;
     }
@@ -327,6 +325,17 @@ function validateChange(raw) {
     throw new ModelCapabilitiesError('Unset field lists cannot contain duplicates.');
   }
   return { kind, modelId, set: cleanSet, unset, compat, compatUnset };
+}
+
+function assertChangesSupported(changes, support) {
+  const available = new Set(support.compatFields);
+  for (const change of changes) {
+    for (const field of [...Object.keys(change.compat), ...change.compatUnset]) {
+      if (!available.has(field)) {
+        throw new ModelCapabilitiesError(`This DSH schema does not declare compat field: ${field}`);
+      }
+    }
+  }
 }
 
 function patchModel(current, change) {
@@ -495,8 +504,9 @@ export function createModelCapabilitiesService(ctx) {
           maxTokensFields: MAX_TOKENS_FIELDS,
           cacheControlFormats: CACHE_CONTROL_FORMATS,
           chatTemplateVars: CHAT_TEMPLATE_VARS,
-          booleanCompatFields: BOOLEAN_COMPAT_FIELDS,
+          booleanCompatFields: support.booleanCompatFields,
           enumCompatFields: ENUM_COMPAT_FIELDS,
+          objectCompatFields: support.objectCompatFields,
         },
         providers,
       };
@@ -525,6 +535,7 @@ export function createModelCapabilitiesService(ctx) {
           'unsupported-dsh-version',
         );
       }
+      assertChangesSupported(changes, support);
       const known = directoryEntries(llm, descriptor).some((entry) => entry.provider === provider);
       if (!known) throw new ModelCapabilitiesError(`Unknown llm-pi-ai provider: ${provider}`, 404, 'unknown-provider');
       if (settings.writable === false) {
@@ -568,5 +579,7 @@ export const MODEL_CAPABILITY_SCHEMA = Object.freeze({
   cacheControlFormats: CACHE_CONTROL_FORMATS,
   chatTemplateVars: CHAT_TEMPLATE_VARS,
   booleanCompatFields: BOOLEAN_COMPAT_FIELDS,
+  alphaBooleanCompatFields: ALPHA_BOOLEAN_COMPAT_FIELDS,
   enumCompatFields: ENUM_COMPAT_FIELDS,
+  objectCompatFields: OBJECT_COMPAT_FIELDS,
 });

@@ -1,6 +1,6 @@
 {
   "name": "@mv-aide/mv-dsh-manager",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "DeepSeek Harness integration for runtime management, model capabilities, Obsidian file drops, and recursive command picking",
   "main": "lib/index.js",
   "type": "module",
@@ -32,6 +32,9 @@
   ],
   "author": "mv-AIDE",
   "license": "MIT",
+  "files": [
+    "lib/*.js"
+  ],
   "scripts": {
     "test": "node --test"
   },
@@ -39,6 +42,7 @@
     "yaml": "^2.9.0"
   },
   "peerDependencies": {
+    "@mv-aide/mv-dsh-compat": "*",
     "@deepseek-ai/schemastery": "*"
   }
 }

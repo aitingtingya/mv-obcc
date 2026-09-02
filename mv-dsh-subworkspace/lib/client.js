@@ -9,6 +9,7 @@ window.__ModuleLoader__.load({
 
     const BUTTON_ATTR = 'data-mv-dsh-subworkspace-button';
     const API = '/api/mv-dsh-subworkspace';
+    const compat = require('@mv-aide/mv-dsh-compat/client/subworkspace');
     // Sibling module injected by the plugin bundle before this file; registers
     // the Settings card under `settings.plugin.item`. ModuleLoader passes the
     // plugin-graph require into the factory (same contract as mv-agent), so
@@ -45,7 +46,9 @@ window.__ModuleLoader__.load({
 
     function apply(ctx) {
       settingsClient?.install(ctx);
-      const workspaces = ctx.workspaces;
+      const workspaceAdapter = compat.resolveWorkspaceClient(ctx);
+      if (!workspaceAdapter) return;
+      const workspaces = workspaceAdapter.workspaces;
       let popover = null;
       let anchor = null;
       let observer = null;
@@ -297,7 +300,19 @@ window.__ModuleLoader__.load({
           if (disabled) return;
           add.disabled = true;
           try {
-            const selected = await workspaces.pickDirectory();
+            // Resolve the picker at click time, not at apply time: on Alpha the
+            // `uiWorkspace` service (which provides pickDirectory) is created by
+            // the ui-workspace plugin's apply, whose longer inject chain routinely
+            // settles AFTER this plugin's apply — a captured adapter from then
+            // stays pickDirectory-less forever. By the time the user can click,
+            // boot's assertEntriesActive guarantees every fiber (including
+            // ui-workspace) is active, so a fresh resolve sees the service.
+            // Preview (rc.2) resolves through the same call and is unaffected.
+            const picker = compat.resolveWorkspaceClient(ctx)?.pickDirectory;
+            if (typeof picker !== 'function') {
+              throw new Error('当前 DSH 环境没有提供可用的目录选择器');
+            }
+            const selected = await picker();
             if (selected) {
               await request('/roots', {
                 method: 'POST',

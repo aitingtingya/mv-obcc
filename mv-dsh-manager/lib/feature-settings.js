@@ -10,6 +10,7 @@ export const DEFAULT_MANAGER_FEATURES = Object.freeze({
   fileDropEnabled: true,
   recursiveCommandPickerEnabled: true,
   planReviewEnhancementEnabled: true,
+  historyRecallEnabled: true,
   commandPickerMaxLeaves: 50,
 });
 
@@ -46,6 +47,7 @@ async function createSchema() {
     fileDropEnabled: z.boolean().default(true),
     recursiveCommandPickerEnabled: z.boolean().default(true),
     planReviewEnhancementEnabled: z.boolean().default(true),
+    historyRecallEnabled: z.boolean().default(true),
     commandPickerMaxLeaves: z.number().default(50),
   });
 }

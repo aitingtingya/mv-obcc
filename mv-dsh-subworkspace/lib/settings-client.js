@@ -18,6 +18,7 @@ window.__ModuleLoader__.load({
   factory: (require) => {
     const module = { exports: {} };
     const React = require('react');
+    const compat = require('@mv-aide/mv-dsh-compat/client/subworkspace');
     const NS = 'mv-dsh-subworkspace';
 
     const languageIsZh = () => String(document.documentElement?.lang || navigator.language || '').toLowerCase().startsWith('zh');
@@ -227,8 +228,8 @@ window.__ModuleLoader__.load({
       // mutated, so a changed (snap, currentSessionId) pair is new content.
       const cached = { key: null, result: { items: [], currentPath: null } };
       const getSnapshot = () => {
-        const workspaces = ctx?.get?.('workspaces');
-        const sessions = ctx?.get?.('sessions');
+        const workspaces = compat.resolveWorkspaceClient(ctx)?.workspaces;
+        const sessions = compat.resolveSessions(ctx)?.sessions;
         const snap = workspaces?.list?.getSnapshot?.();
         const items = snap && Array.isArray(snap.items) ? snap.items : [];
         const currentSessionId = sessions?.list?.getSnapshot?.()?.current;
@@ -249,8 +250,8 @@ window.__ModuleLoader__.load({
       };
       return React.useSyncExternalStore(
         (listener) => {
-          const workspaces = ctx?.get?.('workspaces');
-          const sessions = ctx?.get?.('sessions');
+          const workspaces = compat.resolveWorkspaceClient(ctx)?.workspaces;
+          const sessions = compat.resolveSessions(ctx)?.sessions;
           const subscriptions = [];
           if (typeof workspaces?.list?.subscribe === 'function') subscriptions.push(workspaces.list.subscribe(listener));
           if (typeof sessions?.list?.subscribe === 'function') subscriptions.push(sessions.list.subscribe(listener));
@@ -273,7 +274,6 @@ window.__ModuleLoader__.load({
       const [items, setItems] = React.useState([]);
       const [op, setOp] = React.useState(null);
       const [fetchError, setFetchError] = React.useState(null);
-      const workspacesSvc = ctx?.get?.('workspaces');
 
       const refresh = React.useCallback(async () => {
         setPhase('loading');
@@ -311,14 +311,20 @@ window.__ModuleLoader__.load({
 
       const addChild = async () => {
         if (op) return;
-        if (typeof workspacesSvc?.pickDirectory !== 'function') {
+        // Resolve at call time, not at render time: the render-time capture can
+        // predate the ui-workspace plugin's apply (whose `uiWorkspace` service
+        // provides pickDirectory on Alpha), so a stale adapter stays picker-less
+        // even though the service is up by the moment the user clicks. Preview
+        // (rc.2) resolves through the same call and is unaffected.
+        const picker = compat.resolveWorkspaceClient(ctx)?.pickDirectory;
+        if (typeof picker !== 'function') {
           setFetchError(zh ? '当前环境不支持目录选择器。' : 'Directory picker unavailable in this environment.');
           return;
         }
         setOp({ kind: 'add' });
         setFetchError(null);
         try {
-          const selected = await workspacesSvc.pickDirectory();
+          const selected = await picker();
           if (selected) {
             await apiRequest('/roots', {
               method: 'POST',
@@ -540,9 +546,9 @@ window.__ModuleLoader__.load({
     function install(ctx) {
       if (typeof ctx?.inject !== 'function') return;
       ctx.inject(['slots', 'settingsScope'], (settingsCtx) => {
-        const slots = settingsCtx.get?.('slots') ?? settingsCtx.slots;
-        const settingsScope = settingsCtx.get?.('settingsScope') ?? settingsCtx.settingsScope;
-        if (!slots || !settingsScope) return;
+        const host = compat.resolveSettingsCardHost(settingsCtx);
+        if (!host) return;
+        const { slots, settingsScope } = host;
         const scope = settingsScope.bind({ namespace: NS });
         slots.inject('settings.plugin.item', () => slots.register({
           name: 'settings.plugin.item', key: NS,

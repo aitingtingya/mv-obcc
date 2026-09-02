@@ -32,6 +32,7 @@
     "ws": "^8.18.0"
   },
   "peerDependencies": {
+    "@mv-aide/mv-dsh-compat": "*",
     "@deepseek-ai/cordis": "*",
     "@deepseek-ai/dsh-commands": "*",
     "@deepseek-ai/dsh-llm": "*",

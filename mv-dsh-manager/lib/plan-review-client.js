@@ -8,7 +8,7 @@
 
 window.__ModuleLoader__.load({
   id: '@mv-aide/mv-dsh-manager/plan-review-client',
-  factory: () => {
+  factory: (require) => {
     var module = { exports: {} };
     var exports = module.exports;
     Object.defineProperty(exports, Symbol.toStringTag, { value: 'Module' });
@@ -22,12 +22,7 @@ window.__ModuleLoader__.load({
         details: Object.freeze({}),
       }),
     });
-
-    function sessionsOf(ctx) {
-      return ctx && typeof ctx.get === 'function'
-        ? (ctx.get('sessions') || ctx.sessions)
-        : ctx?.sessions;
-    }
+    const compat = require('@mv-aide/mv-dsh-compat/client/manager');
 
     function isPlanReviewInteraction(interaction) {
       if (interaction?.kind !== 'question' || typeof interaction.respond !== 'function') return false;
@@ -38,13 +33,7 @@ window.__ModuleLoader__.load({
     }
 
     function activePlanReview(ctx) {
-      const sessions = sessionsOf(ctx);
-      const sessionId = sessions?.list?.getSnapshot?.()?.current;
-      if (typeof sessionId !== 'string' || sessionId.length === 0) return null;
-      const binding = sessions?.binding?.(sessionId);
-      const pending = binding?.session?.getSnapshot?.()?.pending;
-      if (!Array.isArray(pending)) return null;
-      return pending.find(isPlanReviewInteraction) || null;
+      return compat.resolvePendingPlanReview(ctx);
     }
 
     function apply(ctx, options = {}) {
@@ -64,7 +53,7 @@ window.__ModuleLoader__.load({
           return;
         }
 
-        const key = pending.key ?? pending;
+        const key = pending.key;
         if (key === inFlightKey || key === dismissedKey) return;
 
         event.preventDefault?.();
@@ -73,13 +62,8 @@ window.__ModuleLoader__.load({
         inFlightKey = key;
 
         Promise.resolve()
-          .then(() => pending.respond(CANCEL_RESPONSE))
-          .then((receipt) => {
-            if (receipt?.accepted === false) {
-              throw new Error(`plan review cancellation rejected: ${receipt.reason ?? 'unknown reason'}`);
-            }
-            dismissedKey = key;
-          })
+          .then(() => pending.cancel(CANCEL_RESPONSE))
+          .then(() => { dismissedKey = key; })
           .catch((error) => {
             console.warn('[mv-dsh-manager] plan review Escape cancellation failed', error);
           })

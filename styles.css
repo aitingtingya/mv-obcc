@@ -1855,7 +1855,8 @@ body.mv-aide-hide-obsidian-native-status-bar .status-bar {
 /* ══ 沉浸式 chrome 自动收起（src/chrome-autohide.ts 统一触发） ══
    sensor 唤出命中的标签组；展开后由 Electron 系统指针坐标维护
    .mv-aide-chrome-expanded。CSS 只按三个武装 body class 决定展开哪几层，
-   不覆盖 Obsidian 原生 -webkit-app-region，标签栏空白仍可拖动窗口。 */
+   只让收起态 sensor 脱离原生 drag region；它在展开时同步隐藏，
+   真实标签栏和工具栏不改 app-region，标签栏空白仍可拖动窗口。 */
 
 /* ── 标签条（in-flow 推挤式：展开时把下方 header 与正文整体下移；仅排除
        滑动窗格。mod-top-left/right-space = 左右侧栏顶部标签组（侧栏开关、
@@ -1927,12 +1928,14 @@ body.mv-aide-chrome-autohide-web
    context），由 JS 用 getBoundingClientRect 对齐到所属组顶部 8px；如果标签栏
    保持显示而只收起下方工具栏，则改为紧贴可见标签栏下方的 8px。
    覆盖原生触发面。显示/尺寸由 JS 门控：仅该组标签条武装且仍处于收起态
-   时 display:block；一旦展开立即隐藏，避免透明层挡住真实标签与按钮。
+   时 display:block 并作为极窄 no-drag 热边；一旦展开立即隐藏，
+   避免透明层挡住真实标签、按钮和窗口拖动区。
    三个开关全关时 Sensor 全部隐藏、零侵入。 */
 .mv-aide-chrome-sensor {
   display: none;
   position: fixed;
   z-index: var(--layer-menu); /* 65：压过文档搜索栏 30，低于 tooltip 70 */
+  -webkit-app-region: no-drag;
   background: transparent;
   margin: 0;
   padding: 0;

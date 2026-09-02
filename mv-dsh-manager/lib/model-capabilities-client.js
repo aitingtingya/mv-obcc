@@ -23,12 +23,12 @@ window.__ModuleLoader__.load({
         title: ['推理兼容', 'Reasoning compatibility'],
         fields: [
           'supportsReasoningEffort', 'thinkingFormat', 'requiresThinkingAsText',
-          'requiresReasoningContentOnAssistantMessages',
+          'requiresReasoningContentOnAssistantMessages', 'supportsThinkingTokenBudget',
         ],
       },
       {
         title: ['请求与流', 'Requests and streaming'],
-        fields: ['supportsStore', 'supportsDeveloperRole', 'supportsUsageInStreaming', 'maxTokensField'],
+        fields: ['supportsStore', 'supportsDeveloperRole', 'supportsUsageInStreaming', 'supportsFinishReason', 'maxTokensField'],
       },
       {
         title: ['工具与严格模式', 'Tools and strict mode'],
@@ -65,6 +65,8 @@ window.__ModuleLoader__.load({
       forceAdaptiveThinking: ['强制自适应思考', 'Force adaptive thinking'],
       allowEmptySignature: ['允许空思考签名', 'Allow empty thinking signature'],
       supportsStrictTools: ['支持 Anthropic 严格工具', 'Supports strict tools'],
+      supportsFinishReason: ['支持 finish reason', 'Supports finish reason'],
+      supportsThinkingTokenBudget: ['支持思考 token 预算', 'Supports thinking token budget'],
     };
     const COPY = {
       zh: {
@@ -72,7 +74,7 @@ window.__ModuleLoader__.load({
         input: '输入模态', inherit: '继承', custom: '自定义', text: '文本', image: '图片',
         reasoning: '思考能力', reasoningOff: '非思考模型', reasoningCustom: '自定义思考等级',
         level: 'DSH 等级', wire: '供应商参数值', addLevel: '添加思考等级', remove: '删除', up: '上移', down: '下移',
-        expert: '专家兼容参数', kwargs: 'chatTemplateKwargs', addKwarg: '添加模板参数',
+        expert: '专家兼容参数', kwargs: 'chatTemplateKwargs', args: 'chatTemplateArgs', addKwarg: '添加模板参数',
         key: '参数名', type: '类型', value: '值', omitWhenOff: '关闭思考时省略',
         yes: '是', no: '否', string: '字符串', number: '数字', boolean: '布尔', null: 'null',
         builtinTitle: 'DSH 内置模型',
@@ -95,7 +97,7 @@ window.__ModuleLoader__.load({
         input: 'Input modalities', inherit: 'Inherit', custom: 'Custom', text: 'Text', image: 'Image',
         reasoning: 'Reasoning', reasoningOff: 'Non-reasoning model', reasoningCustom: 'Custom reasoning levels',
         level: 'DSH level', wire: 'Provider wire value', addLevel: 'Add reasoning level', remove: 'Remove', up: 'Move up', down: 'Move down',
-        expert: 'Expert compatibility', kwargs: 'chatTemplateKwargs', addKwarg: 'Add template argument',
+        expert: 'Expert compatibility', kwargs: 'chatTemplateKwargs', args: 'chatTemplateArgs', addKwarg: 'Add template argument',
         key: 'Key', type: 'Type', value: 'Value', omitWhenOff: 'Omit when reasoning is off',
         yes: 'Yes', no: 'No', string: 'String', number: 'Number', boolean: 'Boolean', null: 'null',
         builtinTitle: 'DSH built-in models',
@@ -275,6 +277,8 @@ window.__ModuleLoader__.load({
     function makeDraft(kind, explicit, effective, options) {
       const compat = explicit?.compat && typeof explicit.compat === 'object' ? clone(explicit.compat) : {};
       const reasoning = explicit?.reasoningEfforts;
+      const objectCompatFields = Array.isArray(options.objectCompatFields)
+        ? options.objectCompatFields : ['chatTemplateKwargs'];
       return {
         kind,
         explicit: clone(explicit || {}),
@@ -289,7 +293,7 @@ window.__ModuleLoader__.load({
           ? Object.entries(reasoning).map(([level, value]) => ({ level, value: value == null ? '' : String(value) }))
           : [],
         compat,
-        kwargs: kwargRows(compat.chatTemplateKwargs),
+        templateObjects: Object.fromEntries(objectCompatFields.map((field) => [field, kwargRows(compat[field])])),
         name: hasOwn(explicit, 'name') ? String(explicit.name) : '',
         contextWindow: hasOwn(explicit, 'contextWindow') ? spelling(explicit.contextWindow) : '',
         maxTokens: hasOwn(explicit, 'maxTokens') ? spelling(explicit.maxTokens) : '',
@@ -341,14 +345,15 @@ window.__ModuleLoader__.load({
       container.append(rows, add);
     }
 
-    function renderKwargs(container, draft, disabled, rerender) {
+    function renderKwargs(container, draft, fieldName, disabled, rerender) {
       const t = copy();
       const rows = element('div', { className: 'mv-aide-cap-rows' });
+      const entries = draft.templateObjects[fieldName];
       const types = [
         ['string', t.string], ['number', t.number], ['boolean', t.boolean], ['null', t.null],
         ...draft.options.chatTemplateVars.map((entry) => [entry, `$var: ${entry}`]),
       ];
-      draft.kwargs.forEach((row, index) => {
+      entries.forEach((row, index) => {
         const key = element('input', { className: 'mv-aide-cap-input', value: row.key, placeholder: t.key, disabled });
         key.addEventListener('input', () => { row.key = key.value; dirty(draft); });
         const type = select(types.map(([value, label]) => ({ value, label })), row.type, (value) => {
@@ -369,11 +374,11 @@ window.__ModuleLoader__.load({
           value.addEventListener('input', () => { row.value = value.value; dirty(draft); });
         }
         const remove = element('button', { type: 'button', className: 'mv-aide-cap-button', text: '×', title: t.remove, disabled });
-        remove.addEventListener('click', () => { draft.kwargs.splice(index, 1); dirty(draft); rerender(); });
+        remove.addEventListener('click', () => { entries.splice(index, 1); dirty(draft); rerender(); });
         rows.appendChild(element('div', { className: 'mv-aide-cap-row mv-aide-cap-kwarg' }, key, type, value, remove));
       });
       const add = element('button', { type: 'button', className: 'mv-aide-cap-button', text: `＋ ${t.addKwarg}`, disabled });
-      add.addEventListener('click', () => { draft.kwargs.push({ key: '', type: 'string', value: '', omitWhenOff: false }); dirty(draft); rerender(); });
+      add.addEventListener('click', () => { entries.push({ key: '', type: 'string', value: '', omitWhenOff: false }); dirty(draft); rerender(); });
       container.append(rows, add);
     }
 
@@ -433,8 +438,11 @@ window.__ModuleLoader__.load({
         const section = element('section', { className: 'mv-aide-cap-group' },
           element('h5', { className: 'mv-aide-cap-group-title', text: group.title[language() === 'zh' ? 0 : 1] }));
         for (const key of group.fields) {
+          const isBoolean = draft.options.booleanCompatFields.includes(key);
+          const isEnum = Object.hasOwn(draft.options.enumCompatFields, key);
+          if (!isBoolean && !isEnum) continue;
           let control;
-          if (draft.options.booleanCompatFields.includes(key)) {
+          if (isBoolean) {
             control = triState(draft.compat[key], (value) => {
               if (value === undefined) delete draft.compat[key]; else draft.compat[key] = value;
               dirty(draft);
@@ -452,18 +460,20 @@ window.__ModuleLoader__.load({
         }
         expertBody.appendChild(section);
       }
-      const kwargs = element('section', { className: 'mv-aide-cap-group' },
-        element('h5', { className: 'mv-aide-cap-group-title', text: t.kwargs }));
-      renderKwargs(kwargs, draft, disabled, rerender);
-      expertBody.appendChild(kwargs);
+      for (const fieldName of Object.keys(draft.templateObjects)) {
+        const template = element('section', { className: 'mv-aide-cap-group' },
+          element('h5', { className: 'mv-aide-cap-group-title', text: fieldName === 'chatTemplateArgs' ? t.args : t.kwargs }));
+        renderKwargs(template, draft, fieldName, disabled, rerender);
+        expertBody.appendChild(template);
+      }
       expert.appendChild(expertBody);
       panel.appendChild(expert);
       if (draft.error) panel.appendChild(element('p', { className: 'mv-aide-cap-error', text: draft.error, role: 'alert' }));
     }
 
-    function serializeKwargs(draft) {
+    function serializeKwargs(draft, rows) {
       const result = {};
-      for (const row of draft.kwargs) {
+      for (const row of rows) {
         if (row.type === 'null') result[row.key] = null;
         else if (row.type === 'number') result[row.key] = Number(row.value);
         else if (row.type === 'boolean') result[row.key] = row.value === 'true';
@@ -483,10 +493,12 @@ window.__ModuleLoader__.load({
         if (!levels.some((level) => level !== 'off')) return t.reasoningRequired;
         if (draft.reasoningRows.some((row) => row.level !== 'off' && row.value.length === 0)) return t.wireRequired;
       }
-      const keys = draft.kwargs.map((row) => row.key);
-      if (keys.some((key) => key.length === 0)) return t.keyRequired;
-      if (new Set(keys).size !== keys.length) return t.duplicateKey;
-      if (draft.kwargs.some((row) => row.type === 'number' && !Number.isFinite(Number(row.value)))) return `${t.kwargs}: ${t.value}`;
+      for (const [fieldName, rows] of Object.entries(draft.templateObjects)) {
+        const keys = rows.map((row) => row.key);
+        if (keys.some((key) => key.length === 0)) return `${fieldName}: ${t.keyRequired}`;
+        if (new Set(keys).size !== keys.length) return `${fieldName}: ${t.duplicateKey}`;
+        if (rows.some((row) => row.type === 'number' && !Number.isFinite(Number(row.value)))) return `${fieldName}: ${t.value}`;
+      }
       if (draft.kind === 'builtin') {
         if (draft.contextWindow !== '' && capacity(draft.contextWindow) === undefined) return `${t.context}: ${t.positiveCapacity}`;
         if (draft.maxTokens !== '' && capacity(draft.maxTokens) === undefined) return `${t.maxTokens}: ${t.positiveCapacity}`;
@@ -514,8 +526,10 @@ window.__ModuleLoader__.load({
       for (const field of Object.keys(draft.options.enumCompatFields)) {
         if (hasOwn(draft.compat, field)) compat[field] = draft.compat[field]; else compatUnset.push(field);
       }
-      if (draft.kwargs.length > 0) compat.chatTemplateKwargs = serializeKwargs(draft);
-      else compatUnset.push('chatTemplateKwargs');
+      for (const [fieldName, rows] of Object.entries(draft.templateObjects)) {
+        if (rows.length > 0) compat[fieldName] = serializeKwargs(draft, rows);
+        else compatUnset.push(fieldName);
+      }
       return { kind: draft.kind, modelId, set, unset, compat, compatUnset };
     }
 

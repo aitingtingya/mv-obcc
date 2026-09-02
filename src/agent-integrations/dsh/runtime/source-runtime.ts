@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { t } from "../../../i18n";
 import { processOutput, runProcess, type ProcessResult } from "../../../process-runner";
+import { prependExecutableDirectory } from "../../../process-environment";
 import { mvAideSystemRoot } from "../../../storage/system-paths";
 import {
   dshWebUrl,
@@ -15,12 +16,14 @@ import {
   createDefaultDshProcessDiscoveryAdapter,
   type DshProcessDiscoveryAdapter,
 } from "./process-discovery";
+import { resolveDshHomeDirectory, withDshHomeEnvironment } from "../paths";
 
 interface PackageManifest {
   name?: unknown;
   version?: unknown;
   bin?: unknown;
   scripts?: unknown;
+  packageManager?: unknown;
 }
 
 export interface DshSourceRuntime {
@@ -28,6 +31,8 @@ export interface DshSourceRuntime {
   cliDirectory: string;
   entryPath: string;
   version: string;
+  pnpmExecutable?: string;
+  pnpmVersion?: string;
   command: DshCommand;
 }
 
@@ -116,17 +121,50 @@ function parseVersion(output: string): string | null {
   return /^v?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/u.test(line) ? line.replace(/^v/u, "") : null;
 }
 
+async function resolveSourcePnpm(
+  rootDirectory: string,
+  environment: NodeJS.ProcessEnv,
+  runner: typeof runProcess,
+): Promise<{ executable: string; version: string } | null> {
+  const rootManifest = await readManifest(rootDirectory);
+  const declared = typeof rootManifest?.packageManager === "string"
+    ? /^pnpm@(\d+\.\d+\.\d+)$/u.exec(rootManifest.packageManager)?.[1]
+    : undefined;
+  if (!declared) return null;
+  const base = path.join(rootDirectory, "node_modules", ".bin", "pnpm");
+  const candidates = process.platform === "win32" ? [`${base}.cmd`, `${base}.exe`, base] : [base];
+  for (const executable of candidates) {
+    try {
+      if (!(await fs.stat(executable)).isFile()) continue;
+      const result = await runner(executable, ["--version"], { env: environment, timeoutMs: 15_000 });
+      const version = result.code === 0 ? result.stdout.split(/\r?\n/u)[0]?.trim() : "";
+      if (version === declared) return { executable, version };
+    } catch {
+      // A source-local package manager is optional; keep checking fallbacks.
+    }
+  }
+  return null;
+}
+
 export async function resolveDshSourceRuntime(
   input: string,
   options: {
     nodeExecutable: string;
     environment: NodeJS.ProcessEnv;
+    homeDirectory?: string;
+    requireRuntimeOwner?: boolean;
     origin: "custom-manual" | "custom-discovered";
     runner?: typeof runProcess;
   },
 ): Promise<DshSourceRuntime> {
   const runner = options.runner ?? runProcess;
   const layout = await sourceLayout(input);
+  const homeDirectory = resolveDshHomeDirectory(options.homeDirectory, options.environment);
+  const sourcePnpm = await resolveSourcePnpm(layout.rootDirectory, options.environment, runner);
+  const homeEnvironment = withDshHomeEnvironment(options.environment, homeDirectory);
+  const commandEnvironment = sourcePnpm
+    ? prependExecutableDirectory(homeEnvironment, sourcePnpm.executable)
+    : homeEnvironment;
   const declaredBin = binPath(layout.manifest);
   if (!declaredBin) throw new Error(t("@deepseek-ai/dsh 没有声明 dsh CLI 入口。"));
   const declaredEntry = path.resolve(layout.cliDirectory, declaredBin);
@@ -149,8 +187,10 @@ export async function resolveDshSourceRuntime(
   const command: DshCommand = {
     executable: options.nodeExecutable,
     argsPrefix: [entryPath],
-    env: options.environment,
+    env: commandEnvironment,
     cwd: layout.rootDirectory,
+    homeDirectory,
+    requireRuntimeOwner: options.requireRuntimeOwner === true,
     origin: options.origin,
     sourceRoot: layout.rootDirectory,
   };
@@ -172,6 +212,10 @@ export async function resolveDshSourceRuntime(
     cliDirectory: layout.cliDirectory,
     entryPath,
     version,
+    ...(sourcePnpm ? {
+      pnpmExecutable: sourcePnpm.executable,
+      pnpmVersion: sourcePnpm.version,
+    } : {}),
     command,
   };
 }
@@ -243,6 +287,8 @@ export async function discoverRunningDshSource(
   options: {
     nodeExecutable: string;
     environment: NodeJS.ProcessEnv;
+    homeDirectory?: string;
+    requireRuntimeOwner?: boolean;
     runner?: typeof runProcess;
     discovery?: DshProcessDiscoveryAdapter;
     probe?: DshWebProbeFn;
@@ -278,6 +324,8 @@ export async function discoverRunningDshSource(
         const runtime = await resolveDshSourceRuntime(root, {
           nodeExecutable: options.nodeExecutable,
           environment: options.environment,
+          homeDirectory: options.homeDirectory,
+          requireRuntimeOwner: options.requireRuntimeOwner,
           origin: "custom-discovered",
           runner,
         });
@@ -512,6 +560,8 @@ export async function rebuildOrUpgradeDshSource(
       return await resolveDshSourceRuntime(root, {
         nodeExecutable: runtime.command.executable,
         environment: runtime.command.env ?? process.env,
+        homeDirectory: runtime.command.homeDirectory,
+        requireRuntimeOwner: runtime.command.requireRuntimeOwner,
         origin: runtime.command.origin === "custom-discovered" ? "custom-discovered" : "custom-manual",
         runner,
       });

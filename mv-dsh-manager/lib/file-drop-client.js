@@ -8,17 +8,28 @@
 
 window.__ModuleLoader__.load({
   id: '@mv-aide/mv-dsh-manager/file-drop-client',
-  factory: () => {
+  factory: (require) => {
     var module = { exports: {} };
     var exports = module.exports;
     Object.defineProperty(exports, Symbol.toStringTag, { value: 'Module' });
 
     const PROTOCOL = 'mv-aide/file-drop';
     const SCHEMA = 2;
+    const OBSIDIAN_DESKTOP_ORIGIN = 'app://obsidian.md';
     const MAX_FILES = 20;
     const TRANSACTION_TTL_MS = 30000;
     const IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
     const IMAGE_SOURCE_POLICY = Symbol.for('@mv-aide/image-source-policy/v1');
+    // One shared capabilities answer for every `ready` reply: the host treats
+    // each reply as authoritative, so a stale variant would silently strip a
+    // capability (the directory gate reads it on drop).
+    const READY_CAPABILITIES = Object.freeze({
+      references: true,
+      images: true,
+      sourceImagePolicy: true,
+      directories: true,
+    });
+    const compat = require('@mv-aide/mv-dsh-compat/client/manager');
     const COPY = {
       zh: {
         noSession: '当前没有可接收文件的 DSH 对话。',
@@ -126,6 +137,16 @@ window.__ModuleLoader__.load({
       return /\s/u.test(filePath) ? `@"${filePath}"` : `@${filePath}`;
     }
 
+    // Directory mentions mirror the upstream `formatFileMention` directory
+    // branch (`@deepseek-ai/dsh-file-reference/grammar`): a trailing slash
+    // marks a directory, and a quoted directory keeps its quote open
+    // (`@"path/`) so completion can descend another level.
+    function formatDirectoryMention(displayPath) {
+      const mention = formatMention(`${displayPath}/`);
+      if (mention === undefined) return undefined;
+      return mention.endsWith('"') ? mention.slice(0, -1) : mention;
+    }
+
     function basename(filePath) {
       const parts = String(filePath).split(/[\\/]/u).filter(Boolean);
       return parts.at(-1) || filePath;
@@ -140,29 +161,18 @@ window.__ModuleLoader__.load({
     }
 
     function currentSession(ctx) {
-      const sessions = safeGet(ctx, 'sessions');
+      const resolved = compat.resolveConversation(ctx);
+      if (!resolved) return undefined;
+      const sessions = resolved.sessions;
       const state = sessions?.list?.getSnapshot?.();
-      const sessionId = typeof state?.current === 'string' ? state.current : undefined;
-      if (!sessionId) return undefined;
+      const sessionId = resolved.sessionId;
       const cwd = typeof state?.byId?.[sessionId]?.cwd === 'string'
         ? state.byId[sessionId].cwd
         : undefined;
-      let actx;
-      try {
-        actx = sessions.scope?.(sessionId);
-      } catch {
-        return undefined;
-      }
-      const conversation = safeGet(actx, 'conversation');
-      let input;
-      try {
-        input = conversation?.input?.for?.(actx);
-      } catch {
-        return undefined;
-      }
+      const { actx, conversation, input } = resolved;
       const inputTriggers = safeGet(actx, 'inputTriggers');
       const referenceController = inputTriggers?.sessionOf?.(actx);
-      return { sessions, state, sessionId, cwd, actx, conversation, input, referenceController };
+      return { ctx, sessions, state, sessionId, cwd, actx, conversation, input, referenceController };
     }
 
     function inputState(target) {
@@ -172,8 +182,8 @@ window.__ModuleLoader__.load({
     function composerBlocked(target) {
       const block = target?.conversation?.blocks?.storeFor?.(target.sessionId)?.getSnapshot?.();
       if (block !== undefined && block !== null) return true;
-      const textarea = document.querySelector?.('textarea[data-phase]');
-      return Boolean(textarea && (textarea.disabled || textarea.readOnly));
+      const element = compat.resolveComposerInput(target.input, document)?.element;
+      return Boolean(element && (element.disabled || element.readOnly || element.getAttribute?.('aria-disabled') === 'true'));
     }
 
     function imageLimits(target) {
@@ -210,10 +220,11 @@ window.__ModuleLoader__.load({
         if (typeof item.name !== 'string' || !Number.isSafeInteger(item.size) || item.size < 0) {
           throw new Error(text.invalidBatch);
         }
-        if (item.kind === 'reference') {
+        if (item.kind === 'reference' || item.kind === 'directory') {
           if (typeof item.path !== 'string') throw new Error(text.invalidBatch);
           const displayPath = target.cwd ? referencePath(item.path, target.cwd) : item.path;
-          const mention = formatMention(displayPath);
+          const directory = item.kind === 'directory';
+          const mention = directory ? formatDirectoryMention(displayPath) : formatMention(displayPath);
           if (!mention) throw new Error(text.invalidPath);
           if (typeof target.input.insertReference !== 'function'
               || typeof target.referenceController?.serializeReference !== 'function') {
@@ -221,10 +232,11 @@ window.__ModuleLoader__.load({
           }
           prepared.push({
             id: item.id,
-            kind: 'reference',
+            kind: item.kind,
             path: item.path,
             mention,
-            label: basename(displayPath),
+            label: `${basename(displayPath)}${directory ? '/' : ''}`,
+            appearance: directory ? 'folder' : 'file',
           });
           continue;
         }
@@ -317,24 +329,11 @@ window.__ModuleLoader__.load({
     // directly instead; its selection survives focus loss within this iframe.
     // Fallback to "append at end" whenever the DOM textarea disagrees with the
     // observable draft (stale render, future DSH layout changes, etc.).
-    function composerCaret(state) {
+    function composerCaret(target, state) {
       try {
-        const textarea = document.querySelector?.('textarea[data-phase]');
-        if (
-          textarea &&
-          typeof textarea.selectionStart === 'number' &&
-          textarea.value === state.draft
-        ) {
-          const start = Math.max(0, Math.min(textarea.selectionStart, state.draft.length));
-          const end = Math.max(
-            start,
-            Math.min(
-              typeof textarea.selectionEnd === 'number' ? textarea.selectionEnd : start,
-              state.draft.length,
-            ),
-          );
-          return { start, end };
-        }
+        const composer = compat.resolveComposerInput(target.input, document);
+        if (!composer || composer.snapshot().draft !== state.draft) return null;
+        return composer.selection();
       } catch {
         // DOM access is best-effort; fall through to the classic append mode.
       }
@@ -352,69 +351,191 @@ window.__ModuleLoader__.load({
       return state;
     }
 
+    // Alpha composers expose two text planes over one draft:
+    //  - clipboard plane: `state.draft` and the DOM's textContent, where every
+    //    mention chip contributes its full `@path` mention text;
+    //  - detect plane: the editor-internal token stream where each chip is a
+    //    single U+FFFC atomic character, and the ONLY coordinate system
+    //    `insertReference` spans accept (alpha facade contract).
+    // `state.occurrences` describes chips in clipboard coordinates, so the
+    // detect-plane position of any clipboard offset is the offset minus the
+    // accumulated divergence (mention length − 1) of every preceding chip.
+    function clipboardOccurrences(state) {
+      const occurrences = Array.isArray(state?.occurrences) ? state.occurrences : [];
+      return occurrences
+        .map(occurrence => ({
+          start: Number(occurrence?.offset),
+          end: Number(occurrence?.offset) + Number(occurrence?.length),
+          divergence: Math.max(0, Number(occurrence?.length) - 1),
+        }))
+        .filter(chip => Number.isFinite(chip.start) && Number.isFinite(chip.end)
+          && chip.end > chip.start)
+        .sort((a, b) => a.start - b.start);
+    }
+
+    function clipboardToDetectOffset(chips, clipboardOffset) {
+      // Compare the ORIGINAL clipboard offset against every chip's clipboard
+      // range; only chips entirely before the offset contribute divergence.
+      let divergenceBefore = 0;
+      for (const chip of chips) {
+        if (chip.start >= clipboardOffset) break;
+        if (chip.end > clipboardOffset) {
+          // The caret sits inside a chip's clipboard span: clamp to the chip's
+          // detect-plane start (a chip is atomic — only its left edge exists).
+          return chip.detectStart;
+        }
+        divergenceBefore += chip.divergence;
+      }
+      return clipboardOffset - divergenceBefore;
+    }
+
+    function withDetectSpans(chips) {
+      let divergence = 0;
+      return chips.map((chip) => {
+        const detectStart = chip.start - divergence;
+        divergence += chip.divergence;
+        return { ...chip, detectStart };
+      });
+    }
+
+    // Plane discrimination: the preview (rc.2) input machine is SINGLE-plane —
+    // `state.draft` is the only coordinate system, and its occurrence offsets
+    // index that string directly (verified against the rc.2 shell:
+    // replaceSpanWithChip splices `draft.slice(0, span.start)`; mint records
+    // `offset/length` in draft coordinates). Only the alpha composer is
+    // two-plane (detect projection counts each chip as one U+FFFC; insert spans
+    // are validated in detect coordinates). Feeding rc.2 a detect-converted
+    // span lands the chip mid-text once an earlier drop has minted an
+    // occurrence — the split-mention garble (`@m@mv-aide-开发 v-aide`).
+    // Discriminators, in order of authority: the facade surface (alpha's
+    // shell exposes caretSpan(), rc.2's does not — the input contract itself),
+    // then the DOM element the compat layer resolves (preview renders
+    // `textarea[data-phase]`, alpha a Lexical `div[data-composer-input]`)
+    // when the facade surface is silent (older builds, stripped mocks).
+    function isSinglePlane(target) {
+      if (typeof target?.input?.caretSpan === 'function') return false;
+      const composer = compat.resolveComposerInput(target.input, typeof document === 'undefined' ? null : document);
+      if (composer) return composer.adapter === 'preview';
+      return true;
+    }
+
+    function insertReferenceAtCaret(target, item, anchor, replaceEnd, padPending) {
+      const state = inputState(target);
+      if (!state) throw new Error(copy().inputUnavailable);
+      // Single-plane (preview): clipboard coordinates ARE the span coordinates.
+      // Two-plane (alpha): convert through the occurrence table.
+      let detectStart;
+      let detectEnd;
+      if (isSinglePlane(target)) {
+        detectStart = anchor;
+        detectEnd = replaceEnd;
+      } else {
+        const chips = withDetectSpans(clipboardOccurrences(state));
+        detectStart = clipboardToDetectOffset(chips, anchor);
+        detectEnd = replaceEnd <= anchor
+          ? detectStart
+          : Math.max(detectStart, clipboardToDetectOffset(chips, replaceEnd));
+      }
+      // Capture before the edit: snapshot stores may hand back live objects,
+      // so a post-call read would already see the inserted mention.
+      const beforeLength = state.draft.length;
+      // A pending left-pad rides the chip's clipboard text prefix (the chip
+      // stays ONE detect-plane character either way); a setDraft rewrite here
+      // would collapse every existing chip to plain text.
+      const clipboardText = padPending ? ` ${item.mention}` : item.mention;
+      const accepted = target.input.insertReference({
+        source: 'reference',
+        ref: item.mention,
+        label: item.label,
+        appearance: item.appearance,
+        clipboardText,
+      }, {
+        start: detectStart,
+        end: detectEnd,
+        draftRev: state.draftRev,
+      });
+      if (!accepted) return null;
+      const nextState = inputState(target);
+      if (!nextState) throw new Error(copy().inputUnavailable);
+      return { nextState, beforeLength };
+    }
+
     // Insert every prepared item (reference mentions and image pseudo-links)
     // at the composer caret in drop order, replacing an active text selection.
     // All spacing guards and fallback rules reduce to the historical
     // "append at end" behaviour when no composer caret can be located.
     function applyPreparedInsertions(target, prepared) {
       if (prepared.length === 0) return;
-      const input = target.input;
       let state = inputState(target);
       if (!state) throw new Error(copy().inputUnavailable);
-      const caret = composerCaret(state);
+      const caret = composerCaret(target, state);
       let anchor = caret ? caret.start : state.draft.length;
       let replaceEnd = caret ? caret.end : state.draft.length;
 
       // Left-side guard: never glue an insertion onto a non-space character.
       // (In append mode this reproduces the historical trailing-space pad.)
-      // The right side is handled per insertion below.
-      if (anchor > 0 && !/\s/u.test(state.draft.charAt(anchor - 1))) {
-        state = rewriteDraft(target, state.draft, anchor, anchor, ' ');
-        anchor += 1;
-        replaceEnd += 1;
+      // With chips in the draft the pad cannot go through setDraft (that
+      // collapses every chip); instead it rides the first reference's chip
+      // clipboard text as a leading space. A caret flush against a chip's
+      // right edge is already separated — the vendor pads the chip's tail
+      // space itself — so no pad is pending there.
+      // Single-plane (preview): no atomic chips exist and the vendor pads a
+      // trailing space after every insertion, so the clipboard-prefix trick
+      // (rc.2 builds chip text from `label`, ignoring clipboardText) and the
+      // inside-chip clamp are both moot — a plain pad or nothing at all.
+      const initialChips = withDetectSpans(clipboardOccurrences(state));
+      const caretInsideChip = initialChips.some(
+        chip => anchor > chip.start && anchor < chip.end);
+      let padPending = false;
+      if (anchor > 0 && !caretInsideChip && !/\s/u.test(state.draft.charAt(anchor - 1))) {
+        if (isSinglePlane(target) || initialChips.length === 0) {
+          state = rewriteDraft(target, state.draft, anchor, anchor, ' ');
+          anchor += 1;
+          replaceEnd += 1;
+        } else {
+          padPending = true;
+        }
       }
 
       for (const item of prepared) {
-        state = inputState(target);
-        if (!state) throw new Error(copy().inputUnavailable);
-        anchor = Math.max(0, Math.min(anchor, state.draft.length));
-        replaceEnd = Math.max(anchor, Math.min(replaceEnd, state.draft.length));
         if (item.kind === 'image') {
-          const snippet = `${imagePlaceholderText(item.name)} `;
-          const before = state.draft;
-          state = rewriteDraft(target, before, anchor, replaceEnd, snippet);
+          const snippet = `${padPending ? ' ' : ''}${imagePlaceholderText(item.name)} `;
+          padPending = false;
+          state = inputState(target);
+          if (!state) throw new Error(copy().inputUnavailable);
+          anchor = Math.max(0, Math.min(anchor, state.draft.length));
+          replaceEnd = Math.max(anchor, Math.min(replaceEnd, state.draft.length));
+          // setDraft rebuilds the draft as plain text: existing chips collapse
+          // to their equivalent `@path` mention text (serialization is
+          // identical — only the editor's chip badge rendering is lost), and
+          // the two planes re-converge, so anchor arithmetic below continues
+          // in one plane from the fresh state.
+          state = rewriteDraft(target, state.draft, anchor, replaceEnd, snippet);
           anchor += snippet.length;
           replaceEnd = anchor;
           continue;
         }
-        const beforeLength = state.draft.length;
-        const selectionLength = replaceEnd - anchor;
-        const accepted = input.insertReference({
-          source: 'reference',
-          ref: item.mention,
-          label: item.label,
-          appearance: 'file',
-          clipboardText: item.mention,
-        }, {
-          start: anchor,
-          end: replaceEnd,
-          draftRev: state.draftRev,
-        });
-        if (!accepted) throw new Error(copy().rejected);
-        const nextState = inputState(target);
-        if (!nextState) throw new Error(copy().inputUnavailable);
+        anchor = Math.max(0, Math.min(anchor, state.draft.length));
+        replaceEnd = Math.max(anchor, Math.min(replaceEnd, state.draft.length));
+        const outcome = insertReferenceAtCaret(target, item, anchor, replaceEnd, padPending);
+        padPending = false;
+        if (!outcome) throw new Error(copy().rejected);
+        const { nextState, beforeLength } = outcome;
+        state = nextState;
         const delta = nextState.draft.length - beforeLength;
-        // New draft length = before - selection + inserted, so the post-insert
-        // caret sits at anchor + inserted = anchor + delta + selection.
-        anchor = Math.max(0, anchor + delta + selectionLength);
+        // Advance in clipboard coordinates: delta already accounts for the
+        // replaced selection and the chip's full mention length, and the
+        // vendor pads a trailing space after the chip when needed.
+        anchor = Math.max(0, anchor + delta + (replaceEnd - anchor));
         replaceEnd = anchor;
+        // The inserted chip can still be glued to the character that follows
+        // it in the rare case the vendor declined its own tail-space pad;
+        // verify on the clipboard plane and pad through the plain-text path.
         if (
           anchor < nextState.draft.length &&
           !/\s/u.test(nextState.draft.charAt(anchor - 1)) &&
           !/\s/u.test(nextState.draft.charAt(anchor))
         ) {
-          // Mention chips do not guarantee a trailing space; pad when the
-          // inserted chip is glued to the character that follows it.
           state = rewriteDraft(target, nextState.draft, anchor, anchor, ' ');
           anchor += 1;
           replaceEnd = anchor;
@@ -458,23 +579,29 @@ window.__ModuleLoader__.load({
 
         const reply = (type, payload = {}) => {
           if (!channel) return;
-          window.parent.postMessage({
+          const message = {
             protocol: PROTOCOL,
             schema: SCHEMA,
             token: channel.token,
             generation: channel.generation,
             type,
             ...payload,
-          }, channel.origin);
+          };
+          if (channel.port) channel.port.postMessage(message);
+          else window.parent.postMessage(message, channel.origin);
         };
 
-        const validChannelMessage = (event, data) => channel
-          && event.source === window.parent
-          && event.origin === channel.origin
+        const validChannelData = data => channel
           && data?.protocol === PROTOCOL
           && data.schema === SCHEMA
           && data.token === channel.token
           && data.generation === channel.generation;
+
+        const closePort = (target = channel) => {
+          if (!target?.port) return;
+          target.port.onmessage = null;
+          target.port.close?.();
+        };
 
         const fail = (type, requestId, error) => {
           const message = typeof error?.message === 'string' ? error.message : String(error);
@@ -494,7 +621,9 @@ window.__ModuleLoader__.load({
             validateInput(target);
             const files = validateMetadata(data.files, target);
             if (typeof data.autoFitImageSize !== 'boolean') throw new Error(copy().invalidBatch);
-            const references = files.filter(file => file.kind === 'reference');
+            const references = files.filter(
+              file => file.kind === 'reference' || file.kind === 'directory',
+            );
             await Promise.all(references.map(reference =>
               target.referenceController.serializeReference(
                 'reference', reference.mention, new AbortController().signal,
@@ -543,32 +672,60 @@ window.__ModuleLoader__.load({
           }
         };
 
-        const onMessage = (event) => {
-          const data = event.data;
-          if (event.source !== window.parent || data?.protocol !== PROTOCOL || data.schema !== SCHEMA) return;
-          if (data.type === 'init') {
-            if (data.targetOrigin !== window.location.origin || event.origin === 'null' || !event.origin) return;
-            if (typeof data.token !== 'string' || typeof data.generation !== 'number') return;
-            const changed = !channel
-              || channel.origin !== event.origin
-              || channel.token !== data.token
-              || channel.generation !== data.generation;
-            channel = { origin: event.origin, token: data.token, generation: data.generation };
-            if (changed) {
-              prepared = undefined;
-              seen.clear();
-            }
-            reply('ready', {
-              enabled: enabled(),
-              capabilities: { references: true, images: true, sourceImagePolicy: true },
-              ...enabled() ? {} : { error: copy().disabled },
-            });
-            return;
-          }
-          if (!validChannelMessage(event, data)) return;
+        const onChannelMessage = (data, requestChannel) => {
+          if (channel !== requestChannel || !validChannelData(data)) return;
           if (data.type === 'prepare') void onPrepare(data, channel);
           else if (data.type === 'commit') onCommit(data);
           else if (data.type === 'cancel' && prepared?.requestId === data.requestId) prepared = undefined;
+        };
+
+        const onMessage = (event) => {
+          const data = event.data;
+          if (data?.protocol !== PROTOCOL || data.schema !== SCHEMA) return;
+          if (data.type !== 'init') {
+            if (
+              channel?.port
+              || event.source !== window.parent
+              || event.origin !== channel?.origin
+            ) return;
+            onChannelMessage(data, channel);
+            return;
+          }
+          if (data.targetOrigin !== window.location.origin) return;
+          if (typeof data.token !== 'string' || typeof data.generation !== 'number') return;
+          const port = event.ports?.[0];
+          const legacy = event.source === window.parent;
+          const portOriginAllowed = event.origin === OBSIDIAN_DESKTOP_ORIGIN;
+          if (port && !portOriginAllowed) return;
+          if (!port && !legacy) return;
+          if (!port && (event.origin === 'null' || !event.origin)) return;
+
+          const changed = !channel
+            || channel.origin !== event.origin
+            || channel.token !== data.token
+            || channel.generation !== data.generation
+            || channel.port !== port;
+          closePort();
+          channel = {
+            origin: event.origin,
+            token: data.token,
+            generation: data.generation,
+            ...(port ? { port } : {}),
+          };
+          if (changed) {
+            prepared = undefined;
+            seen.clear();
+          }
+          if (port) {
+            const requestChannel = channel;
+            port.onmessage = portEvent => onChannelMessage(portEvent.data, requestChannel);
+            port.start?.();
+          }
+          reply('ready', {
+            enabled: enabled(),
+            capabilities: READY_CAPABILITIES,
+            ...enabled() ? {} : { error: copy().disabled },
+          });
         };
 
         window.addEventListener('message', onMessage);
@@ -576,13 +733,14 @@ window.__ModuleLoader__.load({
           if (!enabled()) prepared = undefined;
           if (channel) reply('ready', {
             enabled: enabled(),
-            capabilities: { references: true, images: true, sourceImagePolicy: true },
+            capabilities: READY_CAPABILITIES,
             ...enabled() ? {} : { error: copy().disabled },
           });
         });
         return () => {
           window.removeEventListener('message', onMessage);
           unsubscribe?.();
+          closePort();
           channel = undefined;
           prepared = undefined;
           seen.clear();

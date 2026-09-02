@@ -1,0 +1,27 @@
+{
+  "name": "@mv-aide/mv-dsh-compat",
+  "version": "0.1.0",
+  "description": "Internal compatibility boundary shared by mv-AIDE's Obsidian host and managed DeepSeek Harness plugins",
+  "license": "MIT",
+  "type": "module",
+  "exports": {
+    "./contracts": {
+      "types": "./lib/contracts.d.ts",
+      "default": "./lib/contracts.js"
+    },
+    "./obsidian": {
+      "types": "./lib/obsidian.d.ts",
+      "default": "./lib/obsidian.js"
+    },
+    "./host": "./lib/host.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/*.js",
+    "lib/*.d.ts"
+  ],
+  "scripts": {
+    "test": "node --test"
+  }
+}

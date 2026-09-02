@@ -5,6 +5,7 @@ window.__ModuleLoader__.load({
   factory: (require) => {
     const module = { exports: {} };
     const React = require('react');
+    const compat = require('@mv-aide/mv-dsh-compat/client/agent');
     const NS = 'mv-agent';
     const DEFAULTS = Object.freeze({
       bridgeEnabled: true,
@@ -247,9 +248,9 @@ window.__ModuleLoader__.load({
       const policy = createPolicy();
       if (typeof ctx?.inject !== 'function') return policy;
       ctx.inject(['slots', 'settingsScope'], (settingsCtx) => {
-        const slots = settingsCtx.get?.('slots') ?? settingsCtx.slots;
-        const settingsScope = settingsCtx.get?.('settingsScope') ?? settingsCtx.settingsScope;
-        if (!slots || !settingsScope) return;
+        const host = compat.resolveSettingsCardHost(settingsCtx);
+        if (!host) return;
+        const { slots, settingsScope } = host;
         const scope = settingsScope.bind({ namespace: NS });
         const sync = () => {
           const snapshot = scope.getSnapshot();

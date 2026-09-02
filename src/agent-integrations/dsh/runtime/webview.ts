@@ -15,8 +15,13 @@ import type MvAideIdePlugin from "../../../../main";
 import { t } from "../../../i18n";
 import type { DshAutoOpenRegion } from "../settings";
 import type { SelectionState } from "../../../types";
-import { normalizeDshWebUrl, sameDshWebUrl } from "./process";
+import {
+  normalizeDshLaunchUrl,
+  normalizeDshWebUrl,
+  sameDshWebUrl,
+} from "./process";
 import { DshFileDropHost } from "./file-drop-host";
+import { DshClipboardHost } from "./clipboard-host";
 
 export const DSH_VIEW_TITLE = "mv-agent";
 /**
@@ -35,6 +40,11 @@ const FRAME_LOAD_TIMEOUT_MS = 10_000;
 /** 「打开：」内容的截断长度。 */
 const OPEN_MAX_CHARS = 20;
 type DshBridgeViewState = "checking" | "connected" | "disconnected";
+
+interface OwnedWindowTimer {
+  readonly owner: Window;
+  readonly id: number;
+}
 
 export function isDshWebviewLeaf(leaf: WorkspaceLeaf): boolean {
   return leaf.view?.getViewType?.() === DSH_WEB_VIEW_TYPE;
@@ -234,14 +244,17 @@ export class DshWebView extends ItemView {
   private detailFailureEl: HTMLDivElement | null = null;
   private expanded = false;
   private loadFailed = false;
-  private loadWatchdog: number | null = null;
-  private statusRefreshTimer: number | null = null;
+  private loadWatchdog: OwnedWindowTimer | null = null;
+  private loadWatchdogDeadline = 0;
+  private loadWatchdogGeneration = 0;
+  private statusRefreshTimer: OwnedWindowTimer | null = null;
   private navigationGeneration = 0;
   private stateGeneration = 0;
   private bridgeConnectionState: DshBridgeViewState = "checking";
   private bridgeProbeBusy = false;
   private bridgeProbeGeneration = 0;
   private fileDropHost: DshFileDropHost | null = null;
+  private clipboardHost: DshClipboardHost | null = null;
   private closed = false;
 
   constructor(
@@ -268,25 +281,43 @@ export class DshWebView extends ItemView {
     return this.frameEl;
   }
 
-  /** The DSH endpoint this view is currently connected to. */
+  /** The DSH endpoint this view is currently connected to (semantic URL). */
   currentViewUrl(): string | null {
     return normalizeDshWebUrl(this.currentUrl || this.frameEl?.src || "");
+  }
+
+  /**
+   * The frame URL mapped back to its semantic DSH endpoint: proxy-origin
+   * frames resolve to the real fronted endpoint, direct frames pass through.
+   * Derived only from `frame.src` (the last assigned frame URL) — never from
+   * `currentUrl`, which the navigation methods set independently.
+   */
+  private semanticFrameUrl(): string | null {
+    const frameSrc = this.frameEl?.src || "";
+    if (!frameSrc) return null;
+    return this.plugin.dshFeature?.semanticUrlOf?.(frameSrc) ?? normalizeDshWebUrl(frameSrc);
   }
 
   /**
    * Switch this view to a concrete DSH endpoint (used by restart). If the
    * endpoint is unchanged, the old backend was replaced in place, so force a
    * full iframe reload instead of silently keeping the dead document.
+   * Accepts either the semantic endpoint URL or an already-mapped frame URL.
    */
-  navigateTo(url: string): void {
+  async navigateTo(url: string): Promise<void> {
+    const launch = normalizeDshLaunchUrl(url);
     const normalized = normalizeDshWebUrl(url);
-    if (!normalized) return;
-    const frame = this.frameEl;
-    if (frame && sameDshWebUrl(this.currentUrl || frame.src, normalized)) {
+    if (!launch || !normalized) return;
+    const semanticCurrent = this.semanticFrameUrl();
+    if (semanticCurrent && sameDshWebUrl(semanticCurrent, normalized)) {
+      if (launch !== normalized) {
+        await this.navigate(launch);
+        return;
+      }
       this.reload();
       return;
     }
-    this.navigate(normalized);
+    await this.navigate(launch);
   }
 
   private viewWindow(): Window {
@@ -296,6 +327,17 @@ export class DshWebView extends ItemView {
   async onOpen(): Promise<void> {
     this.closed = false;
     this.buildUI();
+  }
+
+  onResize(): void {
+    this.syncWindowContext();
+  }
+
+  /** Rebind window-owned resources after Obsidian moves this leaf. */
+  syncWindowContext(): void {
+    this.fileDropHost?.syncOwnerWindow();
+    this.clipboardHost?.syncOwnerWindow();
+    this.rebindWindowTimers();
   }
 
   getState(): Record<string, unknown> {
@@ -311,10 +353,14 @@ export class DshWebView extends ItemView {
     const generation = ++this.stateGeneration;
     const stateObj = state as { url?: unknown } | undefined;
     let url = typeof stateObj?.url === "string" && stateObj.url ? stateObj.url : "";
+    const requestedLaunch = normalizeDshLaunchUrl(url);
     const feature = this.plugin.dshFeature;
     if (url && feature) {
       try {
-        url = (await feature.confirmDshViewUrl(url)) ?? "";
+        const confirmed = await feature.confirmDshViewUrl(url);
+        url = confirmed && requestedLaunch && sameDshWebUrl(confirmed, requestedLaunch)
+          ? requestedLaunch
+          : confirmed ?? "";
       } catch {
         url = "";
       }
@@ -329,11 +375,13 @@ export class DshWebView extends ItemView {
       }
     }
     if (this.closed || generation !== this.stateGeneration) return;
-    const normalized = normalizeDshWebUrl(url);
-    if (!normalized) return;
-    this.currentUrl = normalized;
-    if (this.frameEl && !sameDshWebUrl(this.frameEl.src, normalized)) {
-      this.navigate(normalized);
+    const launch = normalizeDshLaunchUrl(url);
+    if (!launch) return;
+    this.currentUrl = launch;
+    const semanticFrame = this.semanticFrameUrl();
+    if (this.frameEl && (!semanticFrame || !sameDshWebUrl(this.currentUrl, semanticFrame)
+      || launch !== normalizeDshWebUrl(launch))) {
+      await this.navigate(launch);
     }
   }
 
@@ -343,12 +391,11 @@ export class DshWebView extends ItemView {
     this.navigationGeneration += 1;
     this.stateGeneration += 1;
     this.clearLoadWatchdog();
-    if (this.statusRefreshTimer !== null) {
-      this.viewWindow().clearInterval(this.statusRefreshTimer);
-      this.statusRefreshTimer = null;
-    }
+    this.clearStatusRefreshTimer();
     this.fileDropHost?.dispose();
     this.fileDropHost = null;
+    this.clipboardHost?.dispose();
+    this.clipboardHost = null;
     this.frameEl?.remove();
     this.frameEl = null;
     this.statusPortEl = null;
@@ -403,11 +450,11 @@ export class DshWebView extends ItemView {
       ) {
         return;
       }
-      const current = frame.src || "";
-      if (sameDshWebUrl(url, current)) {
+      const semanticCurrent = this.semanticFrameUrl();
+      if (semanticCurrent && sameDshWebUrl(url, semanticCurrent)) {
         this.reload();
       } else {
-        this.navigate(url);
+        await this.navigate(url);
       }
     } catch (error) {
       new Notice(
@@ -419,19 +466,37 @@ export class DshWebView extends ItemView {
     }
   }
 
-  navigate(url: string): void {
-    const normalized = normalizeDshWebUrl(url);
-    if (!normalized) {
+  /**
+   * Navigate the iframe to a semantic endpoint/launch URL. The semantic state
+   * (`currentUrl`) keeps the real endpoint; the iframe itself loads the
+   * plugin-owned loopback proxy when the feature maps the endpoint to one
+   * (auth-gated Alpha endpoints), so the browser never has to carry the
+   * SameSite=Strict session cookie across the cross-site frame boundary.
+   */
+  async navigate(url: string): Promise<void> {
+    const launch = normalizeDshLaunchUrl(url);
+    const identity = normalizeDshWebUrl(url);
+    if (!launch || !identity) {
       this.loadFailed = true;
       this.renderStatus();
       return;
     }
     const frame = this.frameEl;
     if (!frame) return;
-    this.currentUrl = normalized;
-    if (sameDshWebUrl(frame.src, normalized)) return;
-    this.beginNavigation(normalized, () => {
-      frame.src = normalized;
+    const feature = this.plugin.dshFeature;
+    let frameUrl = launch;
+    try {
+      frameUrl = (await feature?.frameUrlFor?.(launch)) ?? launch;
+    } catch {
+      frameUrl = launch;
+    }
+    if (this.closed || frame !== this.frameEl) return;
+    this.currentUrl = launch;
+    const currentFrameTarget = this.semanticFrameUrl();
+    if (currentFrameTarget && sameDshWebUrl(currentFrameTarget, identity)
+      && sameDshWebUrl(frame.src, frameUrl) && launch === identity) return;
+    this.beginNavigation(launch, frameUrl, () => {
+      frame.src = frameUrl;
     });
   }
 
@@ -440,21 +505,25 @@ export class DshWebView extends ItemView {
     if (!frame) return;
     const target = normalizeDshWebUrl(this.currentUrl || frame.src);
     if (!target) return;
-    this.beginNavigation(target, () => {
+    // The iframe keeps loading its current (possibly proxy) URL; only the
+    // semantic target recorded in beginNavigation changes.
+    this.beginNavigation(target, frame.src, () => {
+      const currentSrc = frame.src;
       try {
         const contentWindow = frame.contentWindow;
         if (contentWindow) contentWindow.location.reload();
-        else frame.src = target;
+        else frame.src = currentSrc;
       } catch {
-        frame.src = target;
+        frame.src = currentSrc;
       }
     });
   }
 
-  private beginNavigation(url: string, apply: () => void): void {
-    this.currentUrl = url;
+  private beginNavigation(semanticUrl: string, frameUrl: string, apply: () => void): void {
+    this.currentUrl = semanticUrl;
     this.navigationGeneration += 1;
-    this.fileDropHost?.setTarget(url, this.navigationGeneration);
+    this.fileDropHost?.setTarget(frameUrl, this.navigationGeneration);
+    this.clipboardHost?.setTarget(frameUrl, this.navigationGeneration);
     this.resetBridgeConnectionState();
     const generation = this.navigationGeneration;
     this.clearLoadWatchdog();
@@ -466,18 +535,31 @@ export class DshWebView extends ItemView {
 
   private clearLoadWatchdog(): void {
     if (this.loadWatchdog === null) return;
-    this.viewWindow().clearTimeout(this.loadWatchdog);
+    this.loadWatchdog.owner.clearTimeout(this.loadWatchdog.id);
     this.loadWatchdog = null;
+    this.loadWatchdogDeadline = 0;
   }
 
   /** navigation 后 10s 看门狗：只标记失败，不改变 iframe 或后台进程。 */
   private armLoadWatchdog(generation: number): void {
-    this.loadWatchdog = this.viewWindow().setTimeout(() => {
+    this.loadWatchdogGeneration = generation;
+    this.loadWatchdogDeadline = Date.now() + FRAME_LOAD_TIMEOUT_MS;
+    this.scheduleLoadWatchdog(FRAME_LOAD_TIMEOUT_MS);
+  }
+
+  private scheduleLoadWatchdog(delay: number): void {
+    const owner = this.viewWindow();
+    const id = owner.setTimeout(() => {
       this.loadWatchdog = null;
-      if (this.closed || generation !== this.navigationGeneration) return;
+      this.loadWatchdogDeadline = 0;
+      if (
+        this.closed ||
+        this.loadWatchdogGeneration !== this.navigationGeneration
+      ) return;
       this.loadFailed = true;
       this.renderStatus();
-    }, FRAME_LOAD_TIMEOUT_MS);
+    }, delay);
+    this.loadWatchdog = { owner, id };
   }
 
   private handleFrameLoad(): void {
@@ -485,11 +567,17 @@ export class DshWebView extends ItemView {
     const frame = this.frameEl;
     if (!frame) return;
     const generation = this.navigationGeneration;
-    const target = normalizeDshWebUrl(this.currentUrl || frame.src);
+    const frameSrc = frame.src || "";
+    // The hosts' MessageChannel targetOrigin derives from the frame URL the
+    // iframe actually loaded (proxy or direct).
+    this.fileDropHost?.frameLoaded(frameSrc, generation);
+    this.clipboardHost?.frameLoaded(frameSrc, generation);
+    // Semantic confirmation always works on the real endpoint URL.
+    const target = this.semanticFrameUrl();
     this.clearLoadWatchdog();
     this.loadFailed = false;
     this.renderStatus();
-    if (target) this.fileDropHost?.frameLoaded(target, generation);
+    this.syncWindowContext();
     if (!feature || !target) return;
     void feature.confirmDshViewUrl(target).then((confirmed) => {
       if (
@@ -525,8 +613,19 @@ export class DshWebView extends ItemView {
       app: this.app,
       frame,
       frameContainer,
-      viewWindow: this.viewWindow(),
       autoFitImageSize: () => this.plugin.settings.dsh.autoFitImageSize,
+    });
+    // 复制桥：popout 中 iframe 文档失焦，Chromium 直接拒绝
+    // clipboard.writeText（NotAllowedError），注入侧包装层会把写入委托回宿主。
+    // 特权窗口解析沿用 chrome-autohide 的回退链：主工作区窗口 → 当前文档 →
+    // 全局 window（测试环境没有 app.workspace 时自然落到最后一层）。
+    this.clipboardHost = new DshClipboardHost({
+      frame,
+      frameContainer,
+      privilegedWindow:
+        (this.plugin.app?.workspace?.containerEl as HTMLElement | undefined | null)
+          ?.ownerDocument?.defaultView ??
+        this.viewWindow(),
     });
     frame.addEventListener("load", () => {
       this.handleFrameLoad();
@@ -644,11 +743,37 @@ export class DshWebView extends ItemView {
 
     this.renderStatus();
     void this.refreshDshBridgeStatus();
-    this.statusRefreshTimer = this.viewWindow().setInterval(() => {
+    this.startStatusRefreshTimer();
+  }
+
+  private startStatusRefreshTimer(): void {
+    this.clearStatusRefreshTimer();
+    const owner = this.viewWindow();
+    const id = owner.setInterval(() => {
       this.renderStatus();
       void this.refreshDshBridgeStatus();
     }, 1000);
-    this.registerInterval(this.statusRefreshTimer);
+    this.statusRefreshTimer = { owner, id };
+  }
+
+  private clearStatusRefreshTimer(): void {
+    const timer = this.statusRefreshTimer;
+    if (!timer) return;
+    timer.owner.clearInterval(timer.id);
+    this.statusRefreshTimer = null;
+  }
+
+  private rebindWindowTimers(): void {
+    const owner = this.viewWindow();
+    if (this.statusRefreshTimer && this.statusRefreshTimer.owner !== owner) {
+      this.startStatusRefreshTimer();
+    }
+    if (this.loadWatchdog && this.loadWatchdog.owner !== owner) {
+      this.loadWatchdog.owner.clearTimeout(this.loadWatchdog.id);
+      this.loadWatchdog = null;
+      const remaining = Math.max(0, this.loadWatchdogDeadline - Date.now());
+      this.scheduleLoadWatchdog(remaining);
+    }
   }
 
   private openDshManagerSettings(subsectionId: "plugins" | "skills" | "presets" = "plugins"): void {
@@ -720,9 +845,11 @@ export class DshWebView extends ItemView {
   }
 
   private async openDshInBrowser(): Promise<void> {
-    const url =
-      this.plugin.dshFeature?.currentDshUrl() ??
-      normalizeDshWebUrl(this.currentUrl || this.frameEl?.src || "");
+    // External browsers must never see the proxy URL (no plugin session) and
+    // should receive the launch URL when token authority exists: a top-level
+    // navigation's 303 lands the cookie normally.
+    const fallback = normalizeDshWebUrl(this.currentUrl || this.frameEl?.src || "");
+    const url = this.plugin.dshFeature?.externalDshUrl?.() ?? fallback;
     if (!url) return;
     try {
       const electron = (
@@ -748,7 +875,8 @@ export class DshWebView extends ItemView {
   }
 
   private async copyDshAddress(): Promise<void> {
-    const url = this.plugin.dshFeature?.currentDshUrl();
+    const url = this.plugin.dshFeature?.externalDshUrl?.()
+      ?? this.plugin.dshFeature?.currentDshUrl();
     if (!url) return;
     try {
       const clipboard = this.viewWindow().navigator.clipboard;

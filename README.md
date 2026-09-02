@@ -44,12 +44,14 @@ mv-agent 把 DSH Web 界面直接放进 Obsidian。视图底部状态栏显示�
 
 - 每个 DSH 对话独立选择、记忆和恢复 Vault；
 - 用 Obsidian 可编辑 Diff 审核需要权限的文件写入；
-- 把 Vault 内文件或电脑上的文件直接拖进对话：图片作为附件，其他文件作为实时 `@file` 引用；
+- 把 Vault 内或电脑上的文件、文件夹直接拖进对话：图片作为附件，普通文件作为实时 `@file` 引用，文件夹作为 DSH 原生目录引用；
 - 七个可选终端增强工具，包括可靠命令执行和关闭真实终端标签；
 - 上传前图片缩放，以及模型图片输入、思考等级和兼容参数设置；
 - 默认关闭、可按通道开放的库外工具与被动上下文。
 
-mv-AIDE 完整注入会管理 mv-agent、mv-dsh-manager 和独立的 mv-dsh-subworkspace 三个 DSH 插件。DSH 原生「插件配置」中显示前两者的配置卡；子工作区在工作区行内管理，不依赖 IDE 桥接。文件拖入与 IDE 桥接也保持独立，桥接关闭时仍可向当前 DSH 草稿添加本机文件。
+mv-AIDE 完整注入会管理 mv-agent、mv-dsh-manager 和独立的 mv-dsh-subworkspace 三个 DSH 插件。DSH 原生「插件配置」中显示三者的配置卡；子工作区还可从工作区行内管理，不依赖 IDE 桥接。文件拖入与 IDE 桥接也保持独立，桥接关闭时仍可向当前 DSH 草稿添加本机文件。
+
+三个 DSH 插件共用内部兼容库 `@mv-aide/mv-dsh-compat`，以同时保持 DSH `0.1.1-rc.2` 预览版的既有行为并适配 Alpha 接口。该库不是第四个 DSH 插件，不增加设置卡或独立运行状态；未识别的接口只会关闭对应增强，不影响 DSH 和其他功能。
 
 注入的 DSH 插件支持自动更新对齐到当前 mv-AIDE 版本（默认关闭），可选地在更新完成后自动重启 mv-agent；Obsidian 原生状态栏可在 mv-agent 分区一键隐藏。
 
@@ -161,7 +163,7 @@ npm run deploy:local
 - IDE 桥接、通用 MCP 和默认打开器服务只监听 `127.0.0.1`。
 - API Key 以明文保存在当前仓库插件目录的 `data.json` 中；请保护仓库及其备份。
 - Vim 配置、库外文件镜像和其它仓库级数据位于当前仓库的 `mv-aide/`；跨进程状态位于 `~/.mv-aide/`，其中 IDE discovery 在 `ide/`、dsh bridge selection 在 `dsh/`，默认打开器的当前 authority 为 `file-opener/`（升级时保留失败安全的 legacy 兼容）。
-- mv-agent 的环境安装只在用户点击对应按钮后联网。仓库安装的 Node.js、DSH 和 pnpm 运行时位于 `<vault>/mv-aide/dsh/`；桥接与管理插件位于 DSH web profile。下载、npm 缓存和安装脚本仅使用临时工作区并在操作结束后删除。选择全局安装或原位升级时，插件会显示系统管理员授权，不会静默改装到仓库。
+- mv-agent 的环境安装只在用户点击对应按钮后联网。仓库安装的 Node.js、DSH 和 pnpm 运行时位于 `<vault>/mv-aide/dsh/`，可在设置中独立选择 `<vault>/mv-aide/dsh/home` 作为 DSH 数据目录；该选择不改变 DSH 是仓库安装、全局安装还是源码目录。关闭时保持 DSH 官方 `$DSH_HOME` / `~/.dsh` 行为。三个独立管理的 DSH 插件及其内部兼容库位于当前选中的 DSH web profile；mv-AIDE 启动的进程还会在同一 `DSH_HOME/.mv-aide/runtime-owners/` 下写入不含密钥的 PID/端口/身份指纹，仅用于防止误接管或停止另一个 DSH。兼容库无 Cordis 入口、无单独 patch row，不会作为第四个插件加载。下载、npm 缓存和安装脚本仅使用临时工作区并在操作结束后删除。选择全局安装或原位升级时，插件会显示系统管理员授权，不会静默改装到仓库。
 - Windows 默认应用必须由用户在系统设置中确认；插件只写当前用户注册表，不申请管理员权限，也不修改受保护的 `UserChoice`。
 - 各模块都有独立开关。所有后缀都关闭 Vim 后，Vim 运行模块、监听器与编辑器扩展不会加载。
 
@@ -177,5 +179,7 @@ npm run deploy:local
 ## 致谢
 
 行内补全的 CodeMirror 架构参考了 [obsidian-github-copilot](https://github.com/Pierrad/obsidian-github-copilot) 的公开思路；终端进程桥接参考了 [obsidian-claude-sidebar](https://github.com/derek-larson14/obsidian-claude-sidebar) 的公开设计。Source Assist 的 Code Suite 内核基于 [obsidian-latex-suite](https://github.com/artisticat1/obsidian-latex-suite) `1.11.5`，保留 MIT 声明。Vim 的兼容目标与配置体验参考了 [obsidian-vimrc-support](https://github.com/esm7/obsidian-vimrc-support) 和 [Vim Motions](https://github.com/saberzero1/motions) 的公开文档与用户可见思路，核心引擎依据 Vim/Neovim 行为和 CodeMirror 6 API 独立实现。
+
+DSH 兼容层的 adapter/capability 边界参考了 [dsh-std](https://github.com/Yan-Zero/dsh-std) 的公开思路，版本矩阵与 conformance 门禁参考了 [dsh-ecosystem-spec](https://github.com/T-Auto/dsh-ecosystem-spec) 的公开思路。mv-AIDE 的适配层为独立实现，未复制两者源码、不引入其运行时依赖，也不声明通过任何第三方规范认证。
 
 详见[第三方声明](THIRD_PARTY_NOTICES.md)与[许可证](LICENSE)。

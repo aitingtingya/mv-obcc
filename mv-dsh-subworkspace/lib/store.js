@@ -305,6 +305,15 @@ export class SubworkspaceStore {
     if (selector === 'all') {
       return { batch: true, roots: listed.roots };
     }
+    // Some model providers serialize a JSON array argument into a plain
+    // string (`_workspace: "[\"a\",\"b\"]"`). The selector schema's oneOf
+    // permits the string branch, so a stringified array is a legal call
+    // shape and must resolve exactly like the array it encodes. Anything
+    // else — malformed JSON, non-strings, an empty array — is NOT guessed
+    // at: it falls through to the single-ID branch and surfaces the
+    // existing unknown-ID error with the raw text.
+    const parsed = parseSelectorString(selector);
+    if (parsed) selector = parsed;
     if (Array.isArray(selector)) {
       if (selector.length === 0) throw new Error('workspace arrays must contain at least one workspace ID');
       const seen = new Set();
@@ -326,4 +335,26 @@ export class SubworkspaceStore {
 
 export function stablePrimaryId(canonicalPath) {
   return primaryId(canonicalPath);
+}
+
+/**
+ * Strictly parse a selector that a model serialized as a JSON string instead
+ * of an array (`"[\"a\",\"b\"]"`). Returns the decoded array of workspace IDs,
+ * or undefined when the value is anything other than a well-formed non-empty
+ * JSON array of non-empty strings. Callers must treat undefined as "not a
+ * stringified array" and keep their existing handling — never guess.
+ */
+export function parseSelectorString(value) {
+  if (typeof value !== 'string') return undefined;
+  const trimmed = value.trim();
+  if (!/^\[[\s\S]*\]$/u.test(trimmed)) return undefined;
+  let decoded;
+  try {
+    decoded = JSON.parse(trimmed);
+  } catch {
+    return undefined;
+  }
+  if (!Array.isArray(decoded) || decoded.length === 0) return undefined;
+  if (!decoded.every((id) => typeof id === 'string' && id.length > 0)) return undefined;
+  return decoded;
 }

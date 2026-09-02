@@ -10,6 +10,8 @@ export interface DshSettings {
   autoOpenRegion: DshAutoOpenRegion;
   /** Pinned port passed to `dsh web --port`; default 3080. */
   port: number;
+  /** Use this Vault's mv-aide/dsh/home as the official DSH data root. */
+  useVaultDshHome: boolean;
   /** Explicit DeepSeek Harness source checkout; empty means automatic detection. */
   customDirectory: string;
   /** Legacy cache only; UI and operations always inspect the real DSH profile. */
@@ -55,6 +57,7 @@ export const DEFAULT_DSH_SETTINGS: DshSettings = {
   enabled: false,
   autoOpenRegion: "right",
   port: 3080,
+  useVaultDshHome: false,
   customDirectory: "",
   injected: false,
   reviewOutsideVault: false,
@@ -105,6 +108,7 @@ export function normalizeDshSettings(raw: unknown): DshSettings {
     enabled: value.enabled === true,
     autoOpenRegion: normalizeRegion(value.autoOpenRegion),
     port: normalizePort(value.port),
+    useVaultDshHome: value.useVaultDshHome === true,
     customDirectory: typeof value.customDirectory === "string"
       ? value.customDirectory.trim()
       : "",

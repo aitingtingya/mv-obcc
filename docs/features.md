@@ -187,7 +187,8 @@ mv-agent 把 DeepSeek Harness（DSH）内嵌进 Obsidian：直接使用 DSH Web 
 - **终端感知增强**：默认关闭，只影响 mv-agent / DSH。开启时 mv-agent 不注册基础 `mv_aide__getTerminalOutput`，改为注册 `list/read/send/run/open/focus/close` 七个 mv-AIDE 原生终端工具；关闭时七个增强工具撤销并恢复原来的 `getTerminalOutput`。`sendTerminalInput` 是原始输入通道，用于 Ctrl+C、TUI/REPL 和可选 Enter；`runInTerminal` 是可靠的 shell 命令通道，保真处理引号、`!`、空格、Unicode 和多行，`cd`/`export` 仍作用于同一终端。Obsidian 重启后的 deferred 标签只启动全新 shell，`readTerminal` 会等新提示符真正写入 xterm，不恢复旧输出；`closeTerminal` 必须给定 ID，直接关闭 Obsidian 终端标签及其 PTY，deferred 标签不会被唤醒。切换立即刷新工具，不重启 DSH，也不改变其它 IDE 客户端的公共 `tools/list`。库外权限继续复用 `getTerminalOutput` 的范围设置。
 - **自动适应图片大小**：默认开启。图片在发送并写入 DSH 历史前处理，最长边超过 2000px 时等比缩到 2000px；小图保持原字节，原始本地文件不修改。关闭后恢复 DSH 原生尺寸限制。
 - **隐藏 Obsidian 原生状态栏**：默认关闭，只给 `body` 增减专用 class 并隐藏 Obsidian 自身 `.status-bar` 容器；不针对 mv-agent 自有状态栏写选择器，也不会触发桥接重连、DSH 重启或工具刷新。
-- **地址与端口**：DSH Web 服务只绑定 `127.0.0.1`，默认端口 `3080`，可在设置中修改。视图自动探测已运行的 dsh 实例；未运行时显示「mv-agent 未运行」。
+- **地址与端口**：DSH Web 服务只绑定 `127.0.0.1`，默认首选端口 `3080`，可在设置中修改。只复用与当前 CLI/源码目录和 DSH 数据目录匹配的运行实例；该端口被全局 DSH、另一 Vault 的 DSH 或其它程序占用时会自动使用后续空闲端口，不会接管或停止它。
+- **授权模式与回环代理**：当 DSH 端点带 launch token 授权（Alpha）时，mv-agent 的 iframe 实际加载的是 mv-AIDE 自有的回环反向代理地址（端口由系统分配，仍只绑定 `127.0.0.1`）：启动令牌在插件侧换取代换 Cookie，Cookie 只保存在插件进程内存，不出现在页面或磁盘；`/api/` 下的 WebSocket 全部经代理隧道；上游重启导致 Cookie 失效时会自动重新兑换。无鉴权端点（预览版）不建代理，保持直连。「用浏览器打开」与「复制 DSH 地址」给出的是原始启动地址（顶层导航可正常落 Cookie），永远不会是代理地址。
 
 ### 运行环境
 
@@ -200,6 +201,7 @@ mv-agent 把 DeepSeek Harness（DSH）内嵌进 Obsidian：直接使用 DSH Web 
 - 仓库安装的最终运行时位于 `<vault>/mv-aide/dsh/`；下载、npm 缓存、安装脚本和 staging 仅存在于单次操作的临时工作区，成功、失败或取消后都会清理。全局 Node.js、DSH 或 pnpm 安装需要写受保护目录时，会弹出 macOS 管理员确认、Windows UAC 或 Linux `pkexec`，用户拒绝后停止且不会降级到仓库。
 - macOS 全局 Node 安装会在 SHA-256 校验通过后，把公开的官方 `.pkg` 临时放到 `/private/tmp` 供系统安装服务读取；安装结束、失败或取消后都会删除该临时文件。
 - 仓库和全局同时存在时优先使用仓库版本。运行环境检测先解析当前用户真实命令环境：macOS/Linux 使用登录交互 shell 的 PATH，Windows 合并当前进程与 User/Machine PATH；Node 与 npm 必须成对且可执行。全局 DSH/pnpm 优先从该 npm 的 global prefix 定位，找不到时再从同一用户命令环境 PATH 查找；版本查询、安装、升级与安装后验证都复用同一环境，避免检测到 A、执行却落到 B。插件注入写入共享的 DSH web profile，mv-agent、mv-dsh-manager 与 mv-dsh-subworkspace 分别显示版本、完整性和实际加载状态；mv-dsh-subworkspace 不依赖 IDE 桥接。
+- **DSH 数据目录**：默认保留 DSH 官方 `$DSH_HOME` 环境变量（未设置时 `~/.dsh`）规则。开启「使用当前仓库的 DSH 数据目录」后，固定使用 `<vault>/mv-aide/dsh/home`，会话、设置、三个注入插件和兼容库与全局 DSH 完全隔离。这个开关与 DSH 是仓库安装、全局安装还是自定义源码目录相互独立，不会移动、复制或重装 CLI。运行中切换后会提示重启，下次打开 mv-agent 也会自动切换并同步已打开视图。
 - **源码仓库安装**：运行中的 `pnpm dsh web`、`apps/cli/src/bin.ts` 或构建后 `apps/cli/lib/bin.js` 可通过端口、监听进程命令行和 cwd 自动识别，不扫描用户磁盘。无法安全还原 CLI 时会分别报告“DSH 正在运行”和“尚未可管理”，不再误报为完全未安装。
 - **自定义 DSH 目录**：可填写 DeepSeek Harness 仓库根目录或 `apps/cli`。验证会核对 manifest 身份、声明的 bin 入口、真实路径边界、Node/pnpm、版本和 `dsh --profile web --dump-config`。验证成功后该目录始终优先；失效时报错而不静默改用其它 DSH。清除后恢复“仓库版优先于全局版”。
 - 源码版继续使用同一组检测、启停、重启、注入和管理功能；“检测”以该 Git 分支配置的上游提交为更新 authority，不用 npm 发布版本替代源码状态。用户点击升级/重装时，mv-AIDE 要求 Git 工作树干净、分支有上游且可 fast-forward，再安装依赖、构建并验证；不会自动 stash、强制合并或另装 npm 版。操作由按真实源码根分配的跨进程锁串行化，更新后构建/验证失败会回到原提交并重新构建原版本，恢复失败会明确报告。
@@ -244,21 +246,38 @@ DSH 模型通过 `workspace` 工具列出根 ID、切换当前会话的临时默
 
 ### DSH 原生插件配置
 
-DSH 的「设置 → 插件配置」使用官方 `settings.plugin.item` 插槽显示两张默认折叠卡。设置写入当前 DSH profile，点击「保存」后实时生效；「恢复继承」删除当前字段的用户层覆盖。无用户配置、设置服务未加载或旧 DSH 没有配置插槽时，两个插件按全部默认值运行，即与升级前一致。
+DSH 的「设置 → 插件配置」使用官方 `settings.plugin.item` 插槽显示三张默认折叠卡。设置写入当前 DSH profile，点击「保存」后实时生效；「恢复继承」删除当前字段的用户层覆盖。无用户配置、设置服务未加载或旧 DSH 没有配置插槽时，三个插件按全部默认值运行，即与升级前一致。
 
 - **mv-agent**：可配置 IDE 桥接、IDE 工具、七项终端增强、Obsidian Diff、`/mv-aide`、Vault 工作区自动进入、选区上下文、`@` 提及、选区上限（256–50000，默认 6000）、防抖（50–3000ms，默认 400ms）、悬浮侧栏和图片适配。桥接关闭只暂停依赖桥接的子项，不改写子项值；`/mv-aide`、悬浮侧栏和图片适配不以桥接连接为前提。
-- **mv-dsh-manager**：可分别开关插件、技能、子智能体预设管理界面，模型能力编辑器，Obsidian 文件拖入，递归命令选择器和计划审核增强；选择器叶子上限为 10–200（默认 50）。关闭管理界面不会停用已安装的插件、技能或预设，Host API、运行身份和注入完整性检查始终保留。
+- **mv-dsh-manager**：可分别开关插件、技能、子智能体预设管理界面，模型能力编辑器，Obsidian 文件拖入，递归命令选择器，计划审核增强，以及历史消息上键召回（默认开）；选择器叶子上限为 10–200（默认 50）。关闭管理界面不会停用已安装的插件、技能或预设，Host API、运行身份和注入完整性检查始终保留。
+- **mv-dsh-subworkspace**：按主工作区列出已关联目录并逐行提供「开启子工作区」开关；关闭后该主工作区的关联目录不再投影，子目录的增删仍由工作区行内弹层完成，保存经插件端点串行提交以免陈旧快照覆盖目录列表。
 - **authority**：DSH profile 开关是 DSH 侧最终门控；对同时存在 Vault 设置的终端和图片能力，实际结果取两侧交集。不同 DSH profile 互不影响，该配置不按对话或 Vault 分别保存。
 
 ### 文件拖入
 
-安装兼容版本的 mv-dsh-manager 后，可把 Obsidian 文件列表中的文件或电脑文件管理器中的文件直接拖到 mv-agent 对话区。这条通道不读取 discovery lock，不连接 bridge WebSocket，也不调用 supervisor、`initialize`、`tools/list` 或 IDE 工具；即使 IDE 桥接关闭或状态球为红色，只要当前 DSH iframe 与 manager client 已就绪，仍可向草稿添加文件。文件只加入当前 DSH 对话的草稿，不覆盖已有文字，也不会自动发送；一次最多 20 个，重复路径会在真实路径规范化后合并。文件夹、设备文件和递归导入不在支持范围内。
+安装兼容版本的 mv-dsh-manager 后，可把 Obsidian 文件列表中的文件、文件夹或电脑文件管理器中的文件直接拖到 mv-agent 对话区。这条通道不读取 discovery lock，不连接 bridge WebSocket，也不调用 supervisor、`initialize`、`tools/list` 或 IDE 工具；即使 IDE 桥接关闭或状态球为红色，只要当前 DSH iframe 与 manager client 已就绪，仍可向草稿添加文件。文件只加入当前 DSH 对话的草稿，不覆盖已有文字，也不会自动发送；一次最多 20 个，重复路径会在真实路径规范化后合并。设备文件和递归导入不在支持范围内。
 
 - **普通文件**：写入 DSH 原生结构化 `@file` 引用。当前 DSH 工作区内的文件使用相对路径，工作区外使用绝对路径；这是实时磁盘引用，不是副本。Agent 真正调用 `read` 时才读取内容，因此拖入后移动、删除、修改或改变权限都会反映到实际读取结果。外部绝对路径会作为提示文本保存在 DSH 会话历史中。
-- **图片**：PNG、JPEG、WebP、GIF 通过文件签名识别并加入 DSH 原生图片草稿，继续受当前模型图片能力、DSH 数量/字节限制和「自动适应图片大小」控制；原始文件不会被修改。图片与普通文件可以混合拖入，同一批次要么全部加入，要么完整回滚。
+- **文件夹**：与 DSH 原生 `@` 菜单选目录一致，作为带尾斜杠的目录引用加入（如 `@docs/`，含空格路径使用 `@"docs 子/`），渲染为文件夹图标 chip。只引用路径本身，不递归导入、不读取内容；目录内的文件仍需 Agent 按需访问。
+- **图片**：PNG、JPEG、WebP、GIF 通过文件签名识别并加入 DSH 原生图片草稿，继续受当前模型图片能力、DSH 数量/字节限制和「自动适应图片大小」控制；原始文件不会被修改。图片、普通文件和文件夹可以混合拖入，同一批次要么全部加入，要么完整回滚。
 - **二进制文档**：PDF、Office、压缩包等只创建路径引用。能否读取或转换取决于当前 DSH 工具，不表示内容已经作为附件上传给模型。
 - **跨平台路径**：macOS 使用 Finder，Windows 支持文件资源管理器的盘符、UNC 与重解析后的真实路径，Linux 支持标准 `Files` 和本机 `file://` URI。路径由 Electron/Obsidian 桌面接口取得并在宿主侧验证；无法取得可信绝对路径时拒绝，不用文件名猜测。移动端、远程 DSH 或 Obsidian 与 DSH 不共享文件系统时不支持普通文件引用。
 - **隔离与安全**：Obsidian 宿主和 DSH iframe 使用按视图、按导航轮换令牌的本机 `postMessage` 握手，校验源窗口、精确 origin、代次和请求 ID；路径不通过新的 HTTP 文件接口暴露。mv-dsh-manager 缺失、版本过旧、输入锁定、会话切换或 iframe 刷新时显示真实错误，不产生半成品草稿。
+
+### 历史消息上键召回
+
+安装兼容版本的 mv-dsh-manager 后（设置卡「历史消息上键召回」，默认开），在 DSH 输入框为空且焦点位于输入框时按 `↑` 进入召回模式：先用可见会话记录中最近的已发送消息预填草稿，同时在后台经 `POST /api/mv-aide/history-recall`（仅同源请求可用）读取本会话完整历史并替换预览。继续 `↑` 逐条向更早的消息回溯；`↓` 向回走，到达最新一条后再按 `↓` 恢复进入召回前的草稿并退出召回模式。
+
+边界：
+
+- 只回溯用户发送的消息（`user/message` 与 steering 消息），按会话的完整事件序号排序；不读取或展开可见对话分页。
+- IME 组合输入中、命令或选择菜单打开、草稿非空（`↑` 保留原生光标移动）、焦点不在输入框，或当前无会话时不触发。
+- 会话切换时清除其它会话的召回状态；召回中的草稿修改以当前显示的消息为准，锚定草稿在退出时恢复。
+- 旧 DSH 运行时不暴露完整会话历史读取接口时，召回按 fail closed 处理：保留可见消息范围的回溯，不报错、不请求升级，也不展开可见分页。
+
+### 剪贴板回退
+
+DSH 页面始终优先直接使用浏览器 `navigator.clipboard`。只有当写入被系统拒绝（`NotAllowedError`）时，注入的 manager client 才通过按视图鉴权、按代次轮换的本机 `postMessage` 通道把纯文本写入请求委托给 Obsidian 宿主，由宿主经 Electron `clipboard.writeText` 完成；失败时返回真实错误，不静默丢弃。通道使用 MessagePort 承载完整请求/回复生命周期，iframe 在 Obsidian 主窗口与弹出窗口之间移动不改变通道身份；只委托纯文本，不读取剪贴板。
 
 ### 图片上传
 
@@ -660,14 +679,17 @@ mv-AIDE 自有打开器产物的当前 authority 是 `~/.mv-aide/file-opener/`�
 | 设置键 | 默认 | 作用对象 | UI 归属 |
 | --- | --- | --- | --- |
 | `browserAutoHideToolbar` | 关 | 内置 Web Viewer 页顶工具栏（前进 / 后退、地址栏等） | 文件系统与浏览器 |
-| `tabBarAutoHide` | 关 | 各标签组的标签页栏，收起为 4px 细感应条 | 文件系统与浏览器 |
+| `tabBarAutoHide` | 关 | 各标签组的标签页栏，收起后组顶保留约 20px 透明悬停感应区 | 文件系统与浏览器 |
 | `fileHeaderAutoHide` | 关 | Markdown 视图顶部 `.view-header`（前进 / 后退、文件名、操作栏） | 源码编写辅助 |
 
 行为：
 
-- 鼠标移到展开的条带（标签组顶部 4–8 px 感应区）后悬停展开；**移开后收起宽限 120 ms**，外扫过瞬间不会立即关闭。
+- 鼠标移到条带顶部的悬停感应区（约 20px 透明条）后展开；**移开后收起宽限 120 ms**，外扫过瞬间不会立即关闭。
 - 展开成只对所在标签组（`.workspace-tabs`）有效，**不影响 stacked 标签和其它分栏**；被打开展开的标签组获得独立 body class 标记，离开该组即恢复。
-- 实现：纯 CSS class 切换 + `requestAnimationFrame` 注册悬停监听；body 上分别附加 `mv-aide-chrome-autohide-tab`、`-file`、`-web` 三类 class。
+- 收起方式为 in-flow 高度归零：正文与页内工具整体上移，而不是被透明层覆盖；展开恢复原生 `--header-height`。高度瞬时切换，动画只作用于透明度。
+- 主窗口与弹出（popout）窗口分别持有独立的控制器、监听器与收起状态，互不串扰；关闭开关或卸载时按窗口逐一解绑。
+- Obsidian 原生标签拖拽或文件拖入进行中时条带保持展开，拖拽结束或超时（30 秒看门狗）后恢复自动收起。
+- 实现：纯 CSS class 切换；body 上分别附加 `mv-aide-chrome-autohide-tab`、`-file`、`-web` 三类 class。展开期间以约 32 ms 间隔读取系统指针坐标判定离开（不依赖 DOM hover 事件）；`requestAnimationFrame` 仅用于收起/展开时的几何稳定测量。
 - 三个开关均为 `data.json` 中的布尔字段，不发送网络请求、不执行外部脚本，关闭即移除全部 class 与监听器。
 
 ### 自定义网页按钮
@@ -792,6 +814,7 @@ mv-agent 与 IDE 桥接共享同一条本地桥接服务、同一组公共工具
 | `~/.mv-aide/file-opener/` | 默认打开器当前 authority：owner、runtime、wrapper、helper 和图标；不包含 OS 系统关联数据库 |
 | `~/.mv-aide/runtime/` | 终端、通用 MCP 和 Codex 集成所需的可重建运行产物 |
 | `~/.mv-aide/tmp/` | DSH 安装、打开器预检等操作范围的临时文件 |
+| `$DSH_HOME/.mv-aide/runtime-owners/<port>.json` | mv-AIDE 启动的 DSH 实例 owner 记录：不含密钥的 PID、端口与身份指纹（目录 `0700`、文件 `0600`，临时文件+rename 原子写），仅用于防止误接管或停止另一个 DSH |
 | `$CLAUDE_CONFIG_DIR/ide/`（默认 `~/.claude/ide/`） | Claude Code 只读的 discovery 兼容镜像；权威来源仍是 `~/.mv-aide/ide/` |
 | `$CODEX_HOME/config.toml`（默认 `~/.codex/config.toml`） | mv-AIDE 带标记的 `mcp_servers.mv_aide_obsidian` 受管块 |
 
@@ -801,6 +824,7 @@ mv-AIDE 新建的跨进程产物只写入表中的精确子目录；Claude、Cod
 
 - IDE、通用 MCP、默认打开器服务只绑定 `127.0.0.1`。
 - mv-agent 托管的 DSH Web 服务只绑定 `127.0.0.1`，默认端口 `3080`（可在设置中修改）。
+- Alpha 授权模式下的回环反向代理同样只绑定 `127.0.0.1`，端口由系统分配。
 - 通用 MCP 需要每 vault Bearer token；轮换后旧 token 立即失效。
 - 划词助手和行内补全只连接用户配置的 API Base URL。
 - Claude/Codex 自身网络、终端命令网络和 Web Viewer 浏览由对应程序负责。
@@ -881,6 +905,11 @@ API Key 明文存储在 `data.json`，可能随 vault 备份或同步传播。�
 1. 确认对应开关（`browserAutoHideToolbar` / `tabBarAutoHide` / `fileHeaderAutoHide`）已开启。
 2. 检查目标视图（Markdown / Web Viewer / 标签分组）是否被自定义 CSS 或社区插件覆盖；有些主题会重写 `.view-header` 或标签栏样式。
 3. 移开后收起宽限为 120 ms；外扫过感应区属于预期行为，不算失效。
+4. 收起后的唤出面是组顶约 20px 的透明感应条；弹出（popout）窗口需单独移动鼠标到该窗口内的感应区，主窗口的状态不会带入弹出窗口。
+
+### 上键召回只回溯到可见消息
+
+旧 DSH 运行时不暴露完整会话历史读取接口时，`↑` 召回按 fail closed 只覆盖可见消息范围，不报错也不展开可见分页。这属于预期降级；升级 DSH 或重新注入后即可回溯完整历史。另请确认 mv-dsh-manager 设置卡的「历史消息上键召回」开关已开启，以及触发条件：输入框为空、焦点在输入框、无打开的菜单、不在 IME 组合输入中。
 
 ### 自定义网页按钮不工作
 
