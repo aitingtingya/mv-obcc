@@ -116,6 +116,69 @@ function pointAtOffset(element, offset) {
   return last ? { node: last, offset: last.nodeValue?.length ?? 0 } : { node: element, offset: element.childNodes.length };
 }
 
+function strictSelectionResult(start, end, length) {
+  if (start === undefined) return { status: 'unknown' };
+  return {
+    status: 'known',
+    start: Math.max(0, Math.min(start, length)),
+    end: Math.max(Math.max(0, Math.min(end, length)), Math.max(0, Math.min(start, length))),
+  };
+}
+
+/**
+ * Strict DOM selection observer for recall round bookkeeping.
+ *
+ * Unlike `selection()`, this NEVER fabricates a caret-at-end fallback when
+ * the DOM disagrees with the draft or the selection is absent: it reports
+ * `{ status: 'unknown' }` instead, so callers can treat an unreadable
+ * selection as non-informational rather than as a caret move. When the
+ * DOM reports a real selection it is normalized against the rendered
+ * length only (clamping), never against the observable draft, so a React
+ * async commit gap stays `unknown` instead of looking like end-of-text.
+ */
+function composerStrictSelection(composer) {
+  const doc = composer.element?.ownerDocument ?? (typeof document === 'undefined' ? undefined : document);
+  const element = composer.element;
+  if (!element || !doc) return { status: 'unknown' };
+  if (domAdapterOf(element, doc) === 'preview') {
+    if (typeof element.selectionStart !== 'number' || typeof element.selectionEnd !== 'number') {
+      return { status: 'unknown' };
+    }
+    const length = typeof element.value === 'string' ? element.value.length : 0;
+    return strictSelectionResult(element.selectionStart, element.selectionEnd, length);
+  }
+  const view = doc.defaultView ?? (typeof window === 'undefined' ? undefined : window);
+  const selection = view?.getSelection?.() ?? doc.getSelection?.();
+  if (!selection || selection.rangeCount === 0) return { status: 'unknown' };
+  const range = selection.getRangeAt(0);
+  if (!range || !element.contains(range.startContainer) || !element.contains(range.endContainer)) {
+    return { status: 'unknown' };
+  }
+  try {
+    const beforeStart = doc.createRange();
+    beforeStart.selectNodeContents(element);
+    beforeStart.setEnd(range.startContainer, range.startOffset);
+    const beforeEnd = doc.createRange();
+    beforeEnd.selectNodeContents(element);
+    beforeEnd.setEnd(range.endContainer, range.endOffset);
+    const length = typeof element.textContent === 'string' ? element.textContent.length : 0;
+    return strictSelectionResult(beforeStart.toString().length, beforeEnd.toString().length, length);
+  } catch {
+    return { status: 'unknown' };
+  }
+}
+
+function domAdapterOf(element, doc) {
+  const tag = element?.tagName;
+  if (typeof tag === 'string' && tag.toLowerCase() === 'textarea') return 'preview';
+  if (typeof tag === 'string' && tag.toLowerCase() === 'div') return 'alpha';
+  const lexical = doc?.querySelector?.('div[data-phase][data-composer-input]');
+  if (lexical === element) return 'alpha';
+  const textarea = doc?.querySelector?.('textarea[data-phase]');
+  if (textarea === element) return 'preview';
+  return null;
+}
+
 function buildComposer(target, doc) {
   const dom = composerElement(doc);
   if (!target || !dom) return null;
@@ -138,6 +201,7 @@ function buildComposer(target, doc) {
       };
     },
     setDraft: (text) => target.input.setDraft(text),
+    strictSelection: () => composerStrictSelection({ element: dom.element }),
     focusAt(start, end = start) {
       const snapshot = target.input.state.getSnapshot();
       const from = Math.max(0, Math.min(start, snapshot.draft.length));
@@ -226,6 +290,19 @@ export function resolveChatProjection(ctx, sessionId = currentSessionId(ctx)) {
   return chat === undefined ? null : Object.freeze({ adapter: 'alpha', chat, binding, target });
 }
 
+/**
+ * Standalone strict-selection read over the composer element resolved from
+ * `doc` (defaults to the global document). Mirrors the per-composer
+ * `strictSelection()` method but is callable without a resolved conversation
+ * facade, so recall bookkeeping can poll the DOM even when the input store
+ * is momentarily unavailable. Returns `{ status: 'known', start, end }` or
+ * `{ status: 'unknown' }` — never a fabricated caret position.
+ */
+export function composerSelection(element, doc = element?.ownerDocument ?? (typeof document === 'undefined' ? undefined : document)) {
+  if (!element || !doc) return { status: 'unknown' };
+  return composerStrictSelection({ element });
+}
+
 // The Obsidian build turns this exact object into a DSH client-runtime module
 // inside each existing plugin bundle. The compatibility package itself stays
 // a plain library: it has no Cordis entry, patch row, or independently loaded
@@ -242,4 +319,5 @@ export const CLIENT_COMPAT_API = Object.freeze({
   resolveComposer,
   resolvePendingPlanReview,
   resolveChatProjection,
+  composerSelection,
 });

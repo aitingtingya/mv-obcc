@@ -446,9 +446,22 @@ export async function withDshInjectionLock<T>(
   }
 }
 
+/**
+ * Options controlling same-version content-conflict handling.
+ *
+ * `allowSameVersionOverwrite` authorizes replacing an installed bundle whose
+ * marker version equals the current mv-AIDE version but whose fingerprint
+ * differs (a same-version content drift, typically a rebuilt plugin). The
+ * never-downgrade rule for higher versions is not affected by this flag.
+ */
+export interface SameVersionOverwriteOptions {
+  allowSameVersionOverwrite?: boolean;
+}
+
 export async function materializeCompatLibrary(
   mvAideVersion: string,
   homeDirectory = commandHomeDirectory(),
+  options: SameVersionOverwriteOptions = {},
 ): Promise<void> {
   await fs.mkdir(dshWebProfileDirectory(homeDirectory), { recursive: true });
   const installedDir = dshCompatPackageDirectory(homeDirectory);
@@ -460,7 +473,9 @@ export async function materializeCompatLibrary(
       throw new Error(`更高版本共享兼容库 ${marker.mvAideVersion} 已损坏，当前版本拒绝降级覆盖。`);
     }
     if (relation === "current" && marker.fingerprint !== DSH_COMPAT_BUNDLE_FINGERPRINT) {
-      throw new Error(`共享兼容库 ${mvAideVersion} 存在同版本内容冲突，拒绝静默覆盖。`);
+      if (options.allowSameVersionOverwrite !== true) {
+        throw new Error(`共享兼容库 ${mvAideVersion} 存在同版本内容冲突，拒绝静默覆盖。`);
+      }
     }
   }
   await writePackage(
@@ -501,32 +516,36 @@ async function writeSubworkspacePlugin(mvAideVersion: string, homeDirectory: str
 export async function materializeAgentPlugin(
   mvAideVersion: string,
   homeDirectory = commandHomeDirectory(),
+  options: SameVersionOverwriteOptions = {},
 ): Promise<void> {
-  await materializeCompatLibrary(mvAideVersion, homeDirectory);
+  await materializeCompatLibrary(mvAideVersion, homeDirectory, options);
   await writeAgentPlugin(mvAideVersion, homeDirectory);
 }
 
 export async function materializeManagerPlugin(
   mvAideVersion: string,
   homeDirectory = commandHomeDirectory(),
+  options: SameVersionOverwriteOptions = {},
 ): Promise<void> {
-  await materializeCompatLibrary(mvAideVersion, homeDirectory);
+  await materializeCompatLibrary(mvAideVersion, homeDirectory, options);
   await writeManagerPlugin(mvAideVersion, homeDirectory);
 }
 
 export async function materializeSubworkspacePlugin(
   mvAideVersion: string,
   homeDirectory = commandHomeDirectory(),
+  options: SameVersionOverwriteOptions = {},
 ): Promise<void> {
-  await materializeCompatLibrary(mvAideVersion, homeDirectory);
+  await materializeCompatLibrary(mvAideVersion, homeDirectory, options);
   await writeSubworkspacePlugin(mvAideVersion, homeDirectory);
 }
 
 export async function materializeFullPluginSet(
   mvAideVersion: string,
   homeDirectory = commandHomeDirectory(),
+  options: SameVersionOverwriteOptions = {},
 ): Promise<void> {
-  await materializeCompatLibrary(mvAideVersion, homeDirectory);
+  await materializeCompatLibrary(mvAideVersion, homeDirectory, options);
   await Promise.all([
     writeAgentPlugin(mvAideVersion, homeDirectory),
     writeManagerPlugin(mvAideVersion, homeDirectory),
@@ -831,7 +850,7 @@ function layerStatus(options: {
   }
   return {
     state: "conflict",
-    detail: `${label} 与当前 mv-AIDE 版本相同但内容指纹不同；仅可通过显式“更新”替换。`,
+    detail: `${label} 与当前 mv-AIDE 版本相同但内容指纹不同；可通过显式“更新”或自动更新替换。`,
     version: installedVersion,
     relation,
     usable: true,
@@ -1032,7 +1051,7 @@ async function ensureInjection(
   command: DshCommand,
   target: InjectionTarget,
   currentMvAideVersion: string,
-  options: { explicit?: boolean } = {},
+  options: { explicit?: boolean } & SameVersionOverwriteOptions = {},
 ): Promise<InjectResult> {
   const homeDirectory = commandHomeDirectory(command);
   return withDshInjectionLock(async () => {
@@ -1062,8 +1081,14 @@ async function ensureInjection(
     }
 
     try {
-      if (target === "ide") await materializeAgentPlugin(currentMvAideVersion, homeDirectory);
-      else await materializeFullPluginSet(currentMvAideVersion, homeDirectory);
+      const materializeOptions: SameVersionOverwriteOptions = {
+        allowSameVersionOverwrite: options.explicit === true || options.allowSameVersionOverwrite === true,
+      };
+      if (target === "ide") {
+        await materializeAgentPlugin(currentMvAideVersion, homeDirectory, materializeOptions);
+      } else {
+        await materializeFullPluginSet(currentMvAideVersion, homeDirectory, materializeOptions);
+      }
       await fs.mkdir(dshWebProfileDirectory(homeDirectory), { recursive: true });
       await writePatchRows(target, homeDirectory);
       await cleanupBundles(target, homeDirectory);
@@ -1118,7 +1143,7 @@ export async function ensureDshAgentInjection(
   vaultRoot: string,
   command: DshCommand,
   currentMvAideVersion = "0.0.0",
-  options: { explicit?: boolean } = {},
+  options: { explicit?: boolean } & SameVersionOverwriteOptions = {},
 ): Promise<InjectResult> {
   return ensureInjection(vaultRoot, command, "ide", currentMvAideVersion, options);
 }
@@ -1127,7 +1152,7 @@ export async function ensureDshFullInjection(
   vaultRoot: string,
   command: DshCommand,
   currentMvAideVersion = "0.0.0",
-  options: { explicit?: boolean } = {},
+  options: { explicit?: boolean } & SameVersionOverwriteOptions = {},
 ): Promise<InjectResult> {
   return ensureInjection(vaultRoot, command, "full", currentMvAideVersion, options);
 }

@@ -148,7 +148,7 @@ function injectedLayerDetail(label: string, status: DshLayerStatus, currentVersi
       detail = t("{label} 的注入版本未知；检测不会覆盖，建议点击升级。", { label });
       break;
     case "conflict":
-      detail = t("{label} 与当前 mv-AIDE 版本相同但内容指纹不同；仅可通过显式更新替换。", { label });
+      detail = t("{label} 与当前 mv-AIDE 版本相同但内容指纹不同；可通过显式更新或自动更新替换。", { label });
       break;
     case "missing":
       detail = t("{label} 尚未注入 DSH web profile。", { label });
@@ -181,7 +181,7 @@ function injectedAggregateDetail(status: DshLayerStatus): string {
     case "outdated": return t("至少一个受管插件版本较旧；检测不会覆盖，请点击升级。");
     case "newer": return t("至少一个受管插件高于当前 mv-AIDE；当前版本不会降级覆盖。");
     case "unknown": return t("至少一个受管插件版本未知；建议点击升级。");
-    case "conflict": return t("至少一个受管插件存在同版本内容冲突；仅可显式更新。");
+    case "conflict": return t("至少一个受管插件存在同版本内容冲突；可通过显式更新或自动更新替换。");
     case "missing": return t("尚未向 DSH web profile 注入受管插件。");
     case "partial":
       return status.relation === "newer"

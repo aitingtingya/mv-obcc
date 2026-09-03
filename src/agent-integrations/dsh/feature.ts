@@ -892,6 +892,11 @@ export class DshFeature {
         vaultRoot,
         runtime.command,
         this.plugin.manifest.version,
+        // Same-version content drift must be replaced unconditionally while
+        // plugin auto-update is enabled; without authorization the shared
+        // compatibility library refuses the overwrite and blocks the whole
+        // reconcile + auto-update chain.
+        { allowSameVersionOverwrite: this.plugin.settings.dsh.autoUpdatePlugins === true },
       );
       const after = await inspectDshInjection(vaultRoot, this.plugin.manifest.version, runtime.command);
       const afterWithRuntime = await this.annotateRunningBundleStatus(after);
