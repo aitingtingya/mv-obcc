@@ -5,7 +5,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { TFile, type App, type WorkspaceLeaf } from "obsidian";
+import { TFile, type App, type EventRef, type WorkspaceLeaf } from "obsidian";
 import {
   normalizeSourceAssistExtension,
 } from "./source-assist/source-assist-settings";
@@ -675,17 +675,16 @@ export class ExternalFileOpenerFeature {
   private managedCopyRestoreTask: ManagedCopyRestoreTaskImpl | null = null;
   private disposed = false;
   private layoutReadyPromise: Promise<void> | null = null;
-  private layoutReadyTimer: number | null = null;
+  private cancelLayoutWait: (() => void) | null = null;
+  private readonly pendingIndexWaits = new Set<() => void>();
 
   constructor(private readonly options: ExternalFileOpenerOptions) {}
 
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
-    if (this.layoutReadyTimer !== null) {
-      activeWindow.clearTimeout(this.layoutReadyTimer);
-      this.layoutReadyTimer = null;
-    }
+    this.cancelLayoutWait?.();
+    for (const cancel of this.pendingIndexWaits) cancel();
     this.stopManagedCopyRuntime();
     try {
       this.options.ephemeralAdapter?.dispose();
@@ -838,6 +837,7 @@ export class ExternalFileOpenerFeature {
       // 标签，否则恢复中的 deferred 标签尚未挂上 view.file，会被误判为
       // 未打开而重复新开标签。
       await this.waitForLayoutReady();
+      if (this.disposed) throw new Error(t("文件打开器已停止。"));
 
       externalPath = normalizeExternalFilePath(rawExternalPath);
       if (!isExternalFileExtensionAllowed(settings, externalPath)) {
@@ -867,6 +867,7 @@ export class ExternalFileOpenerFeature {
       }
 
       const file = await this.waitForIndexedFile(vaultPath);
+      if (this.disposed) throw new Error(t("文件打开器已停止。"));
       if (!file) {
         throw new Error(
           directVaultPath
@@ -1587,26 +1588,68 @@ export class ExternalFileOpenerFeature {
   }
 
   private async waitForIndexedFile(vaultPath: string): Promise<TFile | null> {
-    for (let attempt = 0; attempt < 20; attempt++) {
-      const file = this.options.app.vault.getAbstractFileByPath(vaultPath);
-      if (file instanceof TFile) return file;
-      await new Promise((resolve) => activeWindow.setTimeout(resolve, 250));
-    }
-    return null;
+    if (this.disposed) return null;
+    const vault = this.options.app.vault;
+    const existing = vault.getAbstractFileByPath(vaultPath);
+    if (existing instanceof TFile) return existing;
+    const timerWindow = activeWindow;
+    return new Promise((resolve) => {
+      let finished = false;
+      let timer: number | null = null;
+      let eventRef: EventRef | null = null;
+      const deadline = Date.now() + 5000;
+      const finish = (file: TFile | null): void => {
+        if (finished) return;
+        finished = true;
+        if (timer !== null) timerWindow.clearTimeout(timer);
+        if (eventRef) vault.offref(eventRef);
+        this.pendingIndexWaits.delete(cancel);
+        resolve(file);
+      };
+      const cancel = (): void => finish(null);
+      const check = (): void => {
+        if (finished) return;
+        if (this.disposed) { finish(null); return; }
+        const file = vault.getAbstractFileByPath(vaultPath);
+        if (file instanceof TFile) finish(file);
+        else if (Date.now() >= deadline) finish(null);
+      };
+      const poll = (): void => {
+        timer = null;
+        check();
+        if (!finished) timer = timerWindow.setTimeout(poll, Math.min(250, deadline - Date.now()));
+      };
+      this.pendingIndexWaits.add(cancel);
+      eventRef = vault.on("create", (file) => { if (file.path === vaultPath) check(); });
+      // Recheck after subscribing so indexing between the first lookup and
+      // listener registration cannot be missed.
+      poll();
+    });
   }
 
   private waitForLayoutReady(): Promise<void> {
     if (!this.layoutReadyPromise) {
       const workspace = this.options.app.workspace;
-      this.layoutReadyPromise = Promise.race([
-        new Promise<void>((resolve) => {
-          workspace.onLayoutReady(resolve);
-        }),
-        // 兜底：布局事件异常缺失时不至于永远挂住打开请求。
-        new Promise<void>((resolve) => {
-          this.layoutReadyTimer = activeWindow.setTimeout(resolve, 15000);
-        }),
-      ]);
+      this.layoutReadyPromise = new Promise<void>((resolve) => {
+        let finished = false;
+        let timer: number | null = null;
+        let timerWindow: Window | null = null;
+        const finish = (): void => {
+          if (finished) return;
+          finished = true;
+          if (timer !== null) timerWindow?.clearTimeout(timer);
+          this.cancelLayoutWait = null;
+          resolve();
+        };
+        this.cancelLayoutWait = finish;
+        workspace.onLayoutReady(finish);
+        // A missing layout event still has a bounded fallback; a normal ready
+        // callback leaves no idle 15-second timer behind.
+        if (!finished) {
+          timerWindow = activeWindow;
+          timer = timerWindow.setTimeout(finish, 15000);
+        }
+      });
     }
     return this.layoutReadyPromise;
   }

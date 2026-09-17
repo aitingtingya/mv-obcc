@@ -11,7 +11,7 @@ Pure compatibility boundary shared by mv-AIDE's Obsidian host and its managed De
 
 ## Preview-first resolution
 
-DSH `0.1.1-rc.2` (preview) is the first-priority compatibility baseline. Every resolver probes structure first — the preview face is checked before any Alpha-only face (for example `resolvePresetOpener` returns `previewPresetOpener(ctx) ?? alphaPresetOpener(ctx)`). Version numbers are never used to decide whether an API can be called; they are used only for diagnostics, source evidence, and the acceptance matrix. A missing or unknown interface resolves to `null`/`undefined` so the caller can fail closed by disabling only that enhancement.
+DSH `0.1.5-rc.2` (preview) is the first-priority compatibility baseline. Every resolver probes structure first — the preview face is checked before any Alpha-only face (for example `resolvePresetOpener` returns `previewPresetOpener(ctx) ?? alphaPresetOpener(ctx)`). Version numbers are never used to decide whether an API can be called; they are used only for diagnostics, source evidence, and the acceptance matrix. A missing or unknown interface resolves to `null`/`undefined` so the caller can fail closed by disabling only that enhancement.
 
 ## Exports
 
@@ -22,4 +22,4 @@ DSH `0.1.1-rc.2` (preview) is the first-priority compatibility baseline. Every r
 
 ## Test matrix
 
-`tests/fixtures/dsh-compat-matrix.json` pins the dual acceptance matrix — preview `0.1.1-rc.2` and alpha `0.1.2-alpha.3` with exact source commits — enforced by `npm run test:dsh-alpha` from the repository root. Adding a DSH version means extending that matrix with precise source evidence, never guessing at unknown interfaces.
+`tests/fixtures/dsh-compat-matrix.json` pins the dual acceptance matrix — preview `0.1.5-rc.2` and alpha `0.1.6-alpha.1` with exact source commits — enforced by `npm run test:dsh-alpha` from the repository root. Adding a DSH version means extending that matrix with precise source evidence, never guessing at unknown interfaces.

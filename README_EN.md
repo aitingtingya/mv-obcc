@@ -51,7 +51,7 @@ Settings inspect Node.js, DSH, pnpm, and plugin injection as four separate layer
 
 Full injection manages three independent DSH plugins: mv-agent, mv-dsh-manager, and mv-dsh-subworkspace. The native **Plugin configuration** page contains cards for all three; associated directories can also be managed from the control inserted directly between each Workspace row's ellipsis and plus buttons. mv-dsh-subworkspace does not depend on the IDE bridge. Its `workspace` tool can list, switch, and reset the current session root, while `_workspace` added generically to native DSH tools can select one root, an array, or `"all"` for independent concurrent execution without tool-specific adapters.
 
-The three DSH plugins share an internal compatibility library, `@mv-aide/mv-dsh-compat`, to preserve the established behavior of DSH `0.1.1-rc.2` while adapting Alpha interfaces. It is not a fourth DSH plugin and adds no settings card or independent runtime state. An unrecognized interface disables only the corresponding enhancement rather than DSH or unrelated features.
+The three DSH plugins share an internal compatibility library, `@mv-aide/mv-dsh-compat`, to preserve the established behavior of the DSH preview while adapting Alpha interfaces. It is not a fourth DSH plugin and adds no settings card or independent runtime state. An unrecognized interface disables only the corresponding enhancement rather than DSH or unrelated features.
 
 File drop is likewise independent of the IDE bridge, so local files can still be appended to the current DSH draft while the bridge is disabled. The injected DSH plugins support opt-in automatic updates aligned to the current mv-AIDE build, with an optional restart of mv-agent after the update; the native Obsidian status bar can also be hidden from the mv-agent section.
 
@@ -102,6 +102,8 @@ Register non-Markdown source extensions and configure highlighting, linting, reg
 ### 6. Vim Enhancement
 
 The independently implemented Vim core supports the major modes, motions, operators, text objects, registers, macros, search, Ex commands, and a vault-level `.vimrc`. When Obsidian's native status bar is hidden, the Vim mode badge automatically falls back to an overlay inside the editor.
+
+Includes bidirectional system clipboard sharing with `clipboard=unnamed,unnamedplus`, Unicode character boundaries, counted repeat, and common Vim search syntax. It is not a complete Vimscript or third-party Vim plugin runtime; see the capability reference for boundaries.
 
 ![Vim modes, relative line numbers, and a real edit](media/readme/vim.gif)
 

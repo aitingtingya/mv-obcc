@@ -1,10 +1,12 @@
 import { foldService } from "@codemirror/language";
 import {
   RangeSetBuilder,
+  RangeSet,
   StateEffect,
   StateField,
   type EditorState,
   type Extension,
+  type Text,
 } from "@codemirror/state";
 import {
   Decoration,
@@ -99,6 +101,51 @@ const EMPTY_TEX_OUTLINE_HEADINGS: TexOutlineHeadingDecorations = {
   inlineDecorations: Decoration.none,
 };
 
+interface ParsedHeading {
+  from: number;
+  to: number;
+  level: number;
+  shellFrom: number;
+  titleFrom: number;
+  titleTo: number;
+}
+
+// Immutable document identity invalidates this cache on edits; closed documents
+// are not retained. Selection-only updates reuse the exact same parsed headings.
+const headingCache = new WeakMap<Text, readonly ParsedHeading[]>();
+
+function parsedHeadings(doc: Text): readonly ParsedHeading[] {
+  const cached = headingCache.get(doc);
+  if (cached) return cached;
+  const hits: { lineNumber: number; latexLevel: number }[] = [];
+  let minLevel = Infinity;
+  for (let lineNumber = 1; lineNumber <= doc.lines; lineNumber++) {
+    const match = matchTexSectionLine(doc.line(lineNumber).text);
+    if (!match) continue;
+    hits.push({ lineNumber, latexLevel: match.latexLevel });
+    minLevel = Math.min(minLevel, match.latexLevel);
+  }
+  const headings: ParsedHeading[] = [];
+  for (const hit of hits) {
+    const line = doc.line(hit.lineNumber);
+    const spans = matchTexSectionLineSpans(line.text);
+    if (!spans || !line.text.slice(spans.titleBraceOpen + 1, spans.titleBraceClose).trim()) continue;
+    headings.push({
+      from: line.from, to: line.to,
+      level: Math.max(1, Math.min(6, hit.latexLevel - minLevel + 1)),
+      shellFrom: line.from + spans.commandStart,
+      titleFrom: line.from + spans.titleBraceOpen + 1,
+      titleTo: line.from + spans.titleBraceClose,
+    });
+  }
+  headingCache.set(doc, headings);
+  return headings;
+}
+
+function headingsApplicable(state: EditorState, isEnabled: () => boolean): boolean {
+  return isEnabled() && isTexExtension(state.field(editorInfoField, false)?.file?.extension ?? "");
+}
+
 /**
  * Builds heading decorations for `\section{...}` lines so they render like
  * Markdown headings: the line gets `HyperMD-header-N` and the raw title gets
@@ -111,49 +158,22 @@ export function buildTexOutlineHeadingDecorations(
   state: EditorState,
   isEnabled: () => boolean,
 ): TexOutlineHeadingDecorations {
-  if (!isEnabled()) return EMPTY_TEX_OUTLINE_HEADINGS;
-  const file = state.field(editorInfoField, false)?.file;
-  if (!file || !isTexExtension(file.extension ?? "")) {
-    return EMPTY_TEX_OUTLINE_HEADINGS;
-  }
-
-  const doc = state.doc;
-  const hits: { lineNumber: number; latexLevel: number }[] = [];
-  let minLevel = Infinity;
-  for (let lineNumber = 1; lineNumber <= doc.lines; lineNumber++) {
-    const match = matchTexSectionLine(doc.line(lineNumber).text);
-    if (!match) continue;
-    hits.push({ lineNumber, latexLevel: match.latexLevel });
-    if (match.latexLevel < minLevel) minLevel = match.latexLevel;
-  }
+  if (!headingsApplicable(state, isEnabled)) return EMPTY_TEX_OUTLINE_HEADINGS;
+  const hits = parsedHeadings(state.doc);
   if (hits.length === 0) return EMPTY_TEX_OUTLINE_HEADINGS;
 
   const livePreview = state.field(editorLivePreviewField, false) ?? false;
   const lineBuilder = new RangeSetBuilder<Decoration>();
   const inlineBuilder = new RangeSetBuilder<Decoration>();
   for (const hit of hits) {
-    const line = doc.line(hit.lineNumber);
-    const spans = matchTexSectionLineSpans(line.text);
-    if (!spans) continue;
-    // Skip empty titles like `\section{}`, matching parseTexSections.
-    if (
-      line.text
-        .slice(spans.titleBraceOpen + 1, spans.titleBraceClose)
-        .trim() === ""
-    ) {
-      continue;
-    }
-    const level = Math.max(1, Math.min(6, hit.latexLevel - minLevel + 1));
+    const { level, shellFrom, titleFrom, titleTo } = hit;
     lineBuilder.add(
-      line.from,
-      line.from,
+      hit.from,
+      hit.from,
       Decoration.line({ class: `HyperMD-header HyperMD-header-${level}` }),
     );
-    const shellFrom = line.from + spans.commandStart;
-    const titleFrom = line.from + spans.titleBraceOpen + 1;
-    const titleTo = line.from + spans.titleBraceClose;
     const hideShell =
-      livePreview && !selectionTouchesLine(state, line.from, line.to);
+      livePreview && !selectionTouchesLine(state, hit.from, hit.to);
     if (hideShell) {
       inlineBuilder.add(shellFrom, titleFrom, Decoration.replace({}));
     }
@@ -199,17 +219,19 @@ export function texOutlineHeadingPreview(
       class {
         private queued = false;
         private destroyed = false;
+        private applicable = false;
 
         constructor(private readonly view: EditorView) {
           this.queueRebuild();
         }
 
         update(update: ViewUpdate): void {
-          const before = update.startState.field(editorInfoField, false)?.file
-            ?.extension;
-          const after = update.state.field(editorInfoField, false)?.file
-            ?.extension;
-          if (update.docChanged || update.selectionSet || before !== after) {
+          const applicable = headingsApplicable(update.state, isEnabled);
+          const eligibilityChanged = applicable !== this.applicable;
+          this.applicable = applicable;
+          const previewChanged = update.startState.field(editorLivePreviewField, false) !==
+            update.state.field(editorLivePreviewField, false);
+          if (eligibilityChanged || (applicable && (update.docChanged || update.selectionSet || previewChanged))) {
             this.queueRebuild();
           }
         }
@@ -220,14 +242,18 @@ export function texOutlineHeadingPreview(
 
         private queueRebuild(): void {
           if (this.queued || this.destroyed) return;
+          this.applicable = headingsApplicable(this.view.state, isEnabled);
+          if (!this.applicable && this.view.state.field(texOutlineHeadingLineField).size === 0 &&
+            this.view.state.field(texOutlineHeadingInlineField).size === 0) return;
           this.queued = true;
           queueMicrotask(() => {
             this.queued = false;
             if (this.destroyed) return;
+            const next = buildTexOutlineHeadingDecorations(this.view.state, isEnabled);
+            if (RangeSet.eq([this.view.state.field(texOutlineHeadingLineField)], [next.lineDecorations]) &&
+              RangeSet.eq([this.view.state.field(texOutlineHeadingInlineField)], [next.inlineDecorations])) return;
             this.view.dispatch({
-              effects: updateTexOutlineHeadingsEffect.of(
-                buildTexOutlineHeadingDecorations(this.view.state, isEnabled),
-              ),
+              effects: updateTexOutlineHeadingsEffect.of(next),
             });
           });
         }

@@ -92,11 +92,6 @@
       "count": 4
     }
   },
-  "src/agent-integrations/dsh/runtime/process-discovery.ts": {
-    "@typescript-eslint/no-base-to-string": {
-      "count": 2
-    }
-  },
   "src/agent-integrations/dsh/runtime/process.ts": {
     "@typescript-eslint/prefer-promise-reject-errors": {
       "count": 1

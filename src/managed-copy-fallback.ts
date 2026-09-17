@@ -1438,6 +1438,9 @@ export class ManagedCopyWatchController {
   private pollTimer: ReturnType<typeof setInterval> | null = null;
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private pollFingerprint: string | null = null;
+  private checksumRun: Promise<void> | null = null;
+  private readonly checksumRequests = new Set<ManagedCopyWatchSide | "poll">();
+  private synchronizationGeneration = 0;
   private running: Promise<ManagedCopySyncResult | null> | null = null;
   private rerunRequested = false;
   private consecutiveStaleResults = 0;
@@ -1455,11 +1458,15 @@ export class ManagedCopyWatchController {
     const copy = resolveManagedCopyPath(scope, options.state.vaultPath, true);
     this.state = options.state;
     this.scopeInput = { hostId: scope.hostId, vaultRoot: scope.vaultRoot };
-    if (options.initialSynchronization) {
-      this.pollFingerprint = managedCopyChecksumFingerprint(
-        options.initialSynchronization,
-      );
-    }
+    // Only acknowledge content already known to have been synchronized. An
+    // asynchronous first read must not silently accept an intervening edit as
+    // its baseline (especially when native watch has missed that edit).
+    this.pollFingerprint = managedCopyChecksumFingerprint(
+      options.initialSynchronization ?? {
+        externalSha256: options.state.baselineSha256,
+        copySha256: options.state.baselineSha256,
+      },
+    );
     this.debounceMs = Math.max(0, options.debounceMs ?? 150);
     this.selfWriteSuppressionMs = Math.max(
       this.debounceMs * 4,
@@ -1536,7 +1543,13 @@ export class ManagedCopyWatchController {
       return this.running;
     }
 
-    const run = this.runSynchronization();
+    const run = (async () => {
+      // Monitoring and synchronization never hash the same mapping in parallel.
+      await this.checksumRun;
+      if (this.disposed) return null;
+      this.synchronizationGeneration++;
+      return this.runSynchronization();
+    })();
     this.running = run;
     try {
       return await run;
@@ -1548,12 +1561,15 @@ export class ManagedCopyWatchController {
         // cannot create an unbounded microtask loop.
         this.scheduleSynchronization();
       }
+      this.startRequestedChecksumCheck();
     }
   }
 
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    this.synchronizationGeneration++;
+    this.checksumRequests.clear();
     if (this.debounceTimer) {
       clearTimeout(this.debounceTimer);
       this.debounceTimer = null;
@@ -1594,14 +1610,6 @@ export class ManagedCopyWatchController {
 
   private startChecksumHeartbeat(): void {
     if (this.disposed || this.heartbeatTimer || this.pollTimer) return;
-    if (this.pollFingerprint === null) {
-      try {
-        this.pollFingerprint = this.readChecksumFingerprint();
-      } catch (error) {
-        this.pollFingerprint = null;
-        this.reportError(error);
-      }
-    }
     this.heartbeatTimer = setInterval(
       () => this.pollChecksums(),
       this.heartbeatIntervalMs,
@@ -1611,37 +1619,70 @@ export class ManagedCopyWatchController {
 
   private startChecksumPolling(): void {
     if (this.disposed || this.pollTimer) return;
-    if (this.pollFingerprint === null) {
-      try {
-        this.pollFingerprint = this.readChecksumFingerprint();
-      } catch (error) {
-        this.pollFingerprint = null;
-        this.reportError(error);
-      }
-    }
     this.pollTimer = setInterval(() => this.pollChecksums(), this.pollIntervalMs);
     this.pollTimer.unref?.();
   }
 
-  private readChecksumFingerprint(): string {
-    return this.targets.map((target) => {
-      const sha256 = regularFileSha256OrNull(target.absolutePath, target.side);
-      return `${target.side}:${sha256 ?? "missing"}`;
-    }).join("\0");
-  }
-
   private pollChecksums(): void {
     if (this.disposed) return;
-    let fingerprint: string;
+    this.checksumRequests.add("poll");
+    this.startRequestedChecksumCheck();
+  }
+
+  private startRequestedChecksumCheck(): void {
+    if (this.disposed || this.running || this.checksumRun || !this.checksumRequests.size) return;
+    const requests = new Set(this.checksumRequests);
+    this.checksumRequests.clear();
+    const generation = this.synchronizationGeneration;
+    this.checksumRun = this.checkRequestedChecksums(requests, generation).finally(() => {
+      this.checksumRun = null;
+      this.startRequestedChecksumCheck();
+    });
+  }
+
+  private async checkRequestedChecksums(
+    requests: ReadonlySet<ManagedCopyWatchSide | "poll">,
+    generation: number,
+  ): Promise<void> {
+    const poll = requests.has("poll");
+    const targets = this.targets.filter((target) => poll || requests.has(target.side));
+    const suppressions = new Map(this.suppressions);
     try {
-      fingerprint = this.readChecksumFingerprint();
+      // Wait for both streams even if one fails; a rejected stream must not
+      // release the single-flight slot while its sibling is still reading.
+      const settled = await Promise.allSettled(targets.map(async (target) => ({
+        target,
+        sha256: await regularFileSha256OrNullAsync(target.absolutePath, target.side),
+      })));
+      const hashes = settled.map((result) => {
+        if (result.status === "rejected") throw result.reason;
+        return result.value;
+      });
+      if (this.disposed) return;
+      if (generation !== this.synchronizationGeneration) {
+        for (const request of requests) this.checksumRequests.add(request);
+        return;
+      }
+      if (poll) {
+        const fingerprint = hashes.map(({ target, sha256 }) =>
+          `${target.side}:${sha256 ?? "missing"}`).join("\0");
+        if (fingerprint !== this.pollFingerprint) this.scheduleSynchronization(0);
+      }
+      for (const { target, sha256 } of hashes) {
+        if (!requests.has(target.side)) continue;
+        const suppression = suppressions.get(target.side);
+        if (suppression !== this.suppressions.get(target.side)) {
+          this.checksumRequests.add(target.side);
+        } else if (!suppression || suppression.expiresAt < Date.now() || sha256 !== suppression.sha256) {
+          this.suppressions.delete(target.side);
+          this.scheduleSynchronization();
+        }
+      }
     } catch (error) {
-      this.reportError(error);
+      if (this.disposed) return;
+      if (generation === this.synchronizationGeneration) this.reportError(error);
       this.scheduleSynchronization(0);
-      return;
     }
-    if (fingerprint === this.pollFingerprint) return;
-    this.scheduleSynchronization(0);
   }
 
   private refreshPollingFingerprint(
@@ -1669,26 +1710,16 @@ export class ManagedCopyWatchController {
     const matching = group.filter((target) =>
       sameWatchedFilename(target.filename, changedName));
     if (matching.length === 0) return;
-    if (matching.every((target) => this.isSuppressedSelfWrite(target))) return;
-    this.scheduleSynchronization();
-  }
-
-  private isSuppressedSelfWrite(target: ManagedCopyWatchTarget): boolean {
-    const suppression = this.suppressions.get(target.side);
-    if (!suppression) return false;
-    if (Date.now() > suppression.expiresAt) {
-      this.suppressions.delete(target.side);
-      return false;
+    for (const target of matching) {
+      const suppression = this.suppressions.get(target.side);
+      if (!suppression || Date.now() > suppression.expiresAt) {
+        this.suppressions.delete(target.side);
+        this.scheduleSynchronization();
+      } else {
+        this.checksumRequests.add(target.side);
+      }
     }
-    try {
-      return (
-        assertRegularFileOrMissing(target.absolutePath, target.side) === "file" &&
-        sha256File(target.absolutePath) === suppression.sha256
-      );
-    } catch {
-      this.suppressions.delete(target.side);
-      return false;
-    }
+    this.startRequestedChecksumCheck();
   }
 
   private scheduleSynchronization(delay = this.debounceMs): void {
@@ -1717,7 +1748,7 @@ export class ManagedCopyWatchController {
   }
 
   private async publishState(nextState: ManagedCopyState): Promise<void> {
-    if (nextState === this.state) return;
+    if (this.disposed || nextState === this.state) return;
     this.state = nextState;
     try {
       await this.options.onStateChange?.(nextState);
@@ -1727,6 +1758,7 @@ export class ManagedCopyWatchController {
   }
 
   private reportError(error: unknown): void {
+    if (this.disposed) return;
     try {
       this.options.onError?.(error);
     } catch {
@@ -1735,6 +1767,7 @@ export class ManagedCopyWatchController {
   }
 
   private async runSynchronization(): Promise<ManagedCopySyncResult | null> {
+    const generation = this.synchronizationGeneration;
     let result: ManagedCopySyncResult;
     try {
       result = synchronizeManagedCopy(this.state, this.scopeInput, {
@@ -1747,6 +1780,7 @@ export class ManagedCopyWatchController {
 
     this.rememberSelfWrite(result);
     await this.publishState(result.state);
+    if (this.disposed || generation !== this.synchronizationGeneration) return result;
     if (result.status === "stale") {
       this.consecutiveStaleResults++;
       if (this.consecutiveStaleResults <= MAX_IMMEDIATE_STALE_RETRIES) {
@@ -1787,6 +1821,7 @@ export class ManagedCopyWatchController {
         t("受管临时副本监听器已停止。"),
       );
     }
+    this.synchronizationGeneration++;
     const result = resolveManagedCopyConflict(
       conflict,
       this.scopeInput,
@@ -1806,6 +1841,7 @@ export class ManagedCopyWatchController {
     }
     if (result.status === "resolved-external" || result.status === "resolved-copy") {
       this.lastConflictKey = null;
+      this.refreshPollingFingerprint(result);
       await this.publishState(result.state);
     } else if (result.status === "stale") {
       this.lastConflictKey = null;

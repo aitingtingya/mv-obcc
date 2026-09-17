@@ -570,8 +570,7 @@ export const UI_SCRIPT_BODY = `
     configTag.insertAdjacentElement('afterend', group);
   }
 
-  function injectCatalogToolbar() {
-    const heading = document.querySelector('div[class*="_catalogHeading"]');
+  function injectCatalogToolbar(heading) {
     if (
       !heading ||
       heading.querySelector('.mv-aide-import-plugin-btn') ||
@@ -632,17 +631,16 @@ export const UI_SCRIPT_BODY = `
     heading.appendChild(importBtn);
   }
 
-  function scanCards() {
+  function scanCards(cards, heading) {
     if (!featurePolicy().pluginManagementUiEnabled) {
       document.querySelectorAll('.mv-aide-pm-btn-group, .mv-aide-import-plugin-btn, .mv-aide-open-folder-btn')
         .forEach(function(node) { node.remove(); });
       return;
     }
-    const cards = document.querySelectorAll('li[data-plugin-entry], li[class*="_card"], div[class*="_card"]');
     for (let i = 0; i < cards.length; i++) {
       injectCardButtons(cards[i]);
     }
-    injectCatalogToolbar();
+    injectCatalogToolbar(heading);
   }
 
   // ─────────────────────────────────────────────────────────────
@@ -688,7 +686,7 @@ export const UI_SCRIPT_BODY = `
     return btn;
   }
 
-  function injectSidebarNav() {
+  function injectSidebarNav(navList) {
     const policy = featurePolicy();
     if (!policy.skillManagementUiEnabled) {
       document.getElementById('mv-aide-nav-skills-btn')?.remove();
@@ -699,7 +697,6 @@ export const UI_SCRIPT_BODY = `
       if (activeCustomTab === 'subagents') closeCustomWorkbench();
     }
     if (!policy.skillManagementUiEnabled && !policy.presetManagementUiEnabled) return;
-    const navList = document.querySelector('div[class*="_navList"], nav div:has(button[class*="_navCell"])');
     if (!navList) return;
 
     // 严密排除自定义按钮，仅获取官方原生导航按钮
@@ -1335,28 +1332,84 @@ export const UI_SCRIPT_BODY = `
   // 4. Scan & Lifecycle Observer
   // ─────────────────────────────────────────────────────────────
 
-  function scanAll() {
-    scanCards();
-    injectSidebarNav();
+  const CARD_SELECTOR = 'li[data-plugin-entry], li[class*="_card"], div[class*="_card"]';
+  const NAV_SELECTOR = 'div[class*="_navList"], nav div:has(button[class*="_navCell"])';
+  const HEADING_SELECTOR = 'div[class*="_catalogHeading"]';
+  const ROOT_SELECTOR = CARD_SELECTOR + ', ' + NAV_SELECTOR + ', ' + HEADING_SELECTOR + ', div[class*="_options"]';
+  let roots = [];
+  let scanQueued = false;
+  let policySignature = '';
+  let scanningDisposed = false;
+  let fallbackTimer = null;
+
+  function currentPolicySignature() {
+    const policy = featurePolicy();
+    return [policy.pluginManagementUiEnabled, policy.skillManagementUiEnabled, policy.presetManagementUiEnabled].join(':');
   }
 
-  window.addEventListener('mv-aide:manager-feature-policy', scanAll);
+  function scanAll() {
+    if (scanningDisposed || !document.body) return;
+    roots = Array.from(document.querySelectorAll(ROOT_SELECTOR));
+    policySignature = currentPolicySignature();
+    scanCards(roots.filter(function(root) { return root.matches(CARD_SELECTOR); }), roots.find(function(root) { return root.matches(HEADING_SELECTOR); }));
+    injectSidebarNav(roots.find(function(root) { return root.matches(NAV_SELECTOR); }));
+  }
 
-  const observer = new MutationObserver(function() {
-    scanAll();
+  function scheduleScan() {
+    if (scanningDisposed || scanQueued) return;
+    scanQueued = true;
+    queueMicrotask(function() { scanQueued = false; scanAll(); });
+  }
+
+  function containsRoot(node) {
+    return node.nodeType === 1 && (node.matches(ROOT_SELECTOR) || node.querySelector(ROOT_SELECTOR));
+  }
+
+  window.addEventListener('mv-aide:manager-feature-policy', scheduleScan);
+  const observer = new MutationObserver(function(records) {
+    if (scanningDisposed) return;
+    const relevant = records.some(function(record) {
+      const target = record.target.nodeType === 1 ? record.target : record.target.parentElement;
+      if (target && roots.some(function(root) { return root.contains(target); })) return true;
+      if (record.type === 'attributes') return target && target.matches(ROOT_SELECTOR);
+      return Array.from(record.addedNodes).some(containsRoot) || Array.from(record.removedNodes).some(containsRoot);
+    });
+    if (relevant) scheduleScan();
   });
 
-  if (document.body) {
-    observer.observe(document.body, { childList: true, subtree: true });
+  function startObserving() {
+    observer.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['class', 'data-plugin-entry'] });
     scanAll();
-  } else {
-    document.addEventListener('DOMContentLoaded', function() {
-      observer.observe(document.body, { childList: true, subtree: true });
-      scanAll();
-    });
   }
 
-  setInterval(scanAll, 600);
+  if (document.body) {
+    startObserving();
+  } else {
+    document.addEventListener('DOMContentLoaded', startObserving, { once: true });
+  }
+
+  // Keep late-mount recovery, but an unchanged settings tree needs no rescan.
+  function checkRoots() {
+    if (scanningDisposed) return;
+    if (policySignature !== currentPolicySignature() || roots.some(function(root) { return !root.isConnected; }) ||
+        (roots.length === 0 && document.querySelector(ROOT_SELECTOR))) scheduleScan();
+  }
+  fallbackTimer = setInterval(checkRoots, 600);
+  window.addEventListener('pagehide', function() {
+    scanningDisposed = true;
+    observer.disconnect();
+    if (fallbackTimer !== null) clearInterval(fallbackTimer);
+    fallbackTimer = null;
+    window.removeEventListener('mv-aide:manager-feature-policy', scheduleScan);
+    document.removeEventListener('DOMContentLoaded', startObserving);
+  });
+  window.addEventListener('pageshow', function() {
+    if (!scanningDisposed) return;
+    scanningDisposed = false;
+    window.addEventListener('mv-aide:manager-feature-policy', scheduleScan);
+    startObserving();
+    fallbackTimer = setInterval(checkRoots, 600);
+  });
 })();
 `;
 

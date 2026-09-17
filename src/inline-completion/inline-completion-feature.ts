@@ -163,9 +163,9 @@ export class InlineCompletionFeature {
       this.armed ? "行内补全（点击关闭）" : "行内补全（点击开启）",
     );
     if (this.ribbonIconEl) {
-      this.ribbonIconEl.setAttribute("aria-label", tooltip);
-      this.ribbonIconEl.setAttribute("data-tooltip", tooltip);
-      this.ribbonIconEl.classList.toggle("is-active", this.armed);
+      if (this.ribbonIconEl.getAttribute("aria-label") !== tooltip) this.ribbonIconEl.setAttribute("aria-label", tooltip);
+      if (this.ribbonIconEl.getAttribute("data-tooltip") !== tooltip) this.ribbonIconEl.setAttribute("data-tooltip", tooltip);
+      if (this.ribbonIconEl.classList.contains("is-active") !== this.armed) this.ribbonIconEl.classList.toggle("is-active", this.armed);
       return;
     }
     this.ribbonIconEl = this.plugin.addRibbonIcon(

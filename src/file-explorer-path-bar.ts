@@ -113,9 +113,11 @@ export function filterBrowsableEntries<T extends BrowseEntry>(
   entries: readonly T[],
   showAll: boolean,
   canOpen: (name: string) => boolean,
+  showHidden = false,
 ): T[] {
   return entries.filter(
-    (entry) => entry.isFolder || showAll || canOpen(entry.name),
+    (entry) => (showHidden || !entry.name.startsWith(".")) &&
+      (entry.isFolder || showAll || canOpen(entry.name)),
   );
 }
 
@@ -130,11 +132,11 @@ export function sortBrowseEntries(
   return [...folders, ...files];
 }
 
-async function listBrowseEntries(dir: string): Promise<BrowseEntry[]> {
+export async function listBrowseEntries(dir: string, showHidden = false): Promise<BrowseEntry[]> {
   const dirents = await fs.promises.readdir(dir, { withFileTypes: true });
   const entries: BrowseEntry[] = [];
   for (const dirent of dirents) {
-    if (dirent.name.startsWith(".")) continue;
+    if (!showHidden && dirent.name.startsWith(".")) continue;
     const absolute = path.join(dir, dirent.name);
     try {
       const stat = await fs.promises.stat(absolute);
@@ -148,7 +150,7 @@ async function listBrowseEntries(dir: string): Promise<BrowseEntry[]> {
       // 文件可能在列举过程中被移动/删除，跳过
     }
   }
-  return sortBrowseEntries(entries).slice(0, MAX_BROWSE_ENTRIES);
+  return sortBrowseEntries(entries);
 }
 
 export interface BrowsePathStat {
@@ -166,7 +168,7 @@ function statBrowsePath(absolutePath: string): BrowsePathStat | null {
 }
 
 export interface FolderBrowseModalDependencies {
-  listEntries(dir: string): Promise<BrowseEntry[]>;
+  listEntries(dir: string, showHidden?: boolean): Promise<BrowseEntry[]>;
   openFile(absolutePath: string): Promise<DefaultFileOpenResult>;
   /** 恒用系统默认应用打开（文件行右侧「默认打开器打开」按钮）。 */
   openFileWithSystemApp(absolutePath: string): Promise<DefaultFileOpenResult>;
@@ -174,6 +176,8 @@ export interface FolderBrowseModalDependencies {
   canOpenFile(name: string): boolean;
   getShowAll(): boolean;
   setShowAll(value: boolean): void;
+  getShowHidden(): boolean;
+  setShowHidden(value: boolean): void;
   onEnterFolder(dir: string): void;
   statPath(absolutePath: string): BrowsePathStat | null;
   getQuickLocations(): BrowseLocation[];
@@ -193,6 +197,7 @@ export class FolderBrowseModal extends Modal {
   private currentDir: string;
   private readonly openingFiles = new Set<string>();
   private dismissDropdown: (() => void) | null = null;
+  private renderGeneration = 0;
 
   constructor(
     app: App,
@@ -201,6 +206,7 @@ export class FolderBrowseModal extends Modal {
   ) {
     super(app);
     this.currentDir = initialDir;
+    let showHidden = false;
     this.dependencies = {
       listEntries: listBrowseEntries,
       openFile: openFileWithDefaultApp,
@@ -209,6 +215,8 @@ export class FolderBrowseModal extends Modal {
       canOpenFile: () => true,
       getShowAll: () => true,
       setShowAll: () => undefined,
+      getShowHidden: () => showHidden,
+      setShowHidden: (value) => { showHidden = value; },
       onEnterFolder: () => undefined,
       statPath: statBrowsePath,
       getQuickLocations: () => [],
@@ -222,12 +230,14 @@ export class FolderBrowseModal extends Modal {
   }
 
   onClose(): void {
+    this.renderGeneration++;
     this.dismissDropdown?.();
     this.dismissDropdown = null;
     this.contentEl.empty();
   }
 
   private renderList(): void {
+    const generation = ++this.renderGeneration;
     const { contentEl } = this;
     this.dismissDropdown?.();
     this.dismissDropdown = null;
@@ -291,6 +301,22 @@ export class FolderBrowseModal extends Modal {
       this.renderList();
     });
 
+    const hiddenButton = headerEl.createEl("button", {
+      cls: "clickable-icon mv-aide-hidden-toggle",
+    });
+    hiddenButton.type = "button";
+    const showHidden = this.dependencies.getShowHidden();
+    setIcon(hiddenButton, showHidden ? "eye" : "eye-off");
+    const hiddenLabel = t("显示隐藏文件和文件夹");
+    hiddenButton.setAttribute("aria-label", hiddenLabel);
+    hiddenButton.setAttribute("aria-pressed", String(showHidden));
+    hiddenButton.title = hiddenLabel;
+    if (showHidden) hiddenButton.addClass("is-active");
+    hiddenButton.addEventListener("click", () => {
+      this.dependencies.setShowHidden(!this.dependencies.getShowHidden());
+      this.renderList();
+    });
+
     const revealLabel = t("在文件夹中显示");
     const revealDirButton = headerEl.createEl("button", {
       text: revealLabel,
@@ -302,14 +328,16 @@ export class FolderBrowseModal extends Modal {
     const listEl = contentEl.createDiv({ cls: "mv-aide-downloads-list" });
     listEl.setAttribute("aria-busy", "true");
     void this.dependencies
-      .listEntries(this.currentDir)
+      .listEntries(this.currentDir, showHidden)
       .then((entries) => {
+        if (generation !== this.renderGeneration) return;
         listEl.setAttribute("aria-busy", "false");
         const visible = filterBrowsableEntries(
           entries,
           this.dependencies.getShowAll(),
           this.dependencies.canOpenFile,
-        );
+          showHidden,
+        ).slice(0, MAX_BROWSE_ENTRIES);
         if (visible.length === 0) {
           listEl.createEl("p", {
             text: t("该目录为空或没有可显示的文件。"),
@@ -320,6 +348,7 @@ export class FolderBrowseModal extends Modal {
         for (const entry of visible) this.renderRow(listEl, entry);
       })
       .catch(() => {
+        if (generation !== this.renderGeneration) return;
         listEl.setAttribute("aria-busy", "false");
         listEl.createEl("p", {
           text: t("该目录为空或没有可显示的文件。"),
@@ -556,6 +585,7 @@ export class FileExplorerPathBarFeature {
   private enabled: boolean;
   private vaultRootPath: string | null;
   private recentPaths: string[] = [];
+  private showHidden = false;
   private buttons: HTMLElement[] = [];
 
   constructor(private readonly plugin: MvAideIdePlugin) {
@@ -644,6 +674,8 @@ export class FileExplorerPathBarFeature {
       canOpenFile: (name) => this.plugin.canOpenWithObsidian(name),
       getShowAll: () => this.plugin.getExternalListingShowAllFiles(),
       setShowAll: (value) => this.plugin.setExternalListingShowAllFiles(value),
+      getShowHidden: () => this.showHidden,
+      setShowHidden: (value) => { this.showHidden = value; },
       onEnterFolder: (dir) => {
         this.recentPaths = pushRecentPath(this.recentPaths, dir);
       },

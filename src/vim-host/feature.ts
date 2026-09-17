@@ -7,6 +7,8 @@ import {
   MarkdownView,
   normalizePath,
   TextFileView,
+  TFile,
+  type WorkspaceLeaf,
   type EventRef,
 } from "obsidian";
 import type { EditorState, Extension } from "@codemirror/state";
@@ -24,6 +26,7 @@ import { ensureContainedVaultDirectory } from "../external-file-mirror-path";
 import { loadVimrc } from "./vimrc-loader";
 import { compileVimRuntime } from "../vim/vimrc/runtime";
 import { isObsidianWorkspaceDragEvent } from "./workspace-drag";
+import { createVimClipboard } from "./clipboard";
 import type {
   VimFeatureHandle,
   VimFeatureHost,
@@ -57,6 +60,7 @@ class IndependentVimFeature implements VimFeatureHandle {
   private editorControllers: VimEditorControllerSet | null = null;
   private readonly runtimes = new Map<string, VimRuntimeConfig>();
   private readonly session = new VimSession();
+  private readonly clipboard = createVimClipboard();
   private watchers: fs.FSWatcher[] = [];
   private activeLeafEvent: EventRef | null = null;
   private rebuildTimer: number | null = null;
@@ -292,26 +296,108 @@ class IndependentVimFeature implements VimFeatureHandle {
       await info.save();
       return;
     }
-    const active = this.host.app.workspace.getActiveViewOfType(MarkdownView);
-    if (active?.file?.path && active.file.path === info?.file?.path) {
-      await active.save();
+    let owner: MarkdownView | undefined;
+    this.host.app.workspace.iterateAllLeaves((leaf) => {
+      if (leaf.view instanceof MarkdownView && leaf.view.containerEl.contains(view.dom)) owner = leaf.view;
+    });
+    if (owner) {
+      await owner.save();
       return;
     }
     throw new Error(t("无法保存当前 Vim 编辑器视图。"));
   }
 
   private hooksForView(view: EditorView) {
+    const leaf = (): WorkspaceLeaf => {
+      let found: WorkspaceLeaf | undefined;
+      this.host.app.workspace.iterateAllLeaves((candidate) => {
+        if (candidate.view.containerEl.contains(view.dom)) found = candidate;
+      });
+      if (!found) throw new Error(t("当前 Vim 编辑器已关闭或不再属于工作区。"));
+      return found;
+    };
+    const resolveFile = async (filePath: string): Promise<TFile> => {
+      const normalized = normalizePath(filePath);
+      const existing = this.host.app.metadataCache.getFirstLinkpathDest(normalized, currentFilePath(view));
+      if (existing) return existing;
+      if (normalized.startsWith("/") || normalized.split("/").includes("..")) throw new Error(t("Vim 文件路径必须位于当前仓库内。"));
+      return this.host.app.vault.create(normalized, "");
+    };
+    const captureOrigin = () => {
+      const target = leaf();
+      const originalView = target.view;
+      const filePath = currentFilePath(view);
+      return { target, check: () => {
+        if (!view.dom.isConnected || target.view !== originalView || !target.view.containerEl.contains(view.dom) || currentFilePath(view) !== filePath) {
+          throw new Error(t("当前 Vim 编辑器已关闭或切换文件，操作已取消。"));
+        }
+      } };
+    };
     return {
       saveCurrentView: async () => this.saveCurrentView(view),
       onQuit: async () => {
-        this.host.app.workspace.getMostRecentLeaf()?.detach();
+        leaf().detach();
       },
       onOpen: async (filePath: string) => {
-        await this.host.app.workspace.openLinkText(normalizePath(filePath), currentFilePath(view), false);
+        const { target, check } = captureOrigin();
+        const file = await resolveFile(filePath);
+        check();
+        await target.openFile(file);
       },
       onSplit: async (vertical: boolean, filePath?: string) => {
-        executeObsidianCommand(this.host.app, vertical ? "workspace:split-vertical" : "workspace:split-horizontal");
-        if (filePath) await this.host.app.workspace.openLinkText(normalizePath(filePath), currentFilePath(view), false);
+        const { target: origin, check } = captureOrigin();
+        const file = filePath ? await resolveFile(filePath) : (origin.view instanceof TextFileView ? origin.view.file : null);
+        check();
+        const target = this.host.app.workspace.createLeafBySplit(origin, vertical ? "vertical" : "horizontal");
+        if (file) await target.openFile(file);
+      },
+      onJumpToFile: async (filePath: string, position: number) => {
+        const { target, check } = captureOrigin();
+        const file = await resolveFile(filePath);
+        check();
+        await target.openFile(file);
+        if (!target.view.containerEl.isConnected || !(target.view instanceof TextFileView) || target.view.file !== file) return;
+        const editor = Reflect.get(target.view, "editor") as { offsetToPos(offset: number): { line: number; ch: number }; setCursor(position: { line: number; ch: number }): void } | undefined;
+        if (editor) editor.setCursor(editor.offsetToPos(position));
+      },
+      onWindowCommand: async (command: string, count: number) => {
+        const origin = leaf();
+        if (!["c", "q", "s", "v", "w", "W", "h", "j", "k", "l"].includes(command)) throw new Error(`Unsupported Vim window command: ${command}`);
+        if (command === "c" || command === "q") { origin.detach(); return; }
+        if (command === "s" || command === "v") {
+          const target = this.host.app.workspace.createLeafBySplit(origin, command === "v" ? "vertical" : "horizontal");
+          if (origin.view instanceof TextFileView && origin.view.file) await target.openFile(origin.view.file);
+          return;
+        }
+        const candidates: WorkspaceLeaf[] = [];
+        this.host.app.workspace.iterateAllLeaves((candidate) => {
+          if (candidate.view.containerEl.ownerDocument === view.dom.ownerDocument && candidate.view.containerEl.isShown()) candidates.push(candidate);
+        });
+        const current = candidates.indexOf(origin);
+        let target = candidates[(current + (command === "W" ? -count : count) + candidates.length) % candidates.length];
+        if (["h", "j", "k", "l"].includes(command)) {
+          const rect = origin.view.containerEl.getBoundingClientRect();
+          const x = rect.left + rect.width / 2;
+          const y = rect.top + rect.height / 2;
+          target = candidates.filter((candidate) => candidate !== origin).map((candidate) => {
+            const box = candidate.view.containerEl.getBoundingClientRect();
+            return { candidate, dx: box.left + box.width / 2 - x, dy: box.top + box.height / 2 - y };
+          }).filter((entry) => command === "h" ? entry.dx < 0 : command === "l" ? entry.dx > 0 : command === "k" ? entry.dy < 0 : entry.dy > 0)
+            .sort((a, b) => Math.hypot(a.dx, a.dy) - Math.hypot(b.dx, b.dy))[0]?.candidate;
+        }
+        if (target) this.host.app.workspace.setActiveLeaf(target, { focus: true });
+      },
+      onBufferCommand: async (command: string, argument?: string) => {
+        const { target: origin, check } = captureOrigin();
+        if (command === "bd" || command === "bdelete") { origin.detach(); return; }
+        if (argument) { const file = await resolveFile(argument); check(); await origin.openFile(file); return; }
+        const files: TFile[] = [];
+        this.host.app.workspace.iterateAllLeaves((candidate) => {
+          if (candidate.view instanceof TextFileView && candidate.view.file && !files.includes(candidate.view.file)) files.push(candidate.view.file);
+        });
+        const current = files.findIndex((file) => file.path === currentFilePath(view));
+        const file = files[(current + (command === "bp" || command === "bprevious" ? -1 : 1) + files.length) % files.length];
+        if (file) await origin.openFile(file);
       },
       onObsidianCommand: (id: string) => executeObsidianCommand(this.host.app, id),
       onExternalCommand: async (command: string) => {
@@ -319,8 +405,7 @@ class IndependentVimFeature implements VimFeatureHandle {
         const output = `${result.stdout}${result.stderr}`.trim();
         if (output) this.host.notify(output.slice(0, 4000), 8000);
       },
-      readClipboard: () => electronRuntime().clipboard.readText(),
-      writeClipboard: (text: string) => electronRuntime().clipboard.writeText(text),
+      clipboard: this.clipboard,
       onError: (message: string) => this.host.notify(message, 6000),
     };
   }
@@ -682,10 +767,10 @@ const VIM_STATUS_MODE_CLASSES = [
 
 function vimModeClass(status: VimStatus): string {
   if (status.mode === "insert") return "insert";
-  if (status.mode === "replace") return "replace";
+  if (status.mode === "replace" || status.mode === "virtual-replace") return "replace";
   if (status.mode === "operator-pending") return "operator";
   if (status.mode === "command-line") return "command";
-  if (status.mode.startsWith("visual")) return "visual";
+  if (status.mode.startsWith("visual") || status.mode.startsWith("select")) return "visual";
   return "normal";
 }
 

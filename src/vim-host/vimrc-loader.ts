@@ -38,7 +38,7 @@ export async function loadVimrc(options: VimrcLoaderOptions): Promise<LoadedVimr
   }
 
   return {
-    runtime: compileVimRuntime(directives),
+    runtime: compileVimRuntime(directives, diagnostics),
     diagnostics,
     loadedFiles,
   };

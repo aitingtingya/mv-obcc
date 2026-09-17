@@ -35,6 +35,7 @@ import {
   type LlmWebPendingInvoke,
 } from "./llm-web-menu-script";
 import { activeWorkspaceLeaf, isBrowserViewType } from "./workspace-context";
+import { snapshotWorkspaceLeaves } from "./workspace-leaves";
 import type { LlmPromptTemplate } from "./types";
 
 /** Minimum shape we need from an Obsidian Web Viewer view. */
@@ -62,6 +63,8 @@ interface SameOriginDocumentWatcher {
   pointerLeaf: WorkspaceLeaf | null;
   dispose(): void;
 }
+
+interface OwnedInterval { owner: Window; id: number }
 
 interface MarkdownEditTarget {
   editor: Editor;
@@ -140,7 +143,7 @@ function executeWebviewScript(
  */
 export class LlmFeature {
   private readonly boundContainers = new WeakSet<HTMLElement>();
-  private readonly watchedDocuments = new WeakSet<Document>();
+  private readonly pdfDocumentWatchers = new Map<Document, () => void>();
   private readonly lastSelectionByDoc = new WeakMap<Document, string>();
   private readonly webInstallLeaves = new Set<WorkspaceLeaf>();
   private readonly lastWebInstall = new WeakMap<WorkspaceLeaf, number>();
@@ -150,7 +153,10 @@ export class LlmFeature {
     WorkspaceLeaf,
     WebviewLifecycleListeners
   >();
-  private webPollTimer: number | null = null;
+  private webPollTimer: OwnedInterval | null = null;
+  private readonly menuPollInFlight = new WeakMap<WorkspaceLeaf, object>();
+  private readonly webDocumentRevision = new WeakMap<WorkspaceLeaf, number>();
+  private menuEpoch = 0;
 
   // ---- Independent hotkey-sync chain (parallel to the context-menu chain).
   // Does not share state with the web-menu fields above.
@@ -158,7 +164,7 @@ export class LlmFeature {
   private readonly lastHotkeyInstall = new WeakMap<WorkspaceLeaf, number>();
   /** Prevent concurrent executeJavaScript polls for the same webview. */
   private readonly hotkeyPollInFlight = new WeakSet<WorkspaceLeaf>();
-  private hotkeyPollTimer: number | null = null;
+  private hotkeyPollTimer: OwnedInterval | null = null;
 
   // ---- Independent dismiss-signal chain (parallel to menu/hotkey chains).
   // The webview is an isolated browsing context, so its pointerdown never
@@ -169,7 +175,7 @@ export class LlmFeature {
   private readonly lastWebDismissInstall = new WeakMap<WorkspaceLeaf, number>();
   /** Prevent concurrent executeJavaScript polls for the same webview. */
   private readonly webDismissPollInFlight = new WeakSet<WorkspaceLeaf>();
-  private webDismissPollTimer: number | null = null;
+  private webDismissPollTimer: OwnedInterval | null = null;
   private disposed = false;
 
   private currentSurface: LlmResultSurface | null = null;
@@ -193,7 +199,7 @@ export class LlmFeature {
   private readonly lastAutoTriggerInstall = new WeakMap<WorkspaceLeaf, number>();
   /** Prevent concurrent executeJavaScript polls for the same webview. */
   private readonly autoTriggerPollInFlight = new WeakSet<WorkspaceLeaf>();
-  private autoTriggerPollTimer: number | null = null;
+  private autoTriggerPollTimer: OwnedInterval | null = null;
   private readonly registeredLlmCommandIds = new Set<string>();
 
   constructor(private readonly plugin: MvAideIdePlugin) {}
@@ -269,20 +275,22 @@ export class LlmFeature {
   }
 
   /** Called periodically from main.ts's 500ms interval to catch late leaves. */
-  tick(): void {
-    this.sync();
-    this.pollWebMenus();
+  tick(snapshot?: readonly WorkspaceLeaf[]): void {
+    if (this.disposed) return;
+    this.sync(snapshot);
     // Keep the ribbon in sync with settings (template added/removed/disabled).
     this.refreshRibbon();
   }
 
   settingsChanged(): void {
+    this.menuEpoch++;
     this.refreshRibbon();
     this.sync();
   }
 
   /** Re-scan all leaves: attach PDF menus, install/cleanup web menus. */
-  private sync(): void {
+  private sync(snapshot?: readonly WorkspaceLeaf[]): void {
+    if (this.disposed) return;
     // When the feature is disabled, tear down any hotkey sync we may have
     // installed (the web-menu chain is handled by its own toggle below).
     if (!this.settings.enabled) {
@@ -291,6 +299,7 @@ export class LlmFeature {
       this.cleanupAllWebAutoTriggers();
       this.cleanupAllWebDismiss();
       this.cleanupSameOriginDocumentWatchers();
+      this.refreshPdfDocumentWatchers(new Set());
       this.cleanupAllWebviewLifecycles();
       this.stopPolling();
       return;
@@ -298,12 +307,14 @@ export class LlmFeature {
 
     const seenWebLeaves = new Set<WorkspaceLeaf>();
     const seenSameOriginDocuments = new Set<Document>();
-    this.app.workspace.iterateAllLeaves((leaf) => {
+    const seenPdfDocuments = new Set<Document>();
+    (snapshot ?? snapshotWorkspaceLeaves(this.app)).forEach((leaf) => {
       const viewType = leaf.view.getViewType();
       if (viewType !== "webviewer") {
         seenSameOriginDocuments.add(leaf.view.containerEl.ownerDocument);
       }
       if (viewType === "pdf") {
+        seenPdfDocuments.add(leaf.view.containerEl.ownerDocument);
         this.installPdfMenu(leaf);
       } else if (viewType === "webviewer") {
         seenWebLeaves.add(leaf);
@@ -319,6 +330,7 @@ export class LlmFeature {
       }
     });
     this.refreshSameOriginDocumentWatchers(seenSameOriginDocuments);
+    this.refreshPdfDocumentWatchers(seenPdfDocuments);
 
     // Cleanup scripts and lifecycle listeners for leaves that disappeared.
     for (const leaf of Array.from(this.webLifecycleLeaves)) {
@@ -367,18 +379,23 @@ export class LlmFeature {
     }
 
     // Start or stop the polling timer based on the toggle.
-    if (this.settings.webContextMenu) {
+    const hasWebTarget = seenWebLeaves.size > 0;
+    if (hasWebTarget && this.settings.webContextMenu) {
       this.ensurePolling();
     } else {
       this.stopPolling();
     }
 
-    // Hotkey polling runs whenever the feature is enabled.
-    this.ensureHotkeyPolling();
-    this.ensureWebDismissPolling();
+    if (hasWebTarget) {
+      this.ensureHotkeyPolling();
+      this.ensureWebDismissPolling();
+    } else {
+      this.stopHotkeyPolling();
+      this.stopWebDismissPolling();
+    }
 
     // Auto-trigger polling runs only while the session toggle is armed.
-    if (this.isAutoTriggerArmed()) {
+    if (hasWebTarget && this.isAutoTriggerArmed()) {
       this.ensureAutoTriggerPolling();
     } else {
       this.stopAutoTriggerPolling();
@@ -458,29 +475,39 @@ export class LlmFeature {
 
   // ---- PDF -----------------------------------------------------------------
 
+  private refreshPdfDocumentWatchers(documents: ReadonlySet<Document>): void {
+    for (const [document, dispose] of this.pdfDocumentWatchers) {
+      if (documents.has(document)) continue;
+      dispose();
+      this.pdfDocumentWatchers.delete(document);
+      this.lastSelectionByDoc.delete(document);
+    }
+  }
+
   private installPdfMenu(leaf: WorkspaceLeaf): void {
     const el = leaf.view.containerEl;
     const doc = el.ownerDocument;
 
     // Cache the latest non-empty selection so the contextmenu handler (which
     // fires before PDF.js commits the DOM selection) has something to consult.
-    if (!this.watchedDocuments.has(doc)) {
-      this.watchedDocuments.add(doc);
+    if (!this.pdfDocumentWatchers.has(doc)) {
       const listener = () => {
+        if (this.disposed || !this.settings.enabled) return;
         const text = doc.getSelection()?.toString() ?? "";
         if (text.trim()) this.lastSelectionByDoc.set(doc, text);
       };
       doc.addEventListener("selectionchange", listener);
-      // Best-effort cleanup is handled implicitly by plugin unload; PDF leaves
-      // are long-lived, mirroring selection-highlights.ts's pattern.
+      this.pdfDocumentWatchers.set(doc, () => doc.removeEventListener("selectionchange", listener));
     }
 
     if (this.boundContainers.has(el)) return;
     this.boundContainers.add(el);
     this.plugin.registerDomEvent(el, "contextmenu", (evt: MouseEvent) => {
+      if (this.disposed || !this.settings.enabled) return;
       // Prefer the synchronously-cached selection; PDF.js sets it on mouseup.
-      const cached = this.lastSelectionByDoc.get(doc);
-      const live = doc.getSelection()?.toString() ?? "";
+      const currentDocument = el.ownerDocument;
+      const cached = this.lastSelectionByDoc.get(currentDocument);
+      const live = currentDocument.getSelection()?.toString() ?? "";
       if (!cached && !live.trim()) return;
       evt.preventDefault();
       evt.stopPropagation();
@@ -498,6 +525,7 @@ export class LlmFeature {
     if (!webview || typeof webview.addEventListener !== "function") return;
 
     const domReady = () => {
+      this.invalidateWebDocument(leaf);
       this.webReadyLeaves.add(leaf);
       this.lastWebInstall.set(leaf, 0);
       this.lastHotkeyInstall.set(leaf, 0);
@@ -509,6 +537,7 @@ export class LlmFeature {
       if (this.isAutoTriggerArmed()) this.installWebAutoTrigger(leaf);
     };
     const didStartLoading = () => {
+      this.invalidateWebDocument(leaf);
       this.webReadyLeaves.delete(leaf);
       this.webInstallLeaves.delete(leaf);
       this.hotkeyInstallLeaves.delete(leaf);
@@ -526,6 +555,7 @@ export class LlmFeature {
   }
 
   private detachWebviewLifecycle(leaf: WorkspaceLeaf): void {
+    this.invalidateWebDocument(leaf);
     const webview = (leaf.view as WebViewerLike).webview;
     const listeners = this.webLifecycleListeners.get(leaf);
     if (
@@ -582,6 +612,8 @@ export class LlmFeature {
     const view = leaf.view as WebViewerLike;
     const webview = view.webview;
     if (!webview) return;
+    const epoch = this.menuEpoch;
+    const revision = this.webDocumentRevision.get(leaf);
     // Only enabled templates participate in the in-page menu; their indices
     // must line up with the lookup in pollWebMenus().
     const activeTemplates = this.settings.templates.filter((t) => t.enabled);
@@ -595,6 +627,8 @@ export class LlmFeature {
       .then((result) => {
         if (
           result === WEBVIEW_EXECUTION_FAILED ||
+          this.disposed || !this.settings.enabled || !this.settings.webContextMenu ||
+          epoch !== this.menuEpoch || revision !== this.webDocumentRevision.get(leaf) || view.webview !== webview ||
           !this.isWebviewReady(leaf)
         ) {
           return;
@@ -604,6 +638,7 @@ export class LlmFeature {
   }
 
   private async uninstallWebMenu(leaf: WorkspaceLeaf): Promise<void> {
+    this.menuPollInFlight.delete(leaf);
     const view = leaf.view as WebViewerLike;
     const webview = view.webview;
     this.webInstallLeaves.delete(leaf);
@@ -612,6 +647,8 @@ export class LlmFeature {
   }
 
   private cleanupAllWebMenus(): void {
+    this.menuEpoch++;
+    for (const leaf of this.webLifecycleLeaves) this.menuPollInFlight.delete(leaf);
     for (const leaf of Array.from(this.webInstallLeaves)) {
       void this.uninstallWebMenu(leaf);
     }
@@ -619,31 +656,42 @@ export class LlmFeature {
 
   private ensurePolling(): void {
     if (this.webPollTimer !== null) return;
-    this.webPollTimer = activeWindow.setInterval(
-      () => this.pollWebMenus(),
-      WEB_POLL_INTERVAL_MS,
-    );
-    // registerInterval enables cleanup on plugin unload.
-    this.webPollTimer = this.plugin.registerInterval(this.webPollTimer);
+    this.webPollTimer = this.startOwnedInterval(() => this.pollWebMenus(), WEB_POLL_INTERVAL_MS);
+  }
+
+  private startOwnedInterval(callback: () => void, delay: number): OwnedInterval {
+    const owner = window;
+    return { owner, id: this.plugin.registerInterval(owner.setInterval(callback, delay)) };
+  }
+
+  private invalidateWebDocument(leaf: WorkspaceLeaf): void {
+    this.webDocumentRevision.set(leaf, (this.webDocumentRevision.get(leaf) ?? 0) + 1);
+    this.menuPollInFlight.delete(leaf);
   }
 
   private stopPolling(): void {
     if (this.webPollTimer !== null) {
-      activeWindow.clearInterval(this.webPollTimer);
+      this.webPollTimer.owner.clearInterval(this.webPollTimer.id);
       this.webPollTimer = null;
     }
   }
 
   private pollWebMenus(): void {
-    if (!this.settings.enabled || !this.settings.webContextMenu) return;
+    if (this.disposed || !this.settings.enabled || !this.settings.webContextMenu) return;
     const active = this.app.workspace.getMostRecentLeaf();
     if (!active || active.view.getViewType() !== "webviewer") return;
     const view = active.view as WebViewerLike;
     const webview = view.webview;
-    if (!webview || !this.isWebviewReady(active)) return;
+    if (!webview || !this.isWebviewReady(active) || this.menuPollInFlight.has(active)) return;
+    const token = {};
+    const epoch = this.menuEpoch;
+    const revision = this.webDocumentRevision.get(active);
+    this.menuPollInFlight.set(active, token);
     void executeWebviewScript(webview, llmWebMenuPollScript())
       .then((result) => {
-        if (result === WEBVIEW_EXECUTION_FAILED) return;
+        if (result === WEBVIEW_EXECUTION_FAILED || this.disposed || !this.settings.enabled || !this.settings.webContextMenu ||
+          epoch !== this.menuEpoch || revision !== this.webDocumentRevision.get(active) || view.webview !== webview ||
+          this.menuPollInFlight.get(active) !== token) return;
         const pending = result as LlmWebPendingInvoke | null;
         if (!pending || !pending.selection || !pending.selection.trim()) return;
         // Page-side indices are relative to enabled templates only.
@@ -656,6 +704,9 @@ export class LlmFeature {
       })
       .catch(() => {
         // ignore transient webview errors
+      })
+      .finally(() => {
+        if (this.menuPollInFlight.get(active) === token) this.menuPollInFlight.delete(active);
       });
   }
 
@@ -721,16 +772,12 @@ export class LlmFeature {
 
   private ensureHotkeyPolling(): void {
     if (this.hotkeyPollTimer !== null) return;
-    const id = activeWindow.setInterval(
-      () => this.pollWebHotkeys(),
-      HOTKEY_POLL_INTERVAL_MS,
-    );
-    this.hotkeyPollTimer = this.plugin.registerInterval(id);
+    this.hotkeyPollTimer = this.startOwnedInterval(() => this.pollWebHotkeys(), HOTKEY_POLL_INTERVAL_MS);
   }
 
   private stopHotkeyPolling(): void {
     if (this.hotkeyPollTimer !== null) {
-      activeWindow.clearInterval(this.hotkeyPollTimer);
+      this.hotkeyPollTimer.owner.clearInterval(this.hotkeyPollTimer.id);
       this.hotkeyPollTimer = null;
     }
   }
@@ -792,16 +839,12 @@ export class LlmFeature {
 
   private ensureWebDismissPolling(): void {
     if (this.webDismissPollTimer !== null) return;
-    const id = window.setInterval(
-      () => this.pollWebDismiss(),
-      WEB_DISMISS_POLL_INTERVAL_MS,
-    );
-    this.webDismissPollTimer = this.plugin.registerInterval(id);
+    this.webDismissPollTimer = this.startOwnedInterval(() => this.pollWebDismiss(), WEB_DISMISS_POLL_INTERVAL_MS);
   }
 
   private stopWebDismissPolling(): void {
     if (this.webDismissPollTimer !== null) {
-      window.clearInterval(this.webDismissPollTimer);
+      this.webDismissPollTimer.owner.clearInterval(this.webDismissPollTimer.id);
       this.webDismissPollTimer = null;
     }
   }
@@ -876,6 +919,7 @@ export class LlmFeature {
     this.cleanupAllWebAutoTriggers();
     this.cleanupAllWebDismiss();
     this.cleanupSameOriginDocumentWatchers();
+    this.refreshPdfDocumentWatchers(new Set());
     this.cleanupAllWebviewLifecycles();
     this.stopPolling();
     this.removeRibbon();
@@ -928,16 +972,12 @@ export class LlmFeature {
 
   private ensureAutoTriggerPolling(): void {
     if (this.autoTriggerPollTimer !== null) return;
-    const id = window.setInterval(
-      () => this.pollWebAutoTrigger(),
-      AUTOTRIGGER_POLL_INTERVAL_MS,
-    );
-    this.autoTriggerPollTimer = this.plugin.registerInterval(id);
+    this.autoTriggerPollTimer = this.startOwnedInterval(() => this.pollWebAutoTrigger(), AUTOTRIGGER_POLL_INTERVAL_MS);
   }
 
   private stopAutoTriggerPolling(): void {
     if (this.autoTriggerPollTimer !== null) {
-      window.clearInterval(this.autoTriggerPollTimer);
+      this.autoTriggerPollTimer.owner.clearInterval(this.autoTriggerPollTimer.id);
       this.autoTriggerPollTimer = null;
     }
   }
@@ -1004,9 +1044,9 @@ export class LlmFeature {
       { label: tpl.label },
     );
     if (this.ribbonIconEl) {
-      this.ribbonIconEl.setAttribute("aria-label", tooltip);
-      this.ribbonIconEl.setAttribute("data-tooltip", tooltip);
-      this.ribbonIconEl.classList.toggle("is-active", this.autoTriggerActive);
+      if (this.ribbonIconEl.getAttribute("aria-label") !== tooltip) this.ribbonIconEl.setAttribute("aria-label", tooltip);
+      if (this.ribbonIconEl.getAttribute("data-tooltip") !== tooltip) this.ribbonIconEl.setAttribute("data-tooltip", tooltip);
+      if (this.ribbonIconEl.classList.contains("is-active") !== this.autoTriggerActive) this.ribbonIconEl.classList.toggle("is-active", this.autoTriggerActive);
       return;
     }
     this.ribbonIconEl = this.plugin.addRibbonIcon(

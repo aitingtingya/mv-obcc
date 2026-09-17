@@ -1569,7 +1569,8 @@ body.mv-aide-hide-obsidian-native-status-bar .status-bar {
 }
 
 /* 「全量显示」过滤开关激活态（目录浏览弹窗 / 下载弹窗共用）。 */
-.mv-aide-filter-toggle.is-active {
+.mv-aide-filter-toggle.is-active,
+.mv-aide-hidden-toggle.is-active {
   color: var(--text-accent);
   background: var(--background-modifier-hover);
 }

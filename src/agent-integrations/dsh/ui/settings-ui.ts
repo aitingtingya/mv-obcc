@@ -441,7 +441,7 @@ export function renderDshSection(
     const update = environment.updates[layer];
     const setting = new Setting(installEl)
       .setName(name)
-      .setDesc(update.error || status.commandPath || status.detail || t("点击“检测”刷新实际状态。"))
+      .setDesc([status.commandPath, status.detail, update.error].filter(Boolean).join(" · ") || t("点击“检测”刷新实际状态。"))
       .addButton((button) => {
         environmentButtons.push(button);
         const sourceDshReady = layer === "dsh" && locations.custom?.state === "ready";

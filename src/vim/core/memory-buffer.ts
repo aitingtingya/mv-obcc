@@ -20,6 +20,7 @@ export class MemoryVimBuffer implements VimBuffer {
   private readonly redoStack: Snapshot[] = [];
   private historyGroupSnapshot: Snapshot | null = null;
   private historyGroupRecorded = false;
+  private historyDepth = 0;
 
   constructor(value = "", cursor = 0, readonly id = "memory") {
     this.value = value;
@@ -135,12 +136,14 @@ export class MemoryVimBuffer implements VimBuffer {
   }
 
   beginHistoryGroup(): void {
-    if (this.historyGroupSnapshot) return;
+    if (this.historyDepth++ > 0) return;
     this.historyGroupSnapshot = this.snapshot();
     this.historyGroupRecorded = false;
   }
 
   endHistoryGroup(): void {
+    if (this.historyDepth > 0) this.historyDepth -= 1;
+    if (this.historyDepth > 0) return;
     this.historyGroupSnapshot = null;
     this.historyGroupRecorded = false;
   }

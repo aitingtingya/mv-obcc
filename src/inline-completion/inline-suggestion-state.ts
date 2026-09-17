@@ -58,6 +58,7 @@ export const inlineSuggestionField = StateField.define<InlineSuggestionValue | n
 
 /** Imperatively clear the current suggestion on a view. */
 export function clearSuggestion(view: EditorView): void {
+  if (view.state.field(inlineSuggestionField, false) == null) return;
   view.dispatch({
     effects: InlineSuggestionEffect.of(null),
   });

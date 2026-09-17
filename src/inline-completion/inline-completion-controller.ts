@@ -2,7 +2,7 @@ import { Prec, type Extension } from "@codemirror/state";
 import { EditorView, ViewPlugin, type ViewUpdate } from "@codemirror/view";
 
 import type { InlineCompletionKeymap } from "../types";
-import { inlineSuggestionField, InlineSuggestionEffect } from "./inline-suggestion-state";
+import { clearSuggestion, inlineSuggestionField, InlineSuggestionEffect } from "./inline-suggestion-state";
 import { inlineSuggestionPlugin } from "./inline-suggestion-view";
 import {
   buildKeymapExtension,
@@ -96,7 +96,7 @@ export class InlineCompletionController {
 
   /** Clear the suggestion on a specific view. */
   clearSuggestion(view: EditorView): void {
-    view.dispatch({ effects: InlineSuggestionEffect.of(null) });
+    clearSuggestion(view);
   }
 
   /** Clear suggestions across all live views. */

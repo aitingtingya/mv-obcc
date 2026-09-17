@@ -12,12 +12,14 @@ import {
 } from "./plugin-bundle";
 import {
   dshPluginBundleFingerprint,
+  DSH_PLUGIN_BUNDLE_MARKER,
   installedDshPluginBundleMatches,
   readDshPluginBundleMarker,
   writeDshPluginBundleMarker,
 } from "./plugin-integrity";
 import { compareRuntimeVersions } from "../runtime/package-update";
 import type { DshCommand } from "../runtime/process";
+import { dshRuntimeIdentityKey } from "../runtime/runtime-owner";
 import {
   dshAgentPackageDirectory,
   dshCompatPackageDirectory,
@@ -710,7 +712,45 @@ interface LoadedPluginInspection {
   detail: string;
 }
 
-async function inspectLoadedPlugins(command: DshCommand): Promise<LoadedPluginInspection> {
+/**
+ * `dsh --profile web --dump-config` is a full dsh CLI boot and runs three
+ * times per healthy open/restart (inspect → ensure → verify). The dump only
+ * changes when the command or the profile composition inputs change, so the
+ * result is memoized on the command identity plus the mtimes/sizes of every
+ * file mv-AIDE itself writes (patch, profile manifest, bundle markers) — any
+ * injection write invalidates the entry — with a short TTL bounding external
+ * edits. Concurrent callers share the in-flight dump.
+ */
+const LOADED_PLUGINS_CACHE_TTL_MS = 5000;
+let loadedPluginsCache: {
+  readonly key: string;
+  readonly at: number;
+  readonly promise: Promise<LoadedPluginInspection>;
+} | null = null;
+
+async function loadedPluginsCacheKey(command: DshCommand): Promise<string> {
+  const home = resolveDshHomeDirectory(command.homeDirectory, command.env);
+  const watched = [
+    dshWebProfilePatchPath(home),
+    path.join(dshWebProfileDirectory(home), "package.json"),
+    path.join(dshAgentPackageDirectory(home), DSH_PLUGIN_BUNDLE_MARKER),
+    path.join(dshManagerPackageDirectory(home), DSH_PLUGIN_BUNDLE_MARKER),
+    path.join(dshSubworkspacePackageDirectory(home), DSH_PLUGIN_BUNDLE_MARKER),
+    path.join(dshCompatPackageDirectory(home), DSH_PLUGIN_BUNDLE_MARKER),
+    // The dump output also depends on the dsh package code itself: a package
+    // upgrade (or any rewrite of the entry script) must invalidate the entry
+    // even when the profile files stay untouched.
+    command.executable,
+    ...command.argsPrefix.filter((argument) => path.isAbsolute(argument)),
+  ];
+  const stats = await Promise.all(watched.map(async (file) => {
+    const stat = await fs.stat(file).catch(() => null);
+    return stat ? `${Math.round(stat.mtimeMs)}:${stat.size}` : "-";
+  }));
+  return [dshRuntimeIdentityKey(command), ...stats].join("|");
+}
+
+async function dumpLoadedPlugins(command: DshCommand): Promise<LoadedPluginInspection> {
   const result = await runProcess(
     command.executable,
     [...command.argsPrefix, "--profile", "web", "--dump-config"],
@@ -725,6 +765,21 @@ async function inspectLoadedPlugins(command: DshCommand): Promise<LoadedPluginIn
       || detail.includes(DSH_SUBWORKSPACE_PLUGIN_NAME),
     detail,
   };
+}
+
+async function inspectLoadedPlugins(command: DshCommand): Promise<LoadedPluginInspection> {
+  const now = Date.now();
+  const key = await loadedPluginsCacheKey(command);
+  if (
+    loadedPluginsCache
+    && loadedPluginsCache.key === key
+    && now - loadedPluginsCache.at < LOADED_PLUGINS_CACHE_TTL_MS
+  ) {
+    return loadedPluginsCache.promise;
+  }
+  const promise = dumpLoadedPlugins(command);
+  loadedPluginsCache = { key, at: now, promise };
+  return promise;
 }
 
 function requireActuallyLoaded(

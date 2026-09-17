@@ -54,6 +54,8 @@ window.__ModuleLoader__.load({
       let observer = null;
       let disposed = false;
       let styleSheet = null;
+      let mountQueued = false;
+      const ROW_SELECTOR = '[role="treeitem"][aria-expanded]';
 
       function ensureStyle() {
         if (styleSheet || typeof window.CSSStyleSheet !== 'function') return;
@@ -93,7 +95,7 @@ window.__ModuleLoader__.load({
       }
 
       function workspaceRows() {
-        return [...document.querySelectorAll('[role="treeitem"][aria-expanded]')]
+        return [...document.querySelectorAll(ROW_SELECTOR)]
           .map((row) => ({ row, actions: actionContainer(row) }))
           .filter((entry) => entry.actions !== null);
       }
@@ -382,7 +384,7 @@ window.__ModuleLoader__.load({
             const plus = nativeButtons[nativeButtons.length - 1];
             actions.insertBefore(button, plus ?? null);
           }
-          button.dataset.primary = item.path;
+          if (button.dataset.primary !== item.path) button.dataset.primary = item.path;
         }
         if (anchor && !anchor.isConnected) closePopover();
       }
@@ -393,19 +395,36 @@ window.__ModuleLoader__.load({
         closePopover();
       }
 
+      function scheduleMount() {
+        if (disposed || mountQueued) return;
+        mountQueued = true;
+        queueMicrotask(() => { mountQueued = false; mountButtons(); });
+      }
+
+      function containsWorkspaceRow(node) {
+        return node.nodeType === 1 && (node.matches(ROW_SELECTOR) || node.querySelector(ROW_SELECTOR));
+      }
+
       function keydown(event) {
         if (event.key === 'Escape' && popover) closePopover();
       }
 
       ensureStyle();
-      const unsubscribe = workspaces.list.subscribe(mountButtons);
-      observer = new MutationObserver(mountButtons);
-      observer.observe(document.body, { childList: true, subtree: true });
+      const unsubscribe = workspaces.list.subscribe(scheduleMount);
+      observer = new MutationObserver((records) => {
+        if (records.some((record) => {
+          const target = record.target.nodeType === 1 ? record.target : record.target.parentElement;
+          if (target?.closest(ROW_SELECTOR)) return true;
+          if (record.type === 'attributes') return false;
+          return [...record.addedNodes].some(containsWorkspaceRow) || [...record.removedNodes].some(containsWorkspaceRow);
+        }) || (anchor && !anchor.isConnected)) scheduleMount();
+      });
+      observer.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['role', 'aria-expanded'] });
       document.addEventListener('pointerdown', outsidePointer, true);
       document.addEventListener('keydown', keydown, true);
       window.addEventListener('resize', keepPopoverInViewport, { passive: true });
       window.addEventListener('scroll', keepPopoverInViewport, { capture: true, passive: true });
-      queueMicrotask(mountButtons);
+      scheduleMount();
 
       ctx.effect?.(() => () => {
         disposed = true;

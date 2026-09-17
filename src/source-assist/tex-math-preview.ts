@@ -185,7 +185,9 @@ export function buildTexMathVisualDecorations(
 function buildTexMathVisualDecorationsUnsafe(
   state: EditorState,
 ): DecorationSet {
-  if (editorExtension(state) !== "tex") return Decoration.none;
+  // Source mode must not create either replacement widgets or editing previews.
+  // This also gates the transaction dispatched by a late MathJax load.
+  if (editorExtension(state) !== "tex" || !isLivePreview(state)) return Decoration.none;
 
   const builder = new RangeSetBuilder<Decoration>();
   const regions = texMathRegions(state);

@@ -1,4 +1,4 @@
-import { tokenizeVimKeys } from "../core/engine";
+import { tokenizeVimKeys } from "../core/keys";
 import type {
   VimAutocmdEvent,
   VimMapping,
@@ -256,12 +256,14 @@ function splitFirstArgument(value: string): { first: string; rest: string } | nu
 
 function modesForMapCommand(command: string): readonly VimMode[] | null {
   const modes: Record<string, readonly VimMode[]> = {
-    map: ["normal", "visual", "visual-line", "visual-block", "operator-pending"],
-    noremap: ["normal", "visual", "visual-line", "visual-block", "operator-pending"],
+    map: ["normal", "visual", "visual-line", "visual-block", "select", "select-line", "select-block", "operator-pending"],
+    noremap: ["normal", "visual", "visual-line", "visual-block", "select", "select-line", "select-block", "operator-pending"],
     nmap: ["normal"],
     nnoremap: ["normal"],
-    vmap: ["visual", "visual-line", "visual-block"],
-    vnoremap: ["visual", "visual-line", "visual-block"],
+    vmap: ["visual", "visual-line", "visual-block", "select", "select-line", "select-block"],
+    vnoremap: ["visual", "visual-line", "visual-block", "select", "select-line", "select-block"],
+    smap: ["select", "select-line", "select-block"],
+    snoremap: ["select", "select-line", "select-block"],
     xmap: ["visual", "visual-line", "visual-block"],
     xnoremap: ["visual", "visual-line", "visual-block"],
     omap: ["operator-pending"],
@@ -276,9 +278,10 @@ function modesForMapCommand(command: string): readonly VimMode[] | null {
 
 function modesForUnmapCommand(command: string): readonly VimMode[] | null {
   const modes: Record<string, readonly VimMode[]> = {
-    unmap: ["normal", "visual", "visual-line", "visual-block", "operator-pending"],
+    unmap: ["normal", "visual", "visual-line", "visual-block", "select", "select-line", "select-block", "operator-pending"],
     nunmap: ["normal"],
-    vunmap: ["visual", "visual-line", "visual-block"],
+    vunmap: ["visual", "visual-line", "visual-block", "select", "select-line", "select-block"],
+    sunmap: ["select", "select-line", "select-block"],
     xunmap: ["visual", "visual-line", "visual-block"],
     ounmap: ["operator-pending"],
     iunmap: ["insert"],

@@ -1,7 +1,13 @@
+import type { VimDocumentSnapshot } from "./document";
+
 export type VimMode =
   | "normal"
   | "insert"
   | "replace"
+  | "virtual-replace"
+  | "select"
+  | "select-line"
+  | "select-block"
   | "visual"
   | "visual-line"
   | "visual-block"
@@ -63,7 +69,10 @@ export interface VimBuffer {
   readonly id: string;
   readonly length: number;
   readonly lineCount: number;
+  readonly readOnly?: boolean;
+  updateOptions?(options: Readonly<VimOptions>): void;
   text(from?: number, to?: number): string;
+  documentSnapshot?(): VimDocumentSnapshot;
   line(number: number): VimLine;
   lineAt(position: number): VimLine;
   selections(): readonly VimSelection[];
@@ -76,11 +85,17 @@ export interface VimBuffer {
   endHistoryGroup(): void;
   undo(): boolean;
   redo(): boolean;
+  displayLineMotion?(position: number, direction: -1 | 1, count: number): number;
+  viewportMotion?(position: number, command: string, count: number): number;
+  reindent?(from: number, to: number): readonly VimEdit[];
+  fold?(position: number, command: string): void;
+  highlightSearch?(ranges: readonly { from: number; to: number }[]): void;
 }
 
 export interface VimRegister {
   text: string;
   kind: VimRegisterKind;
+  blockWidth?: number;
 }
 
 export interface VimOptions {
@@ -93,7 +108,17 @@ export interface VimOptions {
   number: boolean;
   relativenumber: boolean;
   timeoutlen: number;
-  clipboard: "" | "unnamed" | "unnamedplus";
+  clipboard: "" | "unnamed" | "unnamedplus" | "unnamed,unnamedplus";
+  softtabstop: number;
+  autoindent: boolean;
+  textwidth: number;
+  wrapscan: boolean;
+  hlsearch: boolean;
+  incsearch: boolean;
+  magic: boolean;
+  scrolloff: number;
+  maxmapdepth: number;
+  iskeyword: string;
 }
 
 export const DEFAULT_VIM_OPTIONS: VimOptions = {
@@ -107,6 +132,17 @@ export const DEFAULT_VIM_OPTIONS: VimOptions = {
   relativenumber: false,
   timeoutlen: 1000,
   clipboard: "",
+  softtabstop: 0,
+  // Existing o/O commands inherited indentation before this option was exposed.
+  autoindent: true,
+  textwidth: 0,
+  wrapscan: true,
+  hlsearch: false,
+  incsearch: false,
+  magic: true,
+  scrolloff: 0,
+  maxmapdepth: 1000,
+  iskeyword: "@,48-57,_,192-255",
 };
 
 export interface VimMapping {
@@ -124,6 +160,7 @@ export interface VimAbbreviation {
 }
 
 export interface VimRuntimeConfig {
+  mapleader?: string;
   options: VimOptions;
   mappings: readonly VimMapping[];
   abbreviations: readonly VimAbbreviation[];
@@ -160,11 +197,21 @@ export interface VimEngineHooks {
   onQuit?: (force: boolean) => void | Promise<void>;
   onOpen?: (path: string) => void | Promise<void>;
   onSplit?: (vertical: boolean, path?: string) => void | Promise<void>;
+  onWindowCommand?: (command: string, count: number) => void | Promise<void>;
+  onBufferCommand?: (command: string, argument?: string) => void | Promise<void>;
+  onJumpToFile?: (bufferId: string, position: number) => void | Promise<void>;
   onObsidianCommand?: (id: string) => boolean | Promise<boolean>;
   onExternalCommand?: (command: string) => void | Promise<void>;
-  readClipboard?: () => string;
-  writeClipboard?: (text: string) => void;
+  readClipboard?: (register?: "+" | "*") => string;
+  writeClipboard?: (text: string, register?: "+" | "*") => void;
+  clipboard?: VimClipboard;
   onError?: (message: string) => void;
+}
+
+/** Clipboard transport is owned by the desktop host, never by the text core. */
+export interface VimClipboard {
+  read(register: "+" | "*"): VimRegister | Promise<VimRegister>;
+  write(register: "+" | "*", value: VimRegister): void | Promise<void>;
 }
 
 export interface VimHandleResult {

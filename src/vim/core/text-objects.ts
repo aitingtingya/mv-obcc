@@ -1,4 +1,6 @@
 import type { VimBuffer } from "./types";
+import { characterAt, characterStart, nextCharacter, previousCharacter } from "./characters";
+import { wordClass } from "./keywords";
 
 export interface VimTextObjectRange {
   from: number;
@@ -12,12 +14,14 @@ export function textObjectRange(
   object: string,
   around: boolean,
   count = 1,
+  iskeyword?: string,
 ): VimTextObjectRange | null {
   if (object === "w" || object === "W") {
-    return wordObject(buffer.text(), cursor, around, object === "W", count);
+    return wordObject(buffer.text(), cursor, around, object === "W", count, iskeyword);
   }
   if (object === "p") return paragraphObject(buffer, cursor, around, count);
   if (object === "s") return sentenceObject(buffer.text(), cursor, around, count);
+  if (object === "t") return tagObject(buffer.text(), cursor, around, count);
   const delimiter = delimiterPair(object);
   if (delimiter) {
     return pairObject(buffer.text(), cursor, delimiter[0], delimiter[1], around, count);
@@ -28,28 +32,42 @@ export function textObjectRange(
   return null;
 }
 
+function tagObject(text: string, cursor: number, around: boolean, count: number): VimTextObjectRange | null {
+  const stack: Array<{ name: string; from: number; end: number }> = [];
+  const candidates: Array<{ from: number; to: number; innerFrom: number; innerTo: number }> = [];
+  const tags = /<!--[\s\S]*?-->|<\/?([\w:-]+)(?:\s+(?:[^>"']|"[^"]*"|'[^']*')*)?\s*\/?>/gu;
+  for (const match of text.matchAll(tags)) {
+    if (!match[1] || match[0].endsWith("/>") || /^(br|hr|img|input|meta|link)$/iu.test(match[1])) continue;
+    if (match[0].startsWith("</")) {
+      const top = stack.at(-1);
+      if (!top || top.name !== match[1]) continue;
+      stack.pop();
+      if (top.from <= cursor && match.index + match[0].length > cursor) candidates.push({ from: top.from, to: match.index + match[0].length, innerFrom: top.end, innerTo: match.index });
+    } else stack.push({ name: match[1], from: match.index, end: match.index + match[0].length });
+  }
+  const candidate = candidates.sort((a, b) => a.to - a.from - (b.to - b.from))[count - 1];
+  return candidate ? { from: around ? candidate.from : candidate.innerFrom, to: around ? candidate.to : candidate.innerTo, linewise: false } : null;
+}
+
 function wordObject(
   text: string,
   cursor: number,
   around: boolean,
   bigWord: boolean,
   count: number,
+  iskeyword?: string,
 ): VimTextObjectRange | null {
   if (text.length === 0) return null;
-  let from = Math.min(cursor, text.length - 1);
-  const classify = (character: string) => {
-    if (/\s/u.test(character)) return "space";
-    if (bigWord || /[\p{L}\p{N}_]/u.test(character)) return "word";
-    return "punctuation";
-  };
-  const targetClass = classify(text[from] ?? "");
-  while (from > 0 && classify(text[from - 1] ?? "") === targetClass) from -= 1;
+  let from = characterStart(text, Math.min(cursor, text.length - 1));
+  const classify = (position: number) => wordClass(characterAt(text, position), bigWord, iskeyword);
+  const targetClass = classify(from);
+  while (from > 0 && classify(previousCharacter(text, from)) === targetClass) from = previousCharacter(text, from);
   let to = from;
   for (let iteration = 0; iteration < count; iteration += 1) {
-    const currentClass = classify(text[to] ?? "");
-    while (to < text.length && classify(text[to] ?? "") === currentClass) to += 1;
+    const currentClass = classify(to);
+    while (to < text.length && classify(to) === currentClass) to = nextCharacter(text, to);
     if (iteration + 1 < count) {
-      while (to < text.length && classify(text[to] ?? "") === "space") to += 1;
+      while (to < text.length && classify(to) === "space") to = nextCharacter(text, to);
     }
   }
   if (around) {

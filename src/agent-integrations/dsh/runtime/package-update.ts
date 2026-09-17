@@ -18,7 +18,7 @@ interface ParsedVersion {
 export type TextFetcher = (url: string) => Promise<string>;
 
 function parseVersion(value: string | undefined): ParsedVersion | null {
-  const match = /^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$/u.exec(value?.trim() ?? "");
+  const match = /^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/u.exec(value?.trim() ?? "");
   if (!match) return null;
   const prerelease = match[4]
     ? match[4].split(".").map((part) => /^\d+$/u.test(part) ? Number(part) : part)
@@ -118,6 +118,18 @@ export async function resolveNodeTargetVersion(fetcher: TextFetcher = fetchText)
   return versions[0];
 }
 
+/** npm 11 emits a scalar; npm 12 wraps the same scalar in a result array. */
+export function parseNpmVersionOutput(output: string): string[] {
+  const text = output.trim().replace(/^\uFEFF/u, "");
+  let parsed: unknown = text;
+  try { parsed = JSON.parse(text) as unknown; } catch { /* Older plain-text output. */ }
+  const values = Array.isArray(parsed) ? parsed : [parsed];
+  if (!values.length || values.some((value) => typeof value !== "string" || !parseVersion(value))) {
+    throw new Error(t("npm 返回了无效版本：{version}", { version: text || t("空输出") }));
+  }
+  return [...new Set((values as string[]).map((value) => normalizeRuntimeVersion(value)))];
+}
+
 async function resolveNpmTargetVersion(
   npmExecutable: string,
   spec: string,
@@ -127,25 +139,24 @@ async function resolveNpmTargetVersion(
   const baseEnvironment = environment
     ?? await resolveUserCommandEnvironment(process.platform, process.env, runner);
   const commandEnvironment = prependExecutableDirectory(baseEnvironment, npmExecutable);
-  const result = await runner(npmExecutable, ["view", spec, "version", "--json"], {
-    timeoutMs: 30_000,
-    env: commandEnvironment,
-  });
-  if (result.code !== 0) {
-    throw new Error(processOutput(result) || t("npm view {spec} 失败。", { spec }));
-  }
-  const output = result.stdout.trim();
-  let version = output;
-  try {
-    const parsed = JSON.parse(output) as unknown;
-    if (typeof parsed === "string") version = parsed;
-  } catch {
-    // npm may emit a plain version string depending on the client version.
-  }
-  if (!parseVersion(version)) {
-    throw new Error(t("npm 返回了无效版本：{version}", { version: version || t("空输出") }));
-  }
-  return version.trim();
+  const query = async (packageSpec: string, field: string): Promise<string[]> => {
+    const result = await runner(npmExecutable, ["view", packageSpec, field, "--json"], {
+      timeoutMs: 30_000,
+      env: commandEnvironment,
+    });
+    if (result.code !== 0) {
+      throw new Error(processOutput(result) || t("npm view {spec} 失败。", { spec: packageSpec }));
+    }
+    return parseNpmVersionOutput(result.stdout);
+  };
+  const versions = await query(spec, "version");
+  if (versions.length === 1) return versions[0];
+  // Resolve the same requested tag, never choose an arbitrary array item or
+  // switch a preview install onto another release channel.
+  const separator = spec.lastIndexOf("@");
+  const tagged = await query(spec.slice(0, separator), `dist-tags.${spec.slice(separator + 1)}`);
+  if (tagged.length !== 1) throw new Error(t("npm 发布标签未返回唯一版本：{spec}", { spec }));
+  return tagged[0];
 }
 
 export function resolveDshTargetVersion(

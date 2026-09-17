@@ -19,6 +19,7 @@ import {
   type WorkspaceLeaf,
 } from "obsidian";
 import { breadcrumbAtLine } from "./src/heading-breadcrumb";
+import { snapshotWorkspaceLeaves } from "./src/workspace-leaves";
 import { StateEffect, type EditorState } from "@codemirror/state";
 import {
   Decoration,
@@ -498,6 +499,8 @@ export default class MvAideIdePlugin extends Plugin {
   private codexMcpRegistrationTimer: number | null = null;
   private codexMcpRegistrationInFlight: Promise<void> | null = null;
   private postLayoutStartup: PostLayoutStartupHandle | null = null;
+  private externalFileOpenerStartup: PostLayoutStartupHandle | null = null;
+  private bridgeTransition: Promise<void> = Promise.resolve();
   private fileTypeIconView: FileTypeIconView | null = null;
   private universalMcpServer: UniversalMcpServerInstance | null = null;
   private universalMcpDescriptor: UniversalMcpRuntimeDescriptor | null = null;
@@ -788,11 +791,12 @@ export default class MvAideIdePlugin extends Plugin {
     });
     this.registerInterval(
       activeWindow.setInterval(() => {
-        this.selectionHighlighter?.sync();
-        this.llmFeature?.tick();
+        const leaves = snapshotWorkspaceLeaves(this.app);
+        this.selectionHighlighter?.sync(false, leaves);
+        this.llmFeature?.tick(leaves);
         this.inlineCompletion?.tick();
         const leaf = activeWorkspaceLeaf(this.app);
-        this.trackWebSelectionReporters();
+        this.trackWebSelectionReporters(leaves);
         if (
           this.settings.activityTracking.supportAllActivePages ||
           leaf?.view.getViewType() === "webviewer"
@@ -923,6 +927,8 @@ export default class MvAideIdePlugin extends Plugin {
     this.cancelUniversalMcpIdleStart();
     this.postLayoutStartup?.cancel();
     this.postLayoutStartup = null;
+    this.externalFileOpenerStartup?.cancel();
+    this.externalFileOpenerStartup = null;
     this.clearScheduledMcpRegistration();
     this.clearScheduledCodexMcpRegistration();
     this.selectionHighlighter?.destroy();
@@ -1211,8 +1217,8 @@ export default class MvAideIdePlugin extends Plugin {
    * 页内 selectionchange 的打点仍能即时推回；导航中的目标 URL 在
    * did-start-navigation 时就缓存，切换标签瞬间即可显示新页面地址。
    */
-  private trackWebSelectionReporters(): void {
-    this.app.workspace.iterateAllLeaves((leaf) => {
+  private trackWebSelectionReporters(snapshot?: readonly WorkspaceLeaf[]): void {
+    (snapshot ?? snapshotWorkspaceLeaves(this.app)).forEach((leaf) => {
       if (leaf.view?.getViewType() !== "webviewer") return;
       const view = leaf.view as {
         webview?: (HTMLElement & {
@@ -2233,8 +2239,9 @@ export default class MvAideIdePlugin extends Plugin {
   private async syncLocalServices(
     scheduleCodexMcp = true,
   ): Promise<void> {
+    if (this.unloaded) return;
     this.claudeIdeError = null;
-    if (this.shouldRunLocalServer() && !this.server) {
+    if (this.shouldRunLocalServer()) {
       try {
         await this.startBridge();
       } catch (error) {
@@ -2245,6 +2252,10 @@ export default class MvAideIdePlugin extends Plugin {
       await this.stopBridge();
     }
 
+    if (this.unloaded) return;
+    // External opens do not depend on IDE discovery or registration.
+    this.syncExternalFileOpenerRuntime();
+
     await this.syncCoreIdeIntegration();
     if (scheduleCodexMcp) {
       this.scheduleCodexMcpRegistration();
@@ -2254,7 +2265,6 @@ export default class MvAideIdePlugin extends Plugin {
           ? t("Codex MCP 等待启动后初始化")
           : t("Codex MCP 未启用");
     }
-    this.syncExternalFileOpenerRuntime();
   }
 
   async syncDshIdeServices(): Promise<void> {
@@ -2304,10 +2314,18 @@ export default class MvAideIdePlugin extends Plugin {
   }
 
   private async startBridge(): Promise<void> {
+    const transition = this.bridgeTransition.then(async () => {
+      if (this.unloaded || !this.shouldRunLocalServer() || (this.server && this.port)) return;
+      await this.startBridgeNow();
+    });
+    this.bridgeTransition = transition.catch(() => undefined);
+    return transition;
+  }
+
+  private async startBridgeNow(): Promise<void> {
     const vaultRoot = getVaultRoot(this.app);
     const authToken = randomUUID();
-    this.bridgeAuthToken = authToken;
-    this.server = new BridgeServer({
+    const server = new BridgeServer({
       authToken,
       mcpAuthToken: this.settings.mcpAuthToken,
       vaultRoot,
@@ -2345,11 +2363,30 @@ export default class MvAideIdePlugin extends Plugin {
       },
       onLog: (message) => console.error("[mv-aide]", message),
     });
-    this.port = await this.server.start();
+    let port: number;
+    try {
+      port = await server.start();
+    } catch (error) {
+      await server.stop().catch(() => undefined);
+      throw error;
+    }
+    if (this.unloaded || !this.shouldRunLocalServer()) {
+      await server.stop();
+      return;
+    }
+    this.server = server;
+    this.port = port;
+    this.bridgeAuthToken = authToken;
     console.log(`[mv-aide] listening on 127.0.0.1:${this.port}`);
   }
 
   private async stopBridge(): Promise<void> {
+    const transition = this.bridgeTransition.then(() => this.stopBridgeNow());
+    this.bridgeTransition = transition.catch(() => undefined);
+    return transition;
+  }
+
+  private async stopBridgeNow(): Promise<void> {
     const port = this.port;
     this.externalFileOpenerSystem.removeRuntime(getVaultRoot(this.app));
     this.port = 0;
@@ -2995,6 +3032,23 @@ export default class MvAideIdePlugin extends Plugin {
   }
 
   private schedulePostLayoutStartup(): void {
+    this.externalFileOpenerStartup?.cancel();
+    const timerWindow = window;
+    this.externalFileOpenerStartup = schedulePostLayoutStartup({
+      onLayoutReady: (callback) => this.app.workspace.onLayoutReady(callback),
+      setTimeout: (callback, delayMs) => timerWindow.setTimeout(callback, delayMs),
+      clearTimeout: (timerId) => timerWindow.clearTimeout(timerId),
+      delayMs: 0,
+      isUnloaded: () => this.unloaded,
+      run: async () => {
+        if (!this.settings.externalFileOpener.enabled) return;
+        const owner = readExternalFileOpenerOwner();
+        if (!owner || !sameVaultRoot(owner.vaultRoot, getVaultRoot(this.app))) return;
+        await this.startupPerformance.measure("external-opener.early-service", () => this.startBridge());
+        if (!this.unloaded) this.syncExternalFileOpenerRuntime();
+      },
+      onError: (error) => console.error("[mv-aide] external opener startup failed", error),
+    });
     this.postLayoutStartup?.cancel();
     this.postLayoutStartup = schedulePostLayoutStartup({
       onLayoutReady: (callback) => this.app.workspace.onLayoutReady(callback),

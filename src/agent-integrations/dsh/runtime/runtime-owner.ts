@@ -7,6 +7,14 @@ import { resolveDshHomeDirectory } from "../paths";
 interface RuntimeOwnerRecord {
   schema: 1;
   pid: number;
+  /**
+   * The process actually listening on the dsh web port, recorded once the
+   * launch becomes ready. Differs from `pid` when the spawn chain is wrapped
+   * (Windows .cmd shims run through PowerShell, so the child is the shell,
+   * not the node listener). Optional for backward compatibility with records
+   * written before this field existed.
+   */
+  listenerPid?: number;
   port: number;
   identityKey: string;
   createdAt: number;
@@ -41,12 +49,14 @@ export async function writeDshRuntimeOwner(
   command: DshCommand,
   pid: number,
   port: number,
+  listenerPid?: number,
 ): Promise<void> {
   const target = ownerPath(command, port);
   if (!target) throw new Error("DSH runtime ownership requires an explicit home directory.");
   const record: RuntimeOwnerRecord = {
     schema: 1,
     pid,
+    ...(Number.isInteger(listenerPid) && listenerPid! > 0 ? { listenerPid } : {}),
     port,
     identityKey: dshRuntimeIdentityKey(command),
     createdAt: Date.now(),
@@ -77,6 +87,8 @@ export async function readMatchingDshRuntimeOwner(
       || parsed.port !== port
       || parsed.identityKey !== dshRuntimeIdentityKey(command)
       || typeof parsed.createdAt !== "number"
+      || (parsed.listenerPid !== undefined
+        && (!Number.isInteger(parsed.listenerPid) || parsed.listenerPid <= 0))
     ) return null;
     return parsed as RuntimeOwnerRecord;
   } catch {
@@ -93,7 +105,9 @@ export async function removeDshRuntimeOwner(
   if (!target) return;
   if (pid !== undefined) {
     const current = await readMatchingDshRuntimeOwner(command, port);
-    if (!current || current.pid !== pid) return;
+    // A pid-scoped removal matches either the spawned child pid or the real
+    // listener pid recorded at readiness — both identify the same instance.
+    if (!current || (current.pid !== pid && current.listenerPid !== pid)) return;
   }
   await fs.rm(target, { force: true }).catch(() => undefined);
 }

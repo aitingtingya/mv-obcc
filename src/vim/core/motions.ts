@@ -1,4 +1,6 @@
 import type { VimBuffer } from "./types";
+import { characterAt, characterStart, displayWidth, moveCharacters, nextCharacter, offsetAtColumn, previousCharacter } from "./characters";
+import { wordClass } from "./keywords";
 
 export interface VimMotion {
   target: number;
@@ -12,12 +14,13 @@ export function horizontalMotion(
   cursor: number,
   direction: -1 | 1,
   count: number,
+  allowLineEnd = false,
 ): VimMotion {
   const line = buffer.lineAt(cursor);
-  const maximum = Math.max(line.from, line.to - 1);
+  const maximum = allowLineEnd ? line.to : Math.max(line.from, previousCharacter(buffer.text(), line.to));
   return {
-    target: clamp(cursor + direction * count, line.from, maximum),
-    inclusive: direction > 0,
+    target: clamp(moveCharacters(buffer.text(), cursor, direction * count), line.from, maximum),
+    inclusive: false,
     linewise: false,
   };
 }
@@ -28,11 +31,12 @@ export function verticalMotion(
   direction: -1 | 1,
   count: number,
   desiredColumn?: number,
+  tabstop = 4,
 ): VimMotion & { desiredColumn: number } {
   const source = buffer.lineAt(cursor);
-  const column = desiredColumn ?? Math.max(0, cursor - source.from);
+  const column = desiredColumn ?? displayWidth(buffer.text(source.from, cursor), tabstop);
   const targetLine = buffer.line(source.number + direction * count);
-  const target = Math.min(targetLine.from + column, Math.max(targetLine.from, targetLine.to - 1));
+  const target = Math.min(targetLine.from + offsetAtColumn(targetLine.text, column, tabstop), Math.max(targetLine.from, previousCharacter(buffer.text(), targetLine.to)));
   return {
     target,
     desiredColumn: column,
@@ -52,7 +56,7 @@ export function lineBoundaryMotion(
     const offset = line.text.search(/\S/);
     target = offset < 0 ? line.from : line.from + offset;
   } else if (boundary === "end") {
-    target = Math.max(line.from, line.to - 1);
+    target = Math.max(line.from, previousCharacter(buffer.text(), line.to));
   } else if (boundary === "last-nonblank") {
     const match = line.text.match(/\S(?=\s*$)/);
     target = match?.index === undefined ? line.from : line.from + match.index;
@@ -84,15 +88,19 @@ export function wordMotion(
   direction: "forward" | "backward" | "end",
   count: number,
   bigWord: boolean,
+  iskeyword?: string,
+  includeCurrent = false,
 ): VimMotion {
   const text = buffer.text();
   let target = cursor;
   for (let iteration = 0; iteration < count; iteration += 1) {
+    const before = target;
     target = direction === "forward"
-      ? nextWordStart(text, target, bigWord)
+      ? nextWordStart(text, target, bigWord, iskeyword)
       : direction === "backward"
-        ? previousWordStart(text, target, bigWord)
-        : nextWordEnd(text, target, bigWord);
+        ? previousWordStart(text, target, bigWord, iskeyword)
+        : nextWordEnd(text, target, bigWord, iskeyword, iteration === 0 && includeCurrent);
+    if (target === before) break;
   }
   return {
     target,
@@ -203,10 +211,10 @@ export function findCharacterMotion(
     }
     position = found;
   }
-  if (till) position -= direction;
+  if (till) position = direction > 0 ? previousCharacter(text, position) : nextCharacter(text, position);
   return {
     target: position,
-    inclusive: !till,
+    inclusive: !till || direction > 0,
     linewise: false,
   };
 }
@@ -215,64 +223,59 @@ export function columnMotion(
   buffer: VimBuffer,
   cursor: number,
   oneBasedColumn: number,
+  tabstop = 4,
 ): VimMotion {
   const line = buffer.lineAt(cursor);
   return {
-    target: Math.min(line.from + Math.max(0, oneBasedColumn - 1), Math.max(line.from, line.to - 1)),
+    target: Math.min(line.from + offsetAtColumn(line.text, Math.max(0, oneBasedColumn - 1), tabstop), Math.max(line.from, previousCharacter(buffer.text(), line.to))),
     inclusive: false,
     linewise: false,
   };
 }
 
-function nextWordStart(text: string, cursor: number, bigWord: boolean): number {
+function nextWordStart(text: string, cursor: number, bigWord: boolean, iskeyword?: string): number {
   if (cursor >= text.length) return text.length;
   let position = nextCharacter(text, cursor);
-  const startClass = wordClass(text[position] ?? "", bigWord);
+  const startClass = wordClass(characterAt(text, cursor), bigWord, iskeyword);
   if (startClass !== "space") {
-    while (position < text.length && wordClass(text[position] ?? "", bigWord) === startClass) {
+    while (position < text.length && wordClass(characterAt(text, position), bigWord, iskeyword) === startClass) {
       position = nextCharacter(text, position);
     }
   }
-  while (position < text.length && wordClass(text[position] ?? "", bigWord) === "space") {
+  while (position < text.length && wordClass(characterAt(text, position), bigWord, iskeyword) === "space") {
     position = nextCharacter(text, position);
   }
   return Math.min(position, text.length);
 }
 
-function previousWordStart(text: string, cursor: number, bigWord: boolean): number {
+function previousWordStart(text: string, cursor: number, bigWord: boolean, iskeyword?: string): number {
   if (cursor <= 0) return 0;
   let position = previousCharacter(text, cursor);
-  while (position > 0 && wordClass(text[position] ?? "", bigWord) === "space") {
+  while (position > 0 && wordClass(characterAt(text, position), bigWord, iskeyword) === "space") {
     position = previousCharacter(text, position);
   }
-  const targetClass = wordClass(text[position] ?? "", bigWord);
+  const targetClass = wordClass(characterAt(text, position), bigWord, iskeyword);
   while (position > 0) {
     const previous = previousCharacter(text, position);
-    if (wordClass(text[previous] ?? "", bigWord) !== targetClass) break;
+    if (wordClass(characterAt(text, previous), bigWord, iskeyword) !== targetClass) break;
     position = previous;
   }
   return position;
 }
 
-function nextWordEnd(text: string, cursor: number, bigWord: boolean): number {
+function nextWordEnd(text: string, cursor: number, bigWord: boolean, iskeyword?: string, includeCurrent = false): number {
   if (text.length === 0) return 0;
-  let position = Math.min(nextCharacter(text, cursor), text.length - 1);
-  while (position < text.length - 1 && wordClass(text[position] ?? "", bigWord) === "space") {
+  let position = characterStart(text, Math.min(includeCurrent ? cursor : nextCharacter(text, cursor), text.length - 1));
+  while (position < text.length - 1 && wordClass(characterAt(text, position), bigWord, iskeyword) === "space") {
     position = nextCharacter(text, position);
   }
-  const targetClass = wordClass(text[position] ?? "", bigWord);
+  const targetClass = wordClass(characterAt(text, position), bigWord, iskeyword);
   while (position < text.length - 1) {
     const next = nextCharacter(text, position);
-    if (wordClass(text[next] ?? "", bigWord) !== targetClass) break;
+    if (wordClass(characterAt(text, next), bigWord, iskeyword) !== targetClass) break;
     position = next;
   }
   return position;
-}
-
-function wordClass(character: string, bigWord: boolean): "space" | "word" | "punctuation" {
-  if (/\s/u.test(character)) return "space";
-  if (bigWord || /[\p{L}\p{N}_]/u.test(character)) return "word";
-  return "punctuation";
 }
 
 function findParagraphBoundary(
@@ -317,19 +320,6 @@ function previousSentenceStart(text: string, cursor: number): number {
     result = candidate.index + candidate[0].lastIndexOf(candidate[1]);
   }
   return result;
-}
-
-function nextCharacter(text: string, position: number): number {
-  if (position >= text.length) return text.length;
-  const code = text.codePointAt(position);
-  return Math.min(text.length, position + (code !== undefined && code > 0xffff ? 2 : 1));
-}
-
-function previousCharacter(text: string, position: number): number {
-  if (position <= 0) return 0;
-  const candidate = position - 1;
-  const code = text.charCodeAt(candidate);
-  return code >= 0xdc00 && code <= 0xdfff ? Math.max(0, candidate - 1) : candidate;
 }
 
 function clamp(value: number, minimum: number, maximum: number): number {

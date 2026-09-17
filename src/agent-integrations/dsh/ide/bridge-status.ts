@@ -1,6 +1,7 @@
 import { runProcess } from "../../../process-runner";
 import {
   createDefaultDshProcessDiscoveryAdapter,
+  windowsTcpTable,
   type DshProcessDiscoveryAdapter,
   type DshProcessInfo,
 } from "../runtime/process-discovery";
@@ -17,6 +18,31 @@ export interface DshBridgeStatusDependencies {
   run?: typeof runProcess;
   discovery?: DshProcessDiscoveryAdapter;
   probe?: DshWebProbeFn;
+}
+
+/**
+ * Minimum interval between bridge-connection probes. Each probe spawns
+ * several subprocesses (process discovery, TCP table queries), which is
+ * expensive enough on Windows that an unthrottled per-second timer keeps the
+ * machine busy forever while a view is open.
+ */
+export const BRIDGE_PROBE_MIN_INTERVAL_MS = 15_000;
+
+/**
+ * Pure throttle decision for the periodic bridge probe: never probe while the
+ * DSH environment is busy (install/upgrade/restart already competes for the
+ * same process-discovery facilities), and otherwise at most once per
+ * BRIDGE_PROBE_MIN_INTERVAL_MS. A non-positive lastProbeAt means "never
+ * probed" and always allows.
+ */
+export function shouldProbeBridgeStatus(
+  lastProbeAt: number,
+  now: number,
+  environmentBusy: boolean,
+): boolean {
+  if (environmentBusy) return false;
+  if (lastProbeAt <= 0) return true;
+  return now - lastProbeAt >= BRIDGE_PROBE_MIN_INTERVAL_MS;
 }
 
 function validPort(port: number): boolean {
@@ -76,6 +102,17 @@ async function windowsEstablishedPids(
   bridgePort: number,
   run: typeof runProcess,
 ): Promise<number[]> {
+  // netstat reads the kernel TCP table without WMI (fast even on machines
+  // with a degraded WMI service); fall back to the CIM cmdlet only when the
+  // netstat output cannot be parsed.
+  const table = await windowsTcpTable(run);
+  if (table) {
+    const pids = new Set<number>();
+    for (const row of table.established) {
+      if (row.localPort === bridgePort || row.remotePort === bridgePort) pids.add(row.pid);
+    }
+    return [...pids];
+  }
   const script = [
     `Get-NetTCPConnection -State Established | Where-Object { $_.LocalPort -eq ${bridgePort} -or $_.RemotePort -eq ${bridgePort} }`,
     "| Select-Object -ExpandProperty OwningProcess",

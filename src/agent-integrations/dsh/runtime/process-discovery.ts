@@ -1,4 +1,5 @@
 import { runProcess } from "../../../process-runner";
+import { t } from "../../../i18n";
 
 /** One DSH-looking process plus its platform-level identity. */
 export interface DshProcessInfo {
@@ -9,6 +10,14 @@ export interface DshProcessInfo {
   command: string;
   /** Native executable path when the platform can report it. */
   executable?: string;
+  /**
+   * True when `command` is only the process image name (from a light
+   * ancestry-tree row), not a real command line. Consumers that match the
+   * command against a runtime identity must treat such rows as "no command
+   * line available"; consumers that only need the name (ancestry walks) may
+   * use them directly.
+   */
+  nameOnly?: boolean;
 }
 
 /**
@@ -76,13 +85,17 @@ function parseJsonProcesses(output: string): RawProcessLine[] {
     };
     const pid = Number(record.ProcessId);
     const ppid = Number(record.ParentProcessId);
-    const command = String(record.CommandLine ?? "").trim();
+    const command = asTrimmedString(record.CommandLine);
     if (Number.isInteger(pid) && Number.isInteger(ppid) && command.length > 0) {
-      const executable = String(record.ExecutablePath ?? "").trim();
+      const executable = asTrimmedString(record.ExecutablePath);
       result.push({ pid, ppid, command, ...(executable ? { executable } : {}) });
     }
   }
   return result;
+}
+
+function asTrimmedString(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
 }
 
 async function pgrep(args: string[], run = runProcess): Promise<number[]> {
@@ -249,37 +262,119 @@ async function windowsPowerShell(run: typeof runProcess, script: string): Promis
   return result.code === 0 ? result.stdout : null;
 }
 
-const WINDOWS_DSH_PROCESS_SCRIPT = [
+/**
+ * Fail-closed pre-mutation enumeration gets a much longer budget than
+ * best-effort discovery: machines with a degraded WMI service take 100s+ for
+ * a single Win32_Process query (measured in the field), and aborting package
+ * mutation setup at 8s made every upgrade fail with a bare timeout message.
+ */
+export const WINDOWS_STRICT_ENUMERATION_TIMEOUT_MS = 60_000;
+const WINDOWS_SNAPSHOT_CACHE_TTL_MS = 2000;
+const WINDOWS_TCP_TABLE_TTL_MS = 2000;
+
+/**
+ * One CIM provider enumeration yields both the detailed DSH process list and
+ * a light pid/ppid/name tree. The provider materializes CommandLine for every
+ * process either way (server-side filtering does not reduce its cost), so the
+ * script emits CommandLine/ExecutablePath only for dsh-looking rows to keep
+ * the JSON small, and the tree powers in-memory ancestry walks instead of one
+ * PowerShell spawn per parent level.
+ */
+const WINDOWS_PROCESS_SNAPSHOT_SCRIPT = [
   "$ErrorActionPreference = 'Stop';",
-  "Get-CimInstance Win32_Process",
-  "| Where-Object { $_.CommandLine -and $_.CommandLine -match '(?i)dsh' }",
-  "| Select-Object ProcessId,ParentProcessId,ExecutablePath,CommandLine",
-  "| ConvertTo-Json -Compress",
+  "Get-CimInstance Win32_Process | ForEach-Object {",
+  "$commandLine = $_.CommandLine;",
+  "$isDsh = ($null -ne $commandLine) -and ($commandLine -match '(?i)dsh');",
+  "[PSCustomObject]@{",
+  "ProcessId = $_.ProcessId;",
+  "ParentProcessId = $_.ParentProcessId;",
+  "Name = $_.Name;",
+  "CommandLine = $(if ($isDsh) { $commandLine } else { $null });",
+  "ExecutablePath = $(if ($isDsh) { $_.ExecutablePath } else { $null });",
+  "}",
+  "} | ConvertTo-Json -Compress",
 ].join(" ");
 
-async function windowsDshProcesses(
-  run = runProcess,
-  strict = false,
-): Promise<RawProcessLine[]> {
-  const result = await run(
+export interface DshWindowsProcessSnapshot {
+  /** Verified dsh-runtime processes with full command lines. */
+  readonly processes: DshProcessInfo[];
+  /** pid → {ppid, name} for every process on the machine (Name only). */
+  readonly tree: ReadonlyMap<number, { ppid: number; name: string }>;
+}
+
+export function parseWindowsProcessSnapshot(output: string): DshWindowsProcessSnapshot {
+  const parsed = JSON.parse(output) as unknown;
+  const items = Array.isArray(parsed) ? parsed : [parsed];
+  const tree = new Map<number, { ppid: number; name: string }>();
+  const processes: DshProcessInfo[] = [];
+  for (const item of items) {
+    const record = item as {
+      ProcessId?: unknown;
+      ParentProcessId?: unknown;
+      Name?: unknown;
+      CommandLine?: unknown;
+      ExecutablePath?: unknown;
+    };
+    const pid = Number(record.ProcessId);
+    const ppid = Number(record.ParentProcessId);
+    if (!Number.isInteger(pid) || !Number.isInteger(ppid) || pid <= 0) continue;
+    const name = asTrimmedString(record.Name);
+    tree.set(pid, { ppid, name });
+    const command = asTrimmedString(record.CommandLine);
+    if (!command) continue;
+    const executable = asTrimmedString(record.ExecutablePath);
+    const info: DshProcessInfo = {
+      pid,
+      ppid,
+      command,
+      port: parsePort(command),
+      ...(executable ? { executable } : {}),
+    };
+    if (isDshRuntimeProcess(info)) processes.push(info);
+  }
+  return { processes, tree };
+}
+
+function emptyWindowsSnapshot(): DshWindowsProcessSnapshot {
+  return { processes: [], tree: new Map() };
+}
+
+async function runWindowsSnapshotScript(
+  run: typeof runProcess,
+  timeoutMs: number,
+) {
+  return run(
     "powershell",
-    ["-NoProfile", "-NonInteractive", "-Command", WINDOWS_DSH_PROCESS_SCRIPT],
-    { timeoutMs: 8000 },
+    ["-NoProfile", "-NonInteractive", "-Command", WINDOWS_PROCESS_SNAPSHOT_SCRIPT],
+    { timeoutMs },
   );
+}
+
+/** Best-effort snapshot: any failure degrades to an empty snapshot. */
+async function windowsProcessSnapshot(run: typeof runProcess): Promise<DshWindowsProcessSnapshot> {
+  const result = await runWindowsSnapshotScript(run, 8000);
+  if (result.code !== 0 || !result.stdout.trim()) return emptyWindowsSnapshot();
+  try {
+    return parseWindowsProcessSnapshot(result.stdout);
+  } catch {
+    return emptyWindowsSnapshot();
+  }
+}
+
+/**
+ * Fail-closed snapshot for pre-mutation drains: never silently downgrade to
+ * "no processes"; a timeout becomes an actionable localized error.
+ */
+async function windowsDshProcessesStrict(run: typeof runProcess): Promise<DshProcessInfo[]> {
+  const result = await runWindowsSnapshotScript(run, WINDOWS_STRICT_ENUMERATION_TIMEOUT_MS);
   if (result.code !== 0) {
-    if (strict) {
-      throw new Error(result.stderr || result.stdout || "Windows DSH process enumeration failed.");
+    if (result.timedOut) {
+      throw new Error(t("枚举 Windows 进程超时：系统 WMI 响应异常缓慢。请以管理员身份执行 Restart-Service Winmgmt（或重启电脑）修复 WMI 后重试。"));
     }
-    return [];
+    throw new Error(result.stderr || result.stdout || "Windows DSH process enumeration failed.");
   }
   if (!result.stdout.trim()) return [];
-  try {
-    return parseJsonProcesses(result.stdout).filter((line) =>
-      isDshRuntimeProcess(toProcessInfo(line)));
-  } catch (error) {
-    if (strict) throw error;
-    return [];
-  }
+  return parseWindowsProcessSnapshot(result.stdout).processes;
 }
 
 async function windowsProcessInfo(pid: number, run = runProcess): Promise<DshProcessInfo | null> {
@@ -296,7 +391,91 @@ async function windowsProcessInfo(pid: number, run = runProcess): Promise<DshPro
   }
 }
 
+export interface WindowsTcpEstablishedRow {
+  readonly localPort: number;
+  readonly remotePort: number;
+  readonly pid: number;
+}
+
+export interface WindowsTcpTable {
+  /** LISTENING local port → owning pid (first row wins). */
+  readonly listeners: ReadonlyMap<number, number>;
+  readonly established: readonly WindowsTcpEstablishedRow[];
+}
+
+function parseNetstatAddress(token: string): { port: number } | null {
+  const separator = token.lastIndexOf(":");
+  if (separator < 0) return null;
+  const port = Number(token.slice(separator + 1));
+  return Number.isInteger(port) && port >= 0 && port < 65536 ? { port } : null;
+}
+
+/**
+ * Parse `netstat -ano -p tcp` output. Column headers are localized but the
+ * row shape is positional and state tokens (LISTENING/ESTABLISHED) are never
+ * localized, so columns are read from the end. Returns null when no TCP row
+ * parses, so callers can fall back to the CIM NetTCPConnection cmdlets.
+ */
+export function parseNetstatTcpTable(output: string): WindowsTcpTable | null {
+  const listeners = new Map<number, number>();
+  const established: WindowsTcpEstablishedRow[] = [];
+  let rows = 0;
+  for (const line of output.split(/\r?\n/u)) {
+    const tokens = line.trim().split(/\s+/u);
+    if (tokens.length < 5) continue;
+    if (tokens[0].toUpperCase() !== "TCP") continue;
+    const pid = Number(tokens[tokens.length - 1]);
+    if (!Number.isInteger(pid) || pid <= 0) continue;
+    const state = tokens[tokens.length - 2].toUpperCase();
+    const local = parseNetstatAddress(tokens[1]);
+    const remote = parseNetstatAddress(tokens[2]);
+    if (!local || !remote) continue;
+    rows += 1;
+    if (state === "LISTENING") {
+      if (!listeners.has(local.port)) listeners.set(local.port, pid);
+    } else if (state === "ESTABLISHED") {
+      established.push({ localPort: local.port, remotePort: remote.port, pid });
+    }
+  }
+  return rows > 0 ? { listeners, established } : null;
+}
+
+/**
+ * netstat reads the kernel TCP table through iphlpapi, not WMI, so it stays
+ * fast even on machines whose WMI service is degraded (where every
+ * Get-NetTCPConnection call costs 100s+). Shared by process discovery and the
+ * bridge-status probe; cached briefly and keyed by the runner identity so
+ * tests injecting fake runners never see each other's tables.
+ */
+let tcpTableSlot: {
+  readonly run: typeof runProcess;
+  readonly at: number;
+  readonly promise: Promise<WindowsTcpTable | null>;
+} | null = null;
+
+export async function windowsTcpTable(
+  run: typeof runProcess = runProcess,
+): Promise<WindowsTcpTable | null> {
+  const now = Date.now();
+  if (
+    tcpTableSlot
+    && tcpTableSlot.run === run
+    && now - tcpTableSlot.at < WINDOWS_TCP_TABLE_TTL_MS
+  ) {
+    return tcpTableSlot.promise;
+  }
+  const promise = (async () => {
+    const result = await run("netstat", ["-ano", "-p", "tcp"], { timeoutMs: 8000 });
+    if (result.code !== 0) return null;
+    return parseNetstatTcpTable(result.stdout);
+  })();
+  tcpTableSlot = { run, at: now, promise };
+  return promise;
+}
+
 async function windowsListenerPid(port: number, run = runProcess): Promise<number | null> {
+  const table = await windowsTcpTable(run);
+  if (table) return table.listeners.get(port) ?? null;
   const output = await windowsPowerShell(
     run,
     `(Get-NetTCPConnection -LocalPort ${port} -State Listen).OwningProcess | Select-Object -First 1`,
@@ -323,12 +502,38 @@ export function createDefaultDshProcessDiscoveryAdapter(
   run: typeof runProcess = runProcess,
 ): DshProcessDiscoveryAdapter {
   if (platform === "win32") {
+    // One WMI snapshot serves every read within the TTL window (and concurrent
+    // callers share the in-flight query): the DSH list, ancestry walks, and
+    // single-pid lookups. Previously each of those spawned its own
+    // PowerShell+CIM query, which multiplied minutes on slow Windows machines.
+    let snapshotCache: {
+      readonly at: number;
+      readonly promise: Promise<DshWindowsProcessSnapshot>;
+    } | null = null;
+    const snapshot = (): Promise<DshWindowsProcessSnapshot> => {
+      const now = Date.now();
+      if (snapshotCache && now - snapshotCache.at < WINDOWS_SNAPSHOT_CACHE_TTL_MS) {
+        return snapshotCache.promise;
+      }
+      const promise = windowsProcessSnapshot(run);
+      snapshotCache = { at: now, promise };
+      return promise;
+    };
     return {
-      listDshProcesses: async () =>
-        (await windowsDshProcesses(run)).map(toProcessInfo),
-      listDshProcessesStrict: async () =>
-        (await windowsDshProcesses(run, true)).map(toProcessInfo),
-      processInfo: (pid) => windowsProcessInfo(pid, run),
+      listDshProcesses: async () => (await snapshot()).processes,
+      listDshProcessesStrict: () => windowsDshProcessesStrict(run),
+      processInfo: async (pid) => {
+        const snap = await snapshot();
+        const detailed = snap.processes.find((process) => process.pid === pid);
+        if (detailed) return detailed;
+        const node = snap.tree.get(pid);
+        // Tree rows carry only the image name, which is all the ancestry walk
+        // needs (it matches /obsidian/i); the port stays unknown. Consumers
+        // matching command lines against a runtime identity must not treat
+        // this as evidence — hence the nameOnly marker.
+        if (node) return { pid, ppid: node.ppid, command: node.name, port: null, nameOnly: true };
+        return windowsProcessInfo(pid, run);
+      },
       processCwd: async () => null,
       listenerPid: (port) => windowsListenerPid(port, run),
       killProcessTree: (pid) => windowsKillProcessTree(pid, run),

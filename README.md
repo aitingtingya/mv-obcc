@@ -51,7 +51,7 @@ mv-agent 把 DSH Web 界面直接放进 Obsidian。视图底部状态栏显示�
 
 mv-AIDE 完整注入会管理 mv-agent、mv-dsh-manager 和独立的 mv-dsh-subworkspace 三个 DSH 插件。DSH 原生「插件配置」中显示三者的配置卡；子工作区还可从工作区行内管理，不依赖 IDE 桥接。文件拖入与 IDE 桥接也保持独立，桥接关闭时仍可向当前 DSH 草稿添加本机文件。
 
-三个 DSH 插件共用内部兼容库 `@mv-aide/mv-dsh-compat`，以同时保持 DSH `0.1.1-rc.2` 预览版的既有行为并适配 Alpha 接口。该库不是第四个 DSH 插件，不增加设置卡或独立运行状态；未识别的接口只会关闭对应增强，不影响 DSH 和其他功能。
+三个 DSH 插件共用内部兼容库 `@mv-aide/mv-dsh-compat`，以同时保持 DSH 预览版的既有行为并适配 Alpha 接口。该库不是第四个 DSH 插件，不增加设置卡或独立运行状态；未识别的接口只会关闭对应增强，不影响 DSH 和其他功能。
 
 注入的 DSH 插件支持自动更新对齐到当前 mv-AIDE 版本（默认关闭），可选地在更新完成后自动重启 mv-agent；Obsidian 原生状态栏可在 mv-agent 分区一键隐藏。
 
@@ -102,6 +102,8 @@ mv-AIDE 完整注入会管理 mv-agent、mv-dsh-manager 和独立的 mv-dsh-subw
 ### 6. Vim 增强
 
 独立实现的 Vim 编辑核心支持主要模式、motion、operator、text object、寄存器、宏、搜索、Ex 命令和仓库级 `.vimrc`。隐藏 Obsidian 原生状态栏时，Vim 模式徽章自动切换为编辑器内悬浮显示。
+
+支持 `clipboard=unnamed,unnamedplus` 双向系统剪贴板、Unicode 字符边界、次数重复和常用 Vim 搜索语法；不是完整 Vimscript 或第三方 Vim 插件运行环境。具体支持边界见能力清单。
 
 ![Vim 模式、相对行号与真实编辑](media/readme/vim.gif)
 

@@ -22,6 +22,7 @@ import {
 } from "./process";
 import { DshFileDropHost } from "./file-drop-host";
 import { DshClipboardHost } from "./clipboard-host";
+import { shouldProbeBridgeStatus } from "../ide/bridge-status";
 
 export const DSH_VIEW_TITLE = "mv-agent";
 /**
@@ -252,6 +253,7 @@ export class DshWebView extends ItemView {
   private stateGeneration = 0;
   private bridgeConnectionState: DshBridgeViewState = "checking";
   private bridgeProbeBusy = false;
+  private lastBridgeProbeAt = 0;
   private bridgeProbeGeneration = 0;
   private fileDropHost: DshFileDropHost | null = null;
   private clipboardHost: DshClipboardHost | null = null;
@@ -305,12 +307,20 @@ export class DshWebView extends ItemView {
    * Accepts either the semantic endpoint URL or an already-mapped frame URL.
    */
   async navigateTo(url: string): Promise<void> {
-    const launch = normalizeDshLaunchUrl(url);
+    // An already-proxied frame URL must be mapped back to its semantic DSH
+    // endpoint before any comparison or navigation: recording the proxy URL
+    // would surface the random proxy port in the status bar and persist it
+    // into the workspace state. The mapping only rewrites proxy-origin URLs;
+    // direct endpoints and launch URLs keep their one-shot token untouched.
     const normalized = normalizeDshWebUrl(url);
-    if (!launch || !normalized) return;
+    const mapped = this.plugin.dshFeature?.semanticUrlOf?.(url);
+    const target = mapped && normalized && mapped !== normalized ? mapped : url;
+    const launch = normalizeDshLaunchUrl(target);
+    const launchNormalized = normalizeDshWebUrl(target);
+    if (!launch || !launchNormalized) return;
     const semanticCurrent = this.semanticFrameUrl();
-    if (semanticCurrent && sameDshWebUrl(semanticCurrent, normalized)) {
-      if (launch !== normalized) {
+    if (semanticCurrent && sameDshWebUrl(semanticCurrent, launchNormalized)) {
+      if (launch !== launchNormalized) {
         await this.navigate(launch);
         return;
       }
@@ -742,7 +752,7 @@ export class DshWebView extends ItemView {
     bindCheck(this.statusSelectionCheckEl, "pushSelection");
 
     this.renderStatus();
-    void this.refreshDshBridgeStatus();
+    void this.refreshDshBridgeStatus(true);
     this.startStatusRefreshTimer();
   }
 
@@ -899,10 +909,19 @@ export class DshWebView extends ItemView {
     this.renderStatus();
   }
 
-  private async refreshDshBridgeStatus(): Promise<void> {
+  private async refreshDshBridgeStatus(force = false): Promise<void> {
     const feature = this.plugin.dshFeature;
     const url = this.currentViewUrl();
     if (!feature || !url || this.closed || this.bridgeProbeBusy) return;
+    // Each probe spawns subprocesses; the 1s status tick must not translate
+    // into a per-second subprocess storm (brutal on Windows). Navigation and
+    // view construction force an immediate probe instead.
+    if (!force && !shouldProbeBridgeStatus(
+      this.lastBridgeProbeAt,
+      Date.now(),
+      feature.isEnvironmentBusy?.() === true,
+    )) return;
+    this.lastBridgeProbeAt = Date.now();
     const generation = ++this.bridgeProbeGeneration;
     this.bridgeProbeBusy = true;
     try {
@@ -923,6 +942,9 @@ export class DshWebView extends ItemView {
   private resetBridgeConnectionState(): void {
     this.bridgeProbeGeneration += 1;
     this.bridgeConnectionState = "checking";
+    // A navigation reconnects the bridge from scratch: probe immediately
+    // instead of waiting out the throttle window.
+    void this.refreshDshBridgeStatus(true);
   }
 
   private renderStatus(): void {

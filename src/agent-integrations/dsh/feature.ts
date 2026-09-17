@@ -24,6 +24,7 @@ import {
 import {
   combinedToolStatus,
   describeDshInstallFailure,
+  npmBlockedInstallScripts,
   inspectDshRuntime,
   inspectNodeRuntimes,
   installDshPackages,
@@ -213,6 +214,28 @@ export class DshFeature {
   private idePluginRuntimeState: DshIdePluginRuntimeState = { state: "disabled" };
   private mvAgentOperationGeneration = 0;
   /**
+   * Memoized environment probe cascade (shell env + Node runtimes + DSH
+   * runtime). On Windows every cascade spawns a dozen PowerShell-wrapped
+   * processes, and a single open/restart previously ran it four to five
+   * times through different entry points. Consumers that mutate the
+   * environment go through `inspectActualEnvironment`, which force-refreshes
+   * this cache; everyone else shares the TTL entry.
+   */
+  private environmentSnapshotCache: {
+    readonly key: string;
+    readonly at: number;
+    failed: boolean;
+    readonly promise: Promise<{
+      nodes: DshNodeLocations;
+      runtime: DshRuntimeInspection;
+      commandEnv: NodeJS.ProcessEnv;
+    }>;
+  } | null = null;
+  private reconcileInFlight: {
+    readonly restartRunningDsh: boolean;
+    readonly promise: Promise<DshIdeReconcileResult>;
+  } | null = null;
+  /**
    * Collapsible-subsection open state inside the mv-agent settings section.
    * All subsections default collapsed (开发规范七); user toggles are kept
    * in-session only.
@@ -239,23 +262,11 @@ export class DshFeature {
       probeDshWebViaRequestUrl,
       async () => {
         const vaultRoot = getVaultRoot(this.plugin.app);
-        const commandEnv = await resolveUserCommandEnvironment();
-        const nodes = await inspectNodeRuntimes(vaultRoot, runProcess, commandEnv);
+        const { nodes, runtime } = await this.resolveEnvironmentSnapshot(vaultRoot);
         const node = selectedNodeStatus(nodes);
         if (node.state !== "ready") {
           throw new Error(node.detail || t("未检测到兼容的 Node.js。"));
         }
-        const runtime = await inspectDshRuntime(vaultRoot, nodes, runProcess, commandEnv, {
-          customDirectory: this.plugin.settings.dsh.customDirectory,
-          homeDirectory: effectiveDshHomeDirectory(
-            vaultRoot,
-            this.plugin.settings.dsh.useVaultDshHome,
-            commandEnv,
-          ),
-          requireRuntimeOwner: this.plugin.settings.dsh.useVaultDshHome,
-          preferredPort: this.plugin.settings.dsh.port,
-          sourceProbe: probeDshWebViaRequestUrl,
-        });
         if (!runtime.command) {
           throw new Error(
             combinedToolStatus(runtime.dsh).detail || t("DSH 尚未安装，请先点击“安装”。"),
@@ -545,31 +556,63 @@ export class DshFeature {
     }
   }
 
+  /**
+   * The environment probe cascade, memoized. `force` reruns the cascade and
+   * replaces the cache entry — used by `inspectActualEnvironment`, the single
+   * refresh funnel every install/upgrade/settings mutation already flows
+   * through, so mutations invalidate the cache immediately and the TTL only
+   * bounds changes made outside the plugin.
+   */
+  private resolveEnvironmentSnapshot(vaultRoot: string, force = false): Promise<{
+    nodes: DshNodeLocations;
+    runtime: DshRuntimeInspection;
+    commandEnv: NodeJS.ProcessEnv;
+  }> {
+    const dsh = this.plugin.settings.dsh;
+    const key = JSON.stringify([dsh.customDirectory, dsh.useVaultDshHome, dsh.port]);
+    const now = Date.now();
+    const cached = this.environmentSnapshotCache;
+    if (!force && cached && cached.key === key) {
+      const ttl = cached.failed ? 3_000 : 15_000;
+      if (now - cached.at < ttl) return cached.promise;
+    }
+    const promise = (async () => {
+      const commandEnv = await resolveUserCommandEnvironment();
+      const nodes = await inspectNodeRuntimes(vaultRoot, runProcess, commandEnv);
+      const runtime = await inspectDshRuntime(vaultRoot, nodes, runProcess, commandEnv, {
+        customDirectory: dsh.customDirectory,
+        homeDirectory: effectiveDshHomeDirectory(vaultRoot, dsh.useVaultDshHome, commandEnv),
+        requireRuntimeOwner: dsh.useVaultDshHome,
+        preferredPort: dsh.port,
+        sourceProbe: probeDshWebViaRequestUrl,
+      });
+      return { nodes, runtime, commandEnv };
+    })();
+    const entry = { key, at: now, failed: false, promise };
+    promise.catch(() => {
+      entry.failed = true;
+    });
+    this.environmentSnapshotCache = entry;
+    return promise;
+  }
+
   private async inspectActualEnvironment(vaultRoot: string): Promise<{
     nodes: DshNodeLocations;
     runtime: DshRuntimeInspection;
     commandEnv: NodeJS.ProcessEnv;
   }> {
-    const commandEnv = await resolveUserCommandEnvironment();
-    const nodes = await inspectNodeRuntimes(vaultRoot, runProcess, commandEnv);
-    const runtime = await inspectDshRuntime(vaultRoot, nodes, runProcess, commandEnv, {
-      customDirectory: this.plugin.settings.dsh.customDirectory,
-      homeDirectory: effectiveDshHomeDirectory(
-        vaultRoot,
-        this.plugin.settings.dsh.useVaultDshHome,
-        commandEnv,
-      ),
-      requireRuntimeOwner: this.plugin.settings.dsh.useVaultDshHome,
-      preferredPort: this.plugin.settings.dsh.port,
-      sourceProbe: probeDshWebViaRequestUrl,
-    });
+    // Force-refresh the shared snapshot: every environment-mutating flow
+    // funnels through here, so this both serves fresh data and renews the
+    // cache for the non-forcing consumers (commandProvider, reconcile).
+    const snapshot = await this.resolveEnvironmentSnapshot(vaultRoot, true);
+    const { nodes, runtime } = snapshot;
     const plugins = toolIsReady(runtime.dsh) && toolIsReady(runtime.pnpm)
       ? await inspectDshInjection(vaultRoot, this.plugin.manifest.version, runtime.command ?? undefined)
       : blockedPluginStatuses(t("等待 DSH 与 pnpm。"));
     const pluginsWithRuntime = await this.annotateRunningBundleStatus(plugins);
     this.environment = environmentFrom(nodes, runtime, pluginsWithRuntime, this.environment.updates);
     await this.updatePersistedInjectionState(injectionStateIsUsable(plugins.full));
-    return { nodes, runtime, commandEnv };
+    return snapshot;
   }
 
   private async ensureNodeForTarget(
@@ -729,6 +772,9 @@ export class DshFeature {
     const inspected = await this.inspectActualEnvironment(vaultRoot);
     const after = inspected.runtime[name][target];
     if (after.state !== "ready" || !after.version) {
+      if (npmBlockedInstallScripts(installed)) {
+        throw new Error(describeDshInstallFailure(target, installed));
+      }
       throw new Error(t("{layer} 安装后校验失败。", { layer: name === "dsh" ? "DSH" : "pnpm" }));
     }
     if (normalizeRuntimeVersion(after.version) !== normalizeRuntimeVersion(targetVersion)) {
@@ -851,6 +897,26 @@ export class DshFeature {
   async reconcileIdeIntegration(options: {
     restartRunningDsh?: boolean;
   } = {}): Promise<DshIdeReconcileResult> {
+    // Startup reconcile and a user-triggered open/restart routinely overlap;
+    // reconcile is idempotent, so concurrent calls with the same restart
+    // intent share one run instead of doubling the probe cascade.
+    const restartRunningDsh = options.restartRunningDsh === true;
+    const inFlight = this.reconcileInFlight;
+    if (inFlight && inFlight.restartRunningDsh === restartRunningDsh) {
+      return inFlight.promise;
+    }
+    const promise = this.reconcileIdeIntegrationInner(restartRunningDsh);
+    this.reconcileInFlight = { restartRunningDsh, promise };
+    try {
+      return await promise;
+    } finally {
+      if (this.reconcileInFlight?.promise === promise) this.reconcileInFlight = null;
+    }
+  }
+
+  private async reconcileIdeIntegrationInner(
+    restartRunningDsh: boolean,
+  ): Promise<DshIdeReconcileResult> {
     if (!this.plugin.settings.dsh.enabled) {
       this.idePluginRuntimeState = { state: "disabled" };
       return { ok: true, changed: false, message: t("状态：已禁用") };
@@ -859,19 +925,7 @@ export class DshFeature {
     this.idePluginRuntimeState = { state: "checking" };
     const vaultRoot = getVaultRoot(this.plugin.app);
     try {
-      const commandEnv = await resolveUserCommandEnvironment();
-      const nodes = await inspectNodeRuntimes(vaultRoot, runProcess, commandEnv);
-      const runtime = await inspectDshRuntime(vaultRoot, nodes, runProcess, commandEnv, {
-        customDirectory: this.plugin.settings.dsh.customDirectory,
-        homeDirectory: effectiveDshHomeDirectory(
-          vaultRoot,
-          this.plugin.settings.dsh.useVaultDshHome,
-          commandEnv,
-        ),
-        requireRuntimeOwner: this.plugin.settings.dsh.useVaultDshHome,
-        preferredPort: this.plugin.settings.dsh.port,
-        sourceProbe: probeDshWebViaRequestUrl,
-      });
+      const { nodes, runtime } = await this.resolveEnvironmentSnapshot(vaultRoot);
       const before = await inspectDshInjection(vaultRoot, this.plugin.manifest.version, runtime.command ?? undefined);
       const beforeWithRuntime = await this.annotateRunningBundleStatus(before);
       this.environment = environmentFrom(nodes, runtime, beforeWithRuntime, this.environment.updates);
@@ -909,7 +963,7 @@ export class DshFeature {
         return { ok: false, changed: result.changed === true, message: detail };
       }
 
-      if (options.restartRunningDsh) {
+      if (restartRunningDsh) {
         await this.restartOpenMvAgentAfterInjection();
       }
       this.idePluginRuntimeState = { state: "ready" };
@@ -1236,10 +1290,14 @@ export class DshFeature {
       this.runtimeSelectionRestartRequired = false;
       await this.navigateOpenViewsTo(url);
     }
+    // Pass the semantic endpoint (possibly a launch URL with its one-shot
+    // token): the view maps it to the proxy frame URL internally via
+    // frameUrlFor. Passing an already-proxied URL here would make setState's
+    // confirm fail and pollute the view's persisted currentUrl.
     const leaf = await openDshWebviewInNewLeaf(
       this.plugin.app.workspace,
       this.plugin.settings.dsh.autoOpenRegion,
-      await this.frameUrlFor(url),
+      url,
     );
     if (generation !== this.mvAgentOperationGeneration) leaf.detach();
   }
@@ -1447,10 +1505,12 @@ export class DshFeature {
       if (currentLeaves.length > 0) {
         await this.navigateOpenViewsTo(url);
       } else {
+        // Semantic endpoint, not the proxy frame URL: the view maps it
+        // internally, and the proxy URL must never be persisted.
         const leaf = await openDshWebviewInNewLeaf(
           this.plugin.app.workspace,
           this.plugin.settings.dsh.autoOpenRegion,
-          await this.frameUrlFor(url),
+          url,
         );
         if (generation !== this.mvAgentOperationGeneration) leaf.detach();
       }

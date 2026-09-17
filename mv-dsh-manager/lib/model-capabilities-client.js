@@ -82,6 +82,12 @@ window.__ModuleLoader__.load({
         inheritNote: '「继承」表示不为该模型写入这项设置：保存时会移除对应覆盖，实际生效的是供应商级配置或 DSH 内置目录的默认值；只有明确选择或填写后才为该模型写一条覆盖。',
         context: '上下文窗口', maxTokens: '最大输出 token', name: '显示名称',
         retry: '重试能力保存', partial: '基础模型已保存、模型能力未保存：',
+        close: '关闭', debugRetry: '查看重试请求',
+        syncFailed: '模型行与服务端不一致，已停止保存；请重新打开该提供方后重试：',
+        pickProvider: '无法确定写入目标：请选择该卡片对应的提供方',
+        pickProviderHint: '这个卡片没有可精确识别的提供方身份，选择后本次保存才会写入。',
+        deepseekFamily: 'DSH 内置 DeepSeek 模型目录', piAiFamily: '其它提供方（llm-pi-ai）',
+        imageBudget: '图片像素预算', imageMaxBytes: '单图最大字节', imageBudgetLow: '低细节（512×512）',
         saved: '模型能力已保存。', unsupported: '当前 DSH 版本不支持完整的模型能力配置。',
         readOnly: '当前 DSH 设置为只读，模型能力不可编辑。',
         catalogUnavailable: '内置模型目录暂不可用；请先保存/启用该提供方后重试。',
@@ -105,6 +111,12 @@ window.__ModuleLoader__.load({
         inheritNote: "'Inherit' keeps this setting unwritten for the model: saving removes the override, so the provider-level configuration or DSH built-in catalog default applies. Only an explicit choice writes a per-model override.",
         context: 'Context window', maxTokens: 'Max output tokens', name: 'Display name',
         retry: 'Retry capability save', partial: 'The base model was saved, but model capabilities were not: ',
+        close: 'Close', debugRetry: 'Show retry request',
+        syncFailed: 'The model rows no longer match the server; the save was stopped. Reopen this provider and try again: ',
+        pickProvider: 'Cannot determine the write target: choose this card\'s provider',
+        pickProviderHint: 'This card exposes no reliable provider identity, so pick one before capabilities can be saved.',
+        deepseekFamily: "DSH's built-in DeepSeek catalog", piAiFamily: 'Other providers (llm-pi-ai)',
+        imageBudget: 'Image pixel budget', imageMaxBytes: 'Max bytes per image', imageBudgetLow: 'Low detail (512×512)',
         saved: 'Model capabilities saved.', unsupported: 'This DSH version does not support the complete model capability schema.',
         readOnly: 'DSH settings are read-only; model capabilities cannot be edited.',
         catalogUnavailable: 'The built-in catalog is not available yet. Save/enable this provider and try again.',
@@ -176,6 +188,11 @@ window.__ModuleLoader__.load({
     function modelSections() {
       return [...document.querySelectorAll('section[aria-label]')]
         .filter((node) => MODELS_LABELS.has(node.getAttribute('aria-label')));
+    }
+
+    function modelIdInputs(section) {
+      return [...section.querySelectorAll('input[aria-label]')]
+        .filter((input) => MODEL_ID_PREFIXES.some((prefix) => (input.getAttribute('aria-label') || '').startsWith(prefix)));
     }
 
     function modelIdInput(entry) {
@@ -274,18 +291,45 @@ window.__ModuleLoader__.load({
       });
     }
 
-    function makeDraft(kind, explicit, effective, options) {
+    function makeDraft(family, kind, explicit, effective, options, support) {
       const compat = explicit?.compat && typeof explicit.compat === 'object' ? clone(explicit.compat) : {};
       const reasoning = explicit?.reasoningEfforts;
       const objectCompatFields = Array.isArray(options.objectCompatFields)
         ? options.objectCompatFields : ['chatTemplateKwargs'];
+      if (family === 'deepseek') {
+        const explicitModalities = explicit?.inputModalities;
+        const effectiveModalities = effective?.inputModalities;
+        const modes = Array.isArray(explicitModalities)
+          ? [...explicitModalities]
+          : Array.isArray(effectiveModalities) ? [...effectiveModalities] : ['text'];
+        return {
+          family,
+          kind: 'catalog',
+          explicit: clone(explicit || {}),
+          effective: clone(effective || {}),
+          dirty: false,
+          error: '',
+          panel: null,
+          support: support || {},
+          inputMode: 'custom',
+          input: modes,
+          budget: hasOwn(explicit, 'imagePixelBudget') ? String(explicit.imagePixelBudget) : '',
+          maxImageBytes: hasOwn(explicit, 'imageMaxBytes') ? String(explicit.imageMaxBytes) : '',
+          name: hasOwn(explicit, 'name') ? String(explicit.name) : '',
+          contextWindow: hasOwn(explicit, 'contextWindow') ? spelling(explicit.contextWindow) : '',
+          maxTokens: hasOwn(explicit, 'maxTokens') ? spelling(explicit.maxTokens) : '',
+          options,
+        };
+      }
       return {
+        family: 'pi-ai',
         kind,
         explicit: clone(explicit || {}),
         effective: clone(effective || {}),
         dirty: false,
         error: '',
         panel: null,
+        support: support || {},
         inputMode: hasOwn(explicit, 'input') ? 'custom' : 'inherit',
         input: Array.isArray(explicit?.input) ? [...explicit.input] : [],
         reasoningMode: !hasOwn(explicit, 'reasoningEfforts') ? 'inherit' : reasoning === false ? 'off' : 'custom',
@@ -382,12 +426,80 @@ window.__ModuleLoader__.load({
       container.append(rows, add);
     }
 
+    /** The built-in DeepSeek catalog: inputModalities + the adapter's image limits. */
+    function renderDeepseekPanel(panel, draft, disabled, rerender) {
+      const t = copy();
+      const checks = element('span', { className: 'mv-aide-cap-checks' });
+      for (const modality of draft.options.modalities) {
+        const box = element('input', { type: 'checkbox', checked: draft.input.includes(modality), disabled });
+        box.setAttribute('aria-label', `${t.input} ${t[modality] || modality}`);
+        box.addEventListener('change', () => {
+          draft.input = box.checked
+            ? [...new Set([...draft.input, modality])]
+            : draft.input.filter((entry) => entry !== modality);
+          dirty(draft);
+          rerender();
+        });
+        checks.appendChild(element('label', { className: 'mv-aide-cap-check' }, box, element('span', { text: t[modality] || modality })));
+      }
+      panel.appendChild(field(t.input, checks));
+
+      if (draft.input.includes('image')) {
+        const budget = element('select', { className: 'mv-aide-cap-select', disabled });
+        budget.appendChild(element('option', { value: '', text: `${t.inherit} (${String(draft.options.deepseekDefaults.imagePixelBudget)})` }));
+        budget.appendChild(element('option', { value: 'low', text: t.imageBudgetLow }));
+        budget.appendChild(element('option', { value: 'custom', text: t.custom }));
+        const current = draft.budget === ''
+          ? ''
+          : draft.budget === 'low' ? 'low' : 'custom';
+        budget.value = current;
+        budget.setAttribute('aria-label', t.imageBudget);
+        const custom = element('input', {
+          className: 'mv-aide-cap-input', value: draft.budget === 'low' ? '' : draft.budget,
+          disabled: disabled || current !== 'custom', inputMode: 'numeric', 'aria-label': `${t.imageBudget} value`,
+        });
+        budget.addEventListener('change', () => {
+          draft.budget = budget.value === 'custom' ? '640000' : budget.value;
+          dirty(draft);
+          rerender();
+        });
+        custom.addEventListener('input', () => { draft.budget = custom.value; dirty(draft); });
+        panel.appendChild(field(t.imageBudget, element('div', {}, budget, custom)));
+
+        const maxBytes = element('input', {
+          className: 'mv-aide-cap-input', value: draft.maxImageBytes, placeholder: t.inherit,
+          disabled, inputMode: 'numeric', 'aria-label': t.imageMaxBytes,
+        });
+        maxBytes.addEventListener('input', () => { draft.maxImageBytes = maxBytes.value; dirty(draft); });
+        panel.appendChild(field(t.imageMaxBytes, maxBytes));
+      }
+
+      [['name', t.name], ['contextWindow', t.context], ['maxTokens', t.maxTokens]].forEach(([key, label]) => {
+        const effective = key === 'maxTokens' ? draft.effective.maxTokens : draft.effective[key];
+        const inherited = effective === undefined
+          ? t.inherit
+          : `${t.inherit} (${key === 'name' ? String(effective) : spelling(effective)})`;
+        const input = element('input', {
+          className: 'mv-aide-cap-input', value: draft[key], placeholder: inherited, disabled,
+          inputMode: key === 'name' ? 'text' : 'numeric',
+        });
+        input.addEventListener('input', () => { draft[key] = input.value; dirty(draft); });
+        panel.appendChild(field(label, input));
+      });
+      if (draft.error) panel.appendChild(element('p', { className: 'mv-aide-cap-error', text: draft.error, role: 'alert' }));
+    }
+
     function renderCapabilityPanel(panel, draft, disabled, builtin) {
       const t = copy();
       panel.replaceChildren();
       draft.panel = panel;
       const rerender = () => renderCapabilityPanel(panel, draft, disabled, builtin);
       panel.appendChild(element('div', { className: 'mv-aide-cap-title', text: t.title }));
+      if (draft.family === 'deepseek') {
+        panel.appendChild(element('p', { className: 'mv-aide-cap-note', text: t.inheritNote }));
+        renderDeepseekPanel(panel, draft, disabled, rerender);
+        return;
+      }
       if (builtin) panel.appendChild(element('p', { className: 'mv-aide-cap-warning', text: t.builtinWarning }));
       panel.appendChild(element('p', { className: 'mv-aide-cap-note', text: t.inheritNote }));
 
@@ -486,6 +598,20 @@ window.__ModuleLoader__.load({
 
     function validateDraft(draft) {
       const t = copy();
+      if (draft.family === 'deepseek') {
+        if (!Array.isArray(draft.input) || draft.input.length === 0) return t.inputRequired;
+        if (draft.input.includes('image')) {
+          if (draft.budget !== '' && draft.budget !== 'low' && capacity(draft.budget) === undefined) {
+            return `${t.imageBudget}: ${t.positiveCapacity}`;
+          }
+          if (draft.maxImageBytes !== '' && capacity(draft.maxImageBytes) === undefined) {
+            return `${t.imageMaxBytes}: ${t.positiveCapacity}`;
+          }
+        }
+        if (draft.contextWindow !== '' && capacity(draft.contextWindow) === undefined) return `${t.context}: ${t.positiveCapacity}`;
+        if (draft.maxTokens !== '' && capacity(draft.maxTokens) === undefined) return `${t.maxTokens}: ${t.positiveCapacity}`;
+        return '';
+      }
       if (draft.inputMode === 'custom' && draft.input.length === 0) return t.inputRequired;
       if (draft.reasoningMode === 'custom') {
         const levels = draft.reasoningRows.map((row) => row.level);
@@ -506,7 +632,30 @@ window.__ModuleLoader__.load({
       return '';
     }
 
+    /** One llm-deepseek catalog change, in that schema's own field names. */
+    function deepseekChangeFor(draft, modelId) {
+      const set = {};
+      const unset = [];
+      set.inputModalities = [...draft.input];
+      // The adapter refuses image limits beside a text-only model, so dropping
+      // image support unsets them in the same write.
+      if (draft.input.includes('image')) {
+        if (draft.budget === '') unset.push('imagePixelBudget');
+        else if (draft.budget === 'low') set.imagePixelBudget = 'low';
+        else set.imagePixelBudget = capacity(draft.budget);
+        if (draft.maxImageBytes === '') unset.push('imageMaxBytes');
+        else set.imageMaxBytes = capacity(draft.maxImageBytes);
+      } else {
+        unset.push('imagePixelBudget', 'imageMaxBytes');
+      }
+      if (draft.name === '') unset.push('name'); else set.name = draft.name;
+      if (draft.contextWindow === '') unset.push('contextWindow'); else set.contextWindow = capacity(draft.contextWindow);
+      if (draft.maxTokens === '') unset.push('maxTokens'); else set.maxTokens = capacity(draft.maxTokens);
+      return { kind: 'catalog', modelId, set, unset };
+    }
+
     function changeFor(draft, modelId) {
+      if (draft.family === 'deepseek') return deepseekChangeFor(draft, modelId);
       const set = {};
       const unset = [];
       if (draft.inputMode === 'inherit') unset.push('input'); else set.input = [...draft.input];
@@ -533,10 +682,12 @@ window.__ModuleLoader__.load({
       return { kind: draft.kind, modelId, set, unset, compat, compatUnset };
     }
 
+    const NOTICE_TIMEOUT_MS = 3000;
+
     function toast(message, error) {
       const node = element('div', { className: `mv-aide-cap-partial${error ? '' : ' mv-aide-cap-success'}`, text: message });
       document.body.appendChild(node);
-      window.setTimeout(() => node.remove(), error ? 7000 : 3500);
+      window.setTimeout(() => node.remove(), NOTICE_TIMEOUT_MS);
     }
 
     function showSectionError(section, error) {
@@ -554,13 +705,31 @@ window.__ModuleLoader__.load({
 
     function showPartial(state, message, retry) {
       state.partial?.remove();
+      if (state.partialTimer !== null) { window.clearTimeout(state.partialTimer); state.partialTimer = null; }
       const t = copy();
       const banner = element('div', { className: 'mv-aide-cap-partial', role: 'alert' },
         element('div', { text: `${t.partial}${message}` }));
       const actions = element('div', { className: 'mv-aide-cap-partial-actions' });
       const button = element('button', { type: 'button', className: 'mv-aide-cap-button', text: t.retry });
-      button.addEventListener('click', () => { button.disabled = true; void retry().finally(() => { button.disabled = false; }); });
-      actions.appendChild(button); banner.appendChild(actions); document.body.appendChild(banner); state.partial = banner;
+      const close = element('button', { type: 'button', className: 'mv-aide-cap-button', text: t.close, 'aria-label': t.close });
+      const dismiss = () => {
+        if (state.partialTimer !== null) { window.clearTimeout(state.partialTimer); state.partialTimer = null; }
+        banner.remove();
+        if (state.partial === banner) state.partial = null;
+      };
+      button.addEventListener('click', () => {
+        button.disabled = true;
+        if (state.partialTimer !== null) { window.clearTimeout(state.partialTimer); state.partialTimer = null; }
+        // applyStaged already turns a failure into the next notice, so a
+        // rejected retry must not surface as an unhandled rejection.
+        void retry().catch(() => {}).finally(() => { button.disabled = false; });
+      });
+      close.addEventListener('click', dismiss);
+      actions.appendChild(button); actions.appendChild(close);
+      banner.appendChild(actions); document.body.appendChild(banner); state.partial = banner;
+      // The same notice must never outlive its own timeout: a newer banner
+      // clears the older timer, so it can only ever remove itself.
+      state.partialTimer = window.setTimeout(dismiss, NOTICE_TIMEOUT_MS);
     }
 
     const FAILURE_RETRY_MS = 4000;
@@ -599,33 +768,80 @@ window.__ModuleLoader__.load({
       }
     }
 
-    function providerScore(editor, entry, hinted) {
-      if (hinted === entry.provider) return 1000;
-      const text = editor.textContent || '';
-      let score = 0;
-      if (text.includes(entry.provider)) score += 20 + entry.provider.length;
-      if (entry.displayName && text.includes(entry.displayName)) score += 10 + entry.displayName.length;
-      return score;
+    /** Every model id this card shows, in row order. */
+    function editorModelIds(editor) {
+      const section = [...editor.querySelectorAll('section[aria-label]')]
+        .find((node) => MODELS_LABELS.has(node.getAttribute('aria-label')));
+      if (!section) return [];
+      const ids = [...section.querySelectorAll('input[aria-label]')]
+        .filter((input) => MODEL_ID_PREFIXES.some((prefix) => (input.getAttribute('aria-label') || '').startsWith(prefix)))
+        .map((input) => input.value.trim())
+        .filter(Boolean);
+      return [...new Set(ids)];
     }
 
+    /** A provider entry's model id set, from whichever list that family serves. */
+    function entryModelIds(entry) {
+      const direct = Array.isArray(entry.models) ? entry.models : [];
+      const combined = [
+        ...(Array.isArray(entry.customModels) ? entry.customModels : []),
+        ...(Array.isArray(entry.catalogModels) ? entry.catalogModels : []),
+        ...direct,
+      ];
+      return [...new Set(combined.map((model) => (model && typeof model.id === 'string' ? model.id : '')))].filter(Boolean);
+    }
+
+    function sameIdSet(left, right) {
+      if (left.length === 0 || right.length === 0 || left.length !== right.length) return false;
+      const rightSet = new Set(right);
+      return left.every((id) => rightSet.has(id));
+    }
+
+    /**
+     * The card's provider, resolved without ever guessing from on-screen text.
+     * Priority: an explicit binding recorded by a pick, the card's own Provider
+     * ID field, then the one directory entry whose model id set is exactly the
+     * card's. No unique match means no binding — and therefore no write.
+     */
     async function providerFor(state, editor) {
       const pinned = editor.getAttribute('data-mv-aide-model-provider');
-      if (pinned) return pinned;
+      const ids = editorModelIds(editor);
+      if (pinned && ids.length > 0) {
+        // A pinned binding is only reused while the server still describes this
+        // card's model rows; otherwise the native save re-registered them and
+        // the binding must be re-derived instead of trusted.
+        const pinnedEntry = await entryFor(state, pinned);
+        if (pinnedEntry && sameIdSet(ids, entryModelIds(pinnedEntry))) {
+          bindEditor(editor, pinned, pinnedEntry);
+          return pinned;
+        }
+        editor.removeAttribute('data-mv-aide-model-provider');
+        state.staleBinding = true;
+      }
       const draftRoute = editor.querySelector('input[aria-label="Provider ID"]')?.value.trim();
       if (draftRoute && /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/u.test(draftRoute)) {
-        editor.setAttribute('data-mv-aide-model-provider', draftRoute);
-        state.providerHint = null;
+        const entry = await entryFor(state, draftRoute);
+        bindEditor(editor, draftRoute, entry);
         return draftRoute;
       }
+      if (ids.length === 0) return null;
       const directory = await loadDirectory(state);
-      const hinted = Date.now() - state.providerHintAt < 3000 ? state.providerHint : null;
-      const ranked = directory.providers
-        .map((entry) => ({ entry, score: providerScore(editor, entry, hinted) }))
-        .sort((a, b) => b.score - a.score);
-      if (!ranked[0] || ranked[0].score <= 0 || (ranked[1] && ranked[1].score === ranked[0].score)) return null;
-      editor.setAttribute('data-mv-aide-model-provider', ranked[0].entry.provider);
-      state.providerHint = null;
-      return ranked[0].entry.provider;
+      const matches = directory.providers.filter((entry) => sameIdSet(ids, entryModelIds(entry)));
+      if (matches.length !== 1) return null;
+      bindEditor(editor, matches[0].provider, matches[0]);
+      return matches[0].provider;
+    }
+
+    /** The entry a bound provider names, from the directory the server already serves. */
+    async function entryFor(state, provider) {
+      const directory = await loadDirectory(state);
+      return directory.providers.find((entry) => entry.provider === provider) ?? null;
+    }
+
+    function bindEditor(editor, provider, entry) {
+      editor.setAttribute('data-mv-aide-model-provider', provider);
+      if (entry?.settingsNs) editor.setAttribute('data-mv-aide-settings-ns', entry.settingsNs);
+      if (entry?.kind) editor.setAttribute('data-mv-aide-kind', entry.kind);
     }
 
     function customEntries(section) {
@@ -647,7 +863,24 @@ window.__ModuleLoader__.load({
       return `${provider}:custom:${input.getAttribute('aria-label') || input.value}`;
     }
 
+    function familyOf(providerData, response, editor) {
+      const kind = providerData?.kind ?? editor?.getAttribute('data-mv-aide-kind') ?? response?.providers?.[0]?.kind;
+      return kind === 'deepseek' ? 'deepseek' : 'pi-ai';
+    }
+
+    function familyOptions(providerData, response, family) {
+      if (family !== 'deepseek') return response.options;
+      const defaults = response.deepseek?.defaults ?? {};
+      return {
+        ...response.options,
+        modalities: response.deepseek?.modalities ?? response.options.modalities,
+        deepseekDefaults: defaults,
+      };
+    }
+
     function injectCustomPanels(state, section, editor, providerData, response) {
+      const family = familyOf(providerData, response, editor);
+      const options = familyOptions(providerData, response, family);
       const byId = new Map(providerData.customModels.map((model) => [model.id, model]));
       for (const row of customEntries(section)) {
         if (!(row.advanced instanceof Element) || row.advanced.querySelector(':scope > [data-mv-aide-model-capabilities]')) continue;
@@ -655,11 +888,14 @@ window.__ModuleLoader__.load({
         const model = byId.get(row.input.value) || { explicit: {}, effective: {} };
         let draft = state.drafts.get(key);
         if (!draft) {
-          draft = makeDraft('custom', model.explicit, model.effective, response.options);
+          draft = makeDraft(family, 'custom', model.explicit, model.effective, options, providerData.support ?? response.support);
           state.drafts.set(key, draft);
         }
+        draft.family = family;
         draft.editor = editor;
         draft.modelIdInput = row.input;
+        draft.provider = providerData.provider;
+        draft.settingsNs = providerData.settingsNs ?? response.namespace ?? editor.getAttribute('data-mv-aide-settings-ns');
         const panel = element('div', { className: 'mv-aide-model-capabilities', 'data-mv-aide-model-capabilities': 'custom' });
         row.advanced.appendChild(panel);
         renderCapabilityPanel(panel, draft, !response.writable || !response.support.supported, false);
@@ -691,10 +927,12 @@ window.__ModuleLoader__.load({
         if (expanded) {
           let draft = state.drafts.get(key);
           if (!draft) {
-            draft = makeDraft('builtin', model.explicit, model, response.options);
+            draft = makeDraft('pi-ai', 'builtin', model.explicit, model, response.options, response.support);
             state.drafts.set(key, draft);
           }
           draft.editor = editor;
+          draft.provider = providerData.provider;
+          draft.settingsNs = providerData.settingsNs ?? response.namespace;
           draft.modelId = model.id;
           const body = element('div', { className: 'mv-aide-builtin-body' });
           const panel = element('div', { className: 'mv-aide-model-capabilities', 'data-mv-aide-model-capabilities': 'builtin' });
@@ -715,11 +953,47 @@ window.__ModuleLoader__.load({
       renderBuiltinCatalog(state, wrapper, editor, providerData, response);
     }
 
-    async function injectSection(state, section) {
+    /**
+     * Inject once per (section, bound provider). The panel itself is a DOM
+     * write that re-enters the observer, so re-rendering an already-correct
+     * panel would keep the scan loop alive forever. Dirtiness is not part of
+     * the decision — a keystroke must never tear the panel out from under the
+     * user — so a click that changes it asks for a rebuild explicitly.
+     */
+    function stateKey(family, provider) {
+      return `${family}|${provider}`;
+    }
+
+    /** Section identity, so a card replaced by a re-render is never skipped. */
+    let sectionSeq = 0;
+    function sectionId(section) {
+      let id = section.getAttribute('data-mv-aide-section');
+      if (!id) {
+        sectionSeq += 1;
+        id = `s${sectionSeq}`;
+        section.setAttribute('data-mv-aide-section', id);
+      }
+      return id;
+    }
+
+    async function injectSection(state, section, force = false) {
+      const id = sectionId(section);
+      const sectionState = state.sections.get(id) ?? { key: null, provider: null };
+      state.sections.set(id, sectionState);
       const editor = editorRoot(section);
       if (!editor) return;
+      state.staleBinding = false;
       const provider = await providerFor(state, editor);
-      if (!provider) return;
+      // A binding that had to be re-derived means the card's rows changed, so
+      // the cached injection decision no longer describes this section.
+      if (state.staleBinding) sectionState.key = null;
+      if (!provider) {
+        if (sectionState.key !== 'picker') {
+          sectionState.key = 'picker';
+          renderProviderPicker(state, section, editor);
+        }
+        return;
+      }
       let response;
       try {
         response = await loadProvider(state, provider, false);
@@ -737,6 +1011,13 @@ window.__ModuleLoader__.load({
       }
       const providerData = response.providers[0];
       if (!providerData) return;
+      const family = familyOf(providerData, response, editor);
+      const key = stateKey(family, provider);
+      if (!force && sectionState.key === key) return;
+      sectionState.key = key;
+      sectionState.provider = provider;
+      bindEditor(editor, provider, providerData);
+      section.querySelector('[data-mv-aide-provider-picker]')?.remove();
       section.querySelector('[data-mv-aide-capability-error]')?.remove();
       if (!response.support.supported && !section.querySelector('[data-mv-aide-capability-unsupported]')) {
         section.appendChild(element('p', {
@@ -744,9 +1025,44 @@ window.__ModuleLoader__.load({
         }));
       }
       injectCustomPanels(state, section, editor, providerData, response);
-      if (!section.querySelector(':scope > [data-mv-aide-builtin-catalog]')) {
+      if (family === 'pi-ai' && !section.querySelector(':scope > [data-mv-aide-builtin-catalog]')) {
         injectBuiltinCatalog(state, section, editor, providerData, response);
       }
+    }
+
+    /**
+     * When no unique provider identity can be derived, the card gets an explicit
+     * chooser instead of a guessed write target. Nothing is written until the
+     * user picks, and the pick is what the editor then carries.
+     */
+    function renderProviderPicker(state, section, editor) {
+      const t = copy();
+      const existing = section.querySelector('[data-mv-aide-provider-picker]');
+      if (existing) return;
+      const wrapper = element('div', {
+        className: 'mv-aide-cap-warning', 'data-mv-aide-provider-picker': 'true', role: 'status',
+      });
+      wrapper.appendChild(element('p', { text: t.pickProvider }));
+      wrapper.appendChild(element('p', { text: t.pickProviderHint }));
+      const select = element('select', { className: 'mv-aide-cap-select', 'aria-label': t.pickProvider });
+      select.appendChild(element('option', { value: '', text: t.inherit }));
+      loadDirectory(state).then((directory) => {
+        for (const entry of directory.providers) {
+          select.appendChild(element('option', {
+            value: entry.provider,
+            text: `${entry.displayName} · ${entry.settingsNs ?? ''}`,
+          }));
+        }
+      }).catch(() => {});
+      select.addEventListener('change', () => {
+        if (!select.value) return;
+        const entry = state.directory?.providers?.find((candidate) => candidate.provider === select.value);
+        bindEditor(editor, select.value, entry);
+        wrapper.remove();
+        scheduleScan(state);
+      });
+      wrapper.appendChild(select);
+      section.appendChild(wrapper);
     }
 
     function scheduleScan(state) {
@@ -754,6 +1070,7 @@ window.__ModuleLoader__.load({
       state.scanQueued = true;
       queueMicrotask(() => {
         state.scanQueued = false;
+        state.scanStamp = (state.scanStamp ?? 0) + 1;
         for (const section of modelSections()) {
           void injectSection(state, section).catch((error) => {
             console.warn('[mv-dsh-manager] model capability UI unavailable', error);
@@ -774,12 +1091,123 @@ window.__ModuleLoader__.load({
       for (const [key, draft] of state.drafts) if (draft.editor === editor) state.drafts.delete(key);
     }
 
+    /**
+     * Re-derive every staged model identity from the freshly-read provider view.
+     * A native save may re-register a row's id, and the request must then carry
+     * the id the server actually holds — never the pre-save one. Drafts whose
+     * identity cannot be matched at all are reported instead of being sent.
+     */
+    function reconcileDrafts(state, staged, providerData) {
+      const { editor } = staged;
+      const drafts = staged.entries.map((entry) => entry.draft);
+      const byId = new Map(providerData.customModels.map((model) => [model.id, model]));
+      const section = [...editor.querySelectorAll('section[aria-label]')]
+        .find((node) => MODELS_LABELS.has(node.getAttribute('aria-label')));
+      const rows = section ? customEntries(section) : [];
+      const rowIndexByInput = new Map(rows.map((row, index) => [row.input, index]));
+      const unresolved = [];
+      let rebound = 0;
+      for (const draft of drafts) {
+        if (draft.kind === 'builtin') {
+          if (!byId.has(draft.modelId) && !providerData.catalogModels.some((model) => model.id === draft.modelId)) {
+            unresolved.push(draft.modelId);
+            for (const [draftKey, candidate] of state.drafts) if (candidate === draft) state.drafts.delete(draftKey);
+          }
+          continue;
+        }
+        const row = rows.find((candidate) => candidate.input === draft.modelIdInput)
+          ?? rows[rowIndexByInput.get(draft.modelIdInput) ?? -1];
+        const liveId = row?.input?.value?.trim() ?? '';
+        let boundId = byId.has(liveId) ? liveId : '';
+        if (!boundId && row) {
+          // A native save may re-register the row's id, so a stale input value
+          // cannot identify it on its own. The detached node still knows which
+          // row it was, and the row and the server list share their order —
+          // that pairing is the one identity left.
+          const at = section === null ? -1 : modelIdInputs(section).indexOf(draft.modelIdInput);
+          const model = at < 0 ? undefined : providerData.customModels[at];
+          if (model && typeof model.id === 'string') boundId = model.id;
+        }
+        if (!boundId) {
+          // The native save may have replaced the row's input node, so the
+          // draft's own reference no longer carries an id the server knows.
+          // Row order still stands, so claim the next unclaimed row.
+          const claimed = new Set(drafts.slice(0, drafts.indexOf(draft)).map((other) => other.resolvedModelId));
+          const model = providerData.customModels.find((candidate) => byId.has(candidate.id) && !claimed.has(candidate.id));
+          const free = model ? rows[providerData.customModels.indexOf(model)] : undefined;
+          if (free) {
+            draft.modelIdInput = free.input;
+            boundId = model.id;
+          }
+        }
+        if (!boundId || !row || !byId.has(boundId)) {
+          unresolved.push(liveId || draft.modelIdInput?.value || draft.modelId || 'unknown');
+          continue;
+        }
+        if (liveId !== boundId) rebound += 1;
+        draft.resolvedModelId = boundId;
+        if (row.input !== draft.modelIdInput) draft.modelIdInput = row.input;
+        for (const [key, candidate] of state.drafts) {
+          if (candidate === draft) state.drafts.delete(key);
+        }
+        state.drafts.set(customDraftKey(providerData.provider, row.input), draft);
+      }
+      return { rebound, unresolved };
+    }
+
     async function applyStaged(state, staged) {
+      const changed = () => staged.entries.map((entry) => changeFor(
+        entry.draft,
+        entry.draft.resolvedModelId ?? entry.modelId,
+      ));
+
+      /**
+       * Read the provider and the card together until the staged rows have a
+       * counterpart on the server. A native save commits the row's new identity
+       * asynchronously, so the first read after the click can still describe the
+       * pre-save card; waiting for one agreed view is what keeps a stale id from
+       * ever reaching the server.
+       */
+      const settle = async () => {
+        let last = null;
+        for (let attempt = 0; attempt < 12 && !staged.posted; attempt += 1) {
+          const fresh = await loadProvider(state, staged.provider, true);
+          const providerData = fresh.providers[0];
+          if (!providerData) throw new Error('The provider is no longer available.');
+          last = { ...reconcileDrafts(state, staged, providerData), providerData, fresh };
+          if (last.unresolved.length === 0) return last;
+          await new Promise((resolve) => window.setTimeout(resolve, 150));
+        }
+        return last;
+      };
+
       const run = async () => {
-        const fresh = await loadProvider(state, staged.provider, true);
+        // One staged save may only reach the server once, however many scans or
+        // retries race it.
+        if (staged.sent) return;
+        staged.sent = true;
+        const { unresolved, providerData, fresh } = await settle();
+        if (unresolved.length > 0) staged.sent = false;
+        const family = familyOf(providerData, fresh, staged.editor);
+        const settingsNs = providerData.settingsNs ?? fresh.namespace;
+        if (staged.settingsNs && settingsNs && staged.settingsNs !== settingsNs) {
+          throw new Error(`The write target moved from ${staged.settingsNs} to ${settingsNs}; reopen the provider and try again.`);
+        }
+        if (unresolved.length > 0) {
+          throw new Error(`${copy().syncFailed}${unresolved.join(', ')}`);
+        }
+        const changes = changed();
+        if (changes.length === 0) throw new Error(`${copy().syncFailed}${staged.provider}`);
+        staged.posted = true;
         await managerJson(`${API_PATH}/apply`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ provider: staged.provider, expectedRevision: fresh.revision, changes: staged.changes }),
+          body: JSON.stringify({
+            provider: staged.provider,
+            settingsNs,
+            family,
+            expectedRevision: fresh.revision,
+            changes,
+          }),
         });
         for (const entry of staged.entries) {
           entry.draft.dirty = false;
@@ -787,12 +1215,16 @@ window.__ModuleLoader__.load({
         }
         state.providers.delete(staged.provider);
         state.directory = null;
-        state.partial?.remove(); state.partial = null;
+        state.partial?.remove();
+        if (state.partialTimer !== null) { window.clearTimeout(state.partialTimer); state.partialTimer = null; }
+        state.partial = null;
         toast(copy().saved, false);
       };
       try {
         await run();
       } catch (error) {
+        staged.sent = false;
+        staged.posted = false;
         showPartial(state, error instanceof Error ? error.message : String(error), run);
       }
     }
@@ -808,8 +1240,12 @@ window.__ModuleLoader__.load({
       const elapsed = Date.now() - pending.started;
       const idleSave = [...pending.editor.querySelectorAll('button')]
         .find((button) => SAVE_LABELS.has(button.textContent.trim()) && !button.disabled);
-      if (elapsed > 800 && idleSave) state.pending = null;
-      else if (elapsed > 30000) state.pending = null;
+      // The native commit is done once its own save control is idle again (or
+      // the wait ran out): either way the staged capability write must run.
+      if ((elapsed > 800 && idleSave) || elapsed > 30000) {
+        state.pending = null;
+        void applyStaged(state, pending);
+      }
     }
 
     function stageSave(state, editor, provider, event) {
@@ -827,22 +1263,21 @@ window.__ModuleLoader__.load({
       }
       state.pending = {
         editor, provider, entries, started: Date.now(),
+        settingsNs: editor.getAttribute('data-mv-aide-settings-ns') || undefined,
         changes: entries.map((entry) => changeFor(entry.draft, entry.modelId)),
       };
+      // One explicit rebuild per native commit, never per keystroke, so the
+      // panel reflects the committed row without the scan loop owning renders.
       window.setTimeout(() => checkPending(state), 900);
     }
 
-    async function providerFromEditLabel(state, label) {
-      try {
-        const directory = await loadDirectory(state);
-        const ranked = directory.providers.filter((entry) => label.includes(entry.provider) || label.includes(entry.displayName));
-        if (ranked.length === 1) {
-          state.providerHint = ranked[0].provider;
-          state.providerHintAt = Date.now();
-        }
-      } catch {
-        // A failed directory read is surfaced when the model area itself loads.
-      }
+    function staleProviderHint(state, label) {
+      // The edit affordance names its provider in the accessible label. It is a
+      // hint only: it may seed a pick, never a write target on its own.
+      const directory = state.directory;
+      if (!directory) return null;
+      const ranked = directory.providers.filter((entry) => label.includes(entry.provider) || label.includes(entry.displayName));
+      return ranked.length === 1 ? ranked[0].provider : null;
     }
 
     function onClick(state, event) {
@@ -850,9 +1285,15 @@ window.__ModuleLoader__.load({
       if (!button) return;
       const text = buttonText(button);
       const aria = button.getAttribute('aria-label') || '';
-      if (/^(?:编辑|Edit)\s/u.test(aria)) void providerFromEditLabel(state, aria);
-      if (!SAVE_LABELS.has(text) && !CANCEL_LABELS.has(text)) return;
       const editor = [...modelSections()].map(editorRoot).find((root) => root?.contains(button));
+      if (/^(?:编辑|Edit)\s/u.test(aria) && editor) {
+        const hinted = staleProviderHint(state, aria);
+        if (hinted) {
+          const entry = state.directory?.providers?.find((candidate) => candidate.provider === hinted);
+          bindEditor(editor, hinted, entry);
+        }
+      }
+      if (!SAVE_LABELS.has(text) && !CANCEL_LABELS.has(text)) return;
       if (!editor) return;
       const draftRoute = editor.querySelector('input[aria-label="Provider ID"]')?.value.trim();
       const provider = draftRoute || editor.getAttribute('data-mv-aide-model-provider');
@@ -869,18 +1310,22 @@ window.__ModuleLoader__.load({
       if (window[INSTALL_KEY]) return window[INSTALL_KEY].dispose;
       const enabled = () => options.get?.().modelCapabilitiesUiEnabled !== false;
       const removeUi = () => {
-        document.querySelectorAll('[data-mv-aide-model-capabilities], [data-mv-aide-builtin-catalog], [data-mv-aide-capability-unsupported], [data-mv-aide-capability-error]')
+        document.querySelectorAll('[data-mv-aide-model-capabilities], [data-mv-aide-builtin-catalog], [data-mv-aide-capability-unsupported], [data-mv-aide-capability-error], [data-mv-aide-provider-picker]')
           .forEach((node) => node.remove());
       };
       installStyle();
       const state = {
         disposed: false, scanQueued: false, directory: null, providers: new Map(), drafts: new Map(),
-        expandedBuiltins: new Set(), providerHint: null, providerHintAt: 0, pending: null, partial: null,
+        expandedBuiltins: new Set(), pending: null, partial: null, partialTimer: null, scanStamp: 0,
+        sections: new Map(), scanTimer: null,
         directoryFailure: null, providerFailures: new Map(),
       };
       const observer = new MutationObserver(() => {
-        if (enabled()) scheduleScan(state);
-        else removeUi();
+        if (!enabled()) { removeUi(); return; }
+        // Coalesce bursts: one keystroke in the native editor can emit many
+        // records, and each scan must not re-render the panels it just wrote.
+        if (state.scanTimer !== null) window.clearTimeout(state.scanTimer);
+        state.scanTimer = window.setTimeout(() => { state.scanTimer = null; scheduleScan(state); }, 25);
       });
       const click = (event) => { if (enabled()) onClick(state, event); };
       const unsubscribe = options.subscribe?.(() => {
@@ -900,6 +1345,9 @@ window.__ModuleLoader__.load({
         document.removeEventListener('click', click, true);
         removeUi();
         state.partial?.remove();
+        if (state.partialTimer !== null) { window.clearTimeout(state.partialTimer); state.partialTimer = null; }
+        if (state.scanTimer !== null) { window.clearTimeout(state.scanTimer); state.scanTimer = null; }
+        state.sections.clear();
         document.getElementById('mv-aide-model-capabilities-style')?.remove();
         delete window[INSTALL_KEY];
       };

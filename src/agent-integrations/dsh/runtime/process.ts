@@ -471,14 +471,26 @@ export class DshProcessManager {
       && dshRuntimeIdentityKey(this.managedCommand) === dshRuntimeIdentityKey(expected)
     ) return true;
 
+    const owner = await readMatchingDshRuntimeOwner(expected, port);
+    const owned = owner !== null && (owner.pid === pid || owner.listenerPid === pid);
     let info: DshProcessInfo | null = null;
     try {
       info = await this.discovery.processInfo(pid);
     } catch {
       info = null;
     }
-    const owner = await readMatchingDshRuntimeOwner(expected, port);
-    if (owner?.pid === pid) return info ? dshProcessMatchesCommand(info, expected) : false;
+    if (owned) {
+      // The ownership record is authoritative evidence that mv-AIDE launched
+      // this listener. Cross-check the command line when the OS can still
+      // report it (defense against pid reuse); a name-only ancestry-tree row
+      // or no row at all — e.g. a badly degraded WMI service where every CIM
+      // query times out, or a listener whose command line is hidden from this
+      // user — counts as unavailable, and then the record plus the live dsh
+      // probe suffice, or every open would needlessly spawn another instance
+      // on such machines.
+      const reliable = info && info.nameOnly !== true ? info : null;
+      return reliable ? dshProcessMatchesCommand(reliable, expected) : true;
+    }
     if (expected.requireRuntimeOwner) return false;
     return info ? dshProcessMatchesCommand(info, expected) : false;
   }
@@ -750,6 +762,26 @@ export class DshProcessManager {
             rejectLaunch(ownerError);
             return;
           }
+          // Record the real listener PID alongside the spawned child PID: on
+          // Windows the .cmd shim chain runs through PowerShell, so the child
+          // is the shell rather than the node listener. The listener lookup
+          // itself is WMI-free (netstat), so this stays cheap even on machines
+          // with a degraded WMI service. A rewrite failure only loses the
+          // listener-pid hint — the initial record already satisfies the
+          // ownership invariant — so it degrades silently.
+          try {
+            const listenerPid = await this.discovery.listenerPid(port);
+            if (
+              listenerPid
+              && child.pid
+              && listenerPid !== child.pid
+              && this.child === child
+            ) {
+              await writeDshRuntimeOwner(command, child.pid, port, listenerPid);
+            }
+          } catch {
+            /* listener-pid hint is best-effort */
+          }
           const url = this.rememberEndpoint(target, port);
           // Alpha token endpoints need the loopback proxy before any iframe
           // can load: exchange the token for a session cookie now, while the
@@ -1005,17 +1037,35 @@ export class DshProcessManager {
     if (platform !== "win32") return { stoppedPids: [], remainingPids: [] };
 
     this.invalidatePendingStart();
-    const timeoutMs = options.timeoutMs ?? 5_000;
+    // The drain budget must exceed the strict enumeration timeout (60s): on
+    // machines with a degraded WMI service a single enumeration takes 100s+,
+    // and a 5s overall deadline previously expired before the first
+    // enumeration could even return, making every package mutation fail.
+    const timeoutMs = options.timeoutMs ?? 180_000;
     const pollMs = options.pollMs ?? 100;
     const deadline = Date.now() + timeoutMs;
     const stopped = new Set<number>();
+    let lastEnumerationError: Error | null = null;
     const enumerate = (): Promise<DshProcessInfo[]> =>
       this.discovery.listDshProcessesStrict
         ? this.discovery.listDshProcessesStrict()
         : this.discovery.listDshProcesses();
 
     while (true) {
-      const discovered = await enumerate();
+      let discovered: DshProcessInfo[];
+      try {
+        discovered = await enumerate();
+        lastEnumerationError = null;
+      } catch (error) {
+        // Fail closed: npm must never mutate the package while the machine's
+        // DSH process set is unknown. Keep retrying within the deadline —
+        // transient WMI hiccups recover — then surface the enumeration error
+        // itself, which carries the actionable advice for the user.
+        lastEnumerationError = error instanceof Error ? error : new Error(String(error));
+        if (Date.now() >= deadline) throw lastEnumerationError;
+        await new Promise((resolve) => setTimeout(resolve, pollMs));
+        continue;
+      }
       const targets = new Map<number, DshProcessInfo>();
       for (const process of discovered) targets.set(process.pid, process);
 
@@ -1241,16 +1291,25 @@ export class DshProcessManager {
       return "not-running";
     }
     if (process.platform === "win32") {
-      const result = await runProcess(
-        "powershell",
-        [
-          "-NoProfile",
-          "-Command",
-          `Stop-Process -Id (Get-NetTCPConnection -LocalPort ${actualPort} -State Listen).OwningProcess -Force`,
-        ],
-        { timeoutMs: 15_000 },
-      );
-      if (result.code === 0) {
+      // listenerPid reads the kernel TCP table via netstat (no WMI), so this
+      // legacy adopted-stop path keeps working on machines whose WMI service
+      // is degraded, where the previous inline Get-NetTCPConnection query
+      // simply timed out.
+      let listenerPid: number | null = null;
+      try {
+        listenerPid = await this.discovery.listenerPid(actualPort);
+      } catch {
+        listenerPid = null;
+      }
+      let killed = false;
+      if (listenerPid) {
+        try {
+          killed = await this.discovery.killProcessTree(listenerPid);
+        } catch {
+          killed = false;
+        }
+      }
+      if (killed) {
         if (expected) await removeDshRuntimeOwner(expected, actualPort);
         this.announcedUrl = null;
         this.launchUrl = null;

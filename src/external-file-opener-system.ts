@@ -1126,8 +1126,9 @@ function readJson(filePath) {
     $.NSUTF8StringEncoding,
     null
   );
-  if (!text) return null;
-  return JSON.parse(ObjC.unwrap(text));
+  const value = ObjC.unwrap(text);
+  if (typeof value !== "string" || !value) return null;
+  try { return JSON.parse(value); } catch (_) { return null; }
 }
 
 function runTask(launchPath, args) {
@@ -1169,6 +1170,7 @@ function run(argv) {
   const stateDir = ObjC.unwrap($.NSHomeDirectory()) + "/.mv-aide/file-opener";
   const owner = readJson(stateDir + "/file-opener-owner.json");
   if (!owner) return 2;
+  let wokeObsidian = false;
   for (const filePath of argv) {
     let opened = false;
     for (let attempt = 0; attempt < 30 && !opened; attempt++) {
@@ -1177,9 +1179,12 @@ function run(argv) {
         opened = true;
         break;
       }
-      runTask("/usr/bin/open", [
-        "obsidian://open?vault=" + encodeURIComponent(owner.vaultName),
-      ]);
+      if (!wokeObsidian) {
+        runTask("/usr/bin/open", [
+          "obsidian://open?vault=" + encodeURIComponent(owner.vaultName),
+        ]);
+        wokeObsidian = true;
+      }
       delay(0.5);
     }
   }
@@ -1238,8 +1243,9 @@ function readJson(filePath) {
     $.NSUTF8StringEncoding,
     null
   );
-  if (!text) return null;
-  return JSON.parse(ObjC.unwrap(text));
+  const value = ObjC.unwrap(text);
+  if (typeof value !== "string" || !value) return null;
+  try { return JSON.parse(value); } catch (_) { return null; }
 }
 
 function runTask(launchPath, args) {
@@ -1281,6 +1287,7 @@ function handlePaths(paths) {
   const stateDir = ObjC.unwrap($.NSHomeDirectory()) + "/.mv-aide/file-opener";
   const owner = readJson(stateDir + "/file-opener-owner.json");
   if (!owner) return 2;
+  let wokeObsidian = false;
   for (const filePath of paths) {
     let opened = false;
     for (let attempt = 0; attempt < 30 && !opened; attempt++) {
@@ -1289,9 +1296,12 @@ function handlePaths(paths) {
         opened = true;
         break;
       }
-      runTask("/usr/bin/open", [
-        "obsidian://open?vault=" + encodeURIComponent(owner.vaultName),
-      ]);
+      if (!wokeObsidian) {
+        runTask("/usr/bin/open", [
+          "obsidian://open?vault=" + encodeURIComponent(owner.vaultName),
+        ]);
+        wokeObsidian = true;
+      }
       $.NSThread.sleepForTimeInterval(0.5);
     }
   }

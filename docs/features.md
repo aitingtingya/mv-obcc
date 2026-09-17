@@ -182,7 +182,7 @@ mv-agent 把 DeepSeek Harness（DSH）内嵌进 Obsidian：直接使用 DSH Web 
 ### 目的与启用方式
 
 - **桥接总开关**位于 IDE 桥接分区的「已适配 agent」区域（「启用 dsh IDE 功能」，默认关）。关闭后桥接不启动、不写 lock 文件，桥接工具和被动上下文暂停；环境管理、DSH 视图和文件拖入是独立功能，不因桥接关闭而失效。
-- **视图**：命令面板提供「打开 mv-agent」「停止 mv-agent」「重启 mv-agent」，快捷键可在 Obsidian 快捷键设置中绑定。「停止 mv-agent」会关闭所有已打开的 mv-agent 界面并停止对应的 DSH 后台。视图是一个自定义 Obsidian 视图：上方 iframe 直接嵌入 DSH Web 界面（无浏览器工具栏），底部是 Obsidian 侧状态栏。状态栏显示连接球、当前页面或文件、选区、端口和展开入口；展开后可查看 DSH 地址、桥接状态、选区范围与正文，并进入插件、技能、子 Agent 管理或外部浏览器。位置与选区勾选框分别控制下次消息是否携带对应快照。连接球直接根据当前视图 DSH 端点到本 Vault bridge 的真实 TCP 连接显示：检查中为灰色，已连接为绿色，确认断开为红色；每个视图独立探测，不依赖本 Vault 是否启动了共享 DSH，也不依赖环境检测缓存。
+- **视图**：命令面板提供「打开 mv-agent」「停止 mv-agent」「重启 mv-agent」，快捷键可在 Obsidian 快捷键设置中绑定。「停止 mv-agent」会关闭所有已打开的 mv-agent 界面并停止对应的 DSH 后台。视图是一个自定义 Obsidian 视图：上方 iframe 直接嵌入 DSH Web 界面（无浏览器工具栏），底部是 Obsidian 侧状态栏。状态栏显示连接球、当前页面或文件、选区、端口和展开入口；展开后可查看 DSH 地址、桥接状态、选区范围与正文，并进入插件、技能、子 Agent 管理或外部浏览器。位置与选区勾选框分别控制下次消息是否携带对应快照。连接球直接根据当前视图 DSH 端点到本 Vault bridge 的真实 TCP 连接显示：检查中为灰色，已连接为绿色，确认断开为红色；每个视图独立探测，不依赖本 Vault 是否启动了共享 DSH，也不依赖环境检测缓存。连接状态最多每 15 秒探测一次（安装、升级或重启期间暂停），切换页面或重新打开视图时立即探测。
 - **打开分区**：可选左/右/下，默认右侧。「重启 mv-agent」会重启插件托管的 `dsh web` 进程并刷新所有已打开视图。
 - **终端感知增强**：默认关闭，只影响 mv-agent / DSH。开启时 mv-agent 不注册基础 `mv_aide__getTerminalOutput`，改为注册 `list/read/send/run/open/focus/close` 七个 mv-AIDE 原生终端工具；关闭时七个增强工具撤销并恢复原来的 `getTerminalOutput`。`sendTerminalInput` 是原始输入通道，用于 Ctrl+C、TUI/REPL 和可选 Enter；`runInTerminal` 是可靠的 shell 命令通道，保真处理引号、`!`、空格、Unicode 和多行，`cd`/`export` 仍作用于同一终端。Obsidian 重启后的 deferred 标签只启动全新 shell，`readTerminal` 会等新提示符真正写入 xterm，不恢复旧输出；`closeTerminal` 必须给定 ID，直接关闭 Obsidian 终端标签及其 PTY，deferred 标签不会被唤醒。切换立即刷新工具，不重启 DSH，也不改变其它 IDE 客户端的公共 `tools/list`。库外权限继续复用 `getTerminalOutput` 的范围设置。
 - **自动适应图片大小**：默认开启。图片在发送并写入 DSH 历史前处理，最长边超过 2000px 时等比缩到 2000px；小图保持原字节，原始本地文件不修改。关闭后恢复 DSH 原生尺寸限制。
@@ -196,6 +196,7 @@ mv-agent 把 DeepSeek Harness（DSH）内嵌进 Obsidian：直接使用 DSH Web 
 
 - DSH 支持 Node.js `22.19+` 的 22.x 或 `24+`；mv-AIDE 主动安装或升级 Node.js 时选择 Node 官方当前最新的 `24+` 稳定版本，并从同一版本目录读取 `SHASUMS256.txt` 校验安装包。
 - DSH 的更新目标跟随 npm `@deepseek-ai/dsh@next`，pnpm 跟随 `pnpm@latest`。dist-tag 只用于解析目标版本，真正安装时使用解析出的精确版本号。
+- npm 11 与 npm 12 均可用于检测、安装与升级；npm 12 返回的数组式版本输出按同一 dist-tag 解析，不会切换到其它发布通道。全局 DSH/pnpm 的命令 shim 缺失但包仍存在于 npm 全局目录时，会直接解析包声明的命令入口识别为已安装；包损坏时报告「已找到 npm 包，但无法使用其命令入口」。npm 12 的安全策略可能在返回成功的同时阻止安装脚本，导致命令实际不可用：此时操作失败并提示按 npm 的 `install-scripts`（仓库安装）或 `--allow-scripts`（全局安装）流程审查授权后重试，mv-AIDE 不会自动放开脚本权限。
 - 缺失 Node.js、DSH 或 pnpm 时，点击对应按钮后选择“当前仓库”或“全局”；已安装后的升级或重装严格在原位置执行，不再次询问位置。若本地版本高于当前发布通道目标，不会自动降级。
 - 点击下层项目会先补齐它依赖的上层。例如插件注入会依次确保 Node.js、DSH 和 pnpm 可用，每层完成后都重新读取真实状态。安装命令返回成功并不等于升级成功：最终探测到的版本必须与本次精确目标一致，否则操作会报告失败。
 - 仓库安装的最终运行时位于 `<vault>/mv-aide/dsh/`；下载、npm 缓存、安装脚本和 staging 仅存在于单次操作的临时工作区，成功、失败或取消后都会清理。全局 Node.js、DSH 或 pnpm 安装需要写受保护目录时，会弹出 macOS 管理员确认、Windows UAC 或 Linux `pkexec`，用户拒绝后停止且不会降级到仓库。
@@ -288,7 +289,12 @@ DSH 页面始终优先直接使用浏览器 `navigator.clipboard`。只有当写
 
 ### DSH 模型能力设置
 
-mv-dsh-manager 会在 DSH 原生「模型目录」中每个模型的容量展开区追加「模型能力」，不建立另一套模型设置页。手工模型和 DSH 内置目录模型都可声明文本/图片输入、非思考或自定义思考等级，以及 DSH 0.1.1 `llm-pi-ai` 已支持的模型级兼容参数。思考等级使用 DSH 的 `off/minimal/low/medium/high/xhigh/max` 作为标准等级，并把每一级映射到供应商实际参数值，例如 `max → 最大`。
+mv-dsh-manager 会在 DSH 原生「模型目录」中每个模型的容量展开区追加「模型能力」，不建立另一套模型设置页。模型分两个家族，可编辑字段互不重叠，写入也分别进入各自的设置命名空间：
+
+- 手工模型和 `llm-pi-ai` 内置目录模型：可声明文本/图片输入、非思考或自定义思考等级，以及 DSH `llm-pi-ai` 已支持的模型级兼容参数。思考等级使用 DSH 的 `off/minimal/low/medium/high/xhigh/max` 作为标准等级，并把每一级映射到供应商实际参数值，例如 `max → 最大`。
+- DSH 内置 DeepSeek 目录（`llm-deepseek`）模型：可声明输入模态（文本/图片）、图片像素预算（继承默认 640000、低细节 512×512 或自定义数值）与单图最大字节，以及显示名称、上下文窗口和最大输出 token；不提供思考等级与兼容参数。取消图片模态会同时移除图片限制字段；未在界面展示的字段（如描述）在写入时原样保留。
+
+以下输入、思考与专家区描述适用于手工模型与 `llm-pi-ai` 家族：
 
 - 多模态模型选择「文本＋图片」后写入 `input: ['text', 'image']`，下一次模型解析和请求立即读取；该值是用户对端点能力的声明，供应商仍会拒绝错误声明。
 - 思考能力可继承、显式关闭或配置多级映射；`off` 可不发送值，其它等级必须填写供应商参数。默认思考等级仍由会话模型选择或提供方配置决定。
@@ -302,8 +308,9 @@ mv-dsh-manager 会在 DSH 原生「模型目录」中每个模型的容量展开
 | 缓存及 Anthropic 兼容 | `cacheControlFormat`（`anthropic`）、`supportsLongCacheRetention`、`supportsCacheControlOnTools`、`supportsTemperature`、`forceAdaptiveThinking`、`allowEmptySignature` |
 | Chat template | `chatTemplateKwargs` 键值可为字符串、数字、布尔或 `null`，也可引用 `thinking.enabled` / `thinking.effort`；动态值可设 `omitWhenOff` |
 - 内置模型显示风险提示并只为目标模型创建 `modelOverrides`，不会修改或复制整个内置目录；清空最后一个字段会删除空覆盖并恢复目录默认值。
-- 能力草稿复用原生模型卡片的「保存」按钮。原生模型、容量和凭据先保存，编辑器成功关闭后再在最新 revision 上原子写入能力；取消或原生失败不会写能力。第二阶段失败会明确显示「基础模型已保存、模型能力未保存」并提供重试。
-- 设置由独立 host/client 模块实现，只读写 `llm-pi-ai` 的白名单模型字段并保留其它模型、未知字段及未来 compat 字段。旧 DSH 缺少相应 schema 时界面只报告版本不支持。
+- 每个模型卡片只写入可精确识别的提供方：优先使用卡片自身的 Provider ID，其次按卡片模型列表与目录唯一匹配；无法唯一确定时卡片下方显示提供方选择器，手动选择之前不会写入任何内容。
+- 能力草稿复用原生模型卡片的「保存」按钮。原生模型、容量和凭据先保存，编辑器成功关闭后再在最新 revision 上原子写入能力；取消或原生失败不会写能力。原生保存若重新注册了模型 ID，能力写入会等服务端与卡片视图一致后携带新 ID 提交；无法对齐时停止保存并提示模型行与服务端不一致，需重新打开该提供方后重试。第二阶段失败会明确显示「基础模型已保存、模型能力未保存」，失败横幅提供重试与关闭按钮，3 秒后自动消失且重复失败不堆叠。
+- 设置由独立 host/client 模块实现，只读写对应命名空间的白名单模型字段并保留其它模型、未知字段及未来 compat 字段。旧 DSH 缺少相应 schema 时界面只报告版本不支持；`llm-pi-ai` 自定义模型的模型列表尚未在原生编辑器保存过时，需先保存一次再编辑能力。
 
 ### DSH 插件、技能与预设管理
 
@@ -499,6 +506,7 @@ Code Suite 是按 profile 独立开关的 Latex Suite 兼容编辑内核，不�
 - 支持原生 `\(...\)`、`\[...\]`、美元数学和用户配置的 `n/j/nl/jl` 区域。
 - 分析与改写只产生统一数学区域；Obsidian MathJax 与 Code Suite 分别消费同一结果。
 - 非活动公式可就地渲染，点击恢复原始源码编辑；失败时保留可编辑源码，不显示空白占位。
+- 数学替换与就地预览只在实时预览（Live Preview）模式生效；源码模式不创建任何替换组件或编辑预览，MathJax 延迟加载完成也不会把预览注入源码模式，切回实时预览后自动恢复。
 - 数学预览默认显示在公式上方，并可显示 `▶` 光标指示和括号高亮；位置、指示和高亮均有独立设置。
 - 三段式采用精确字符串匹配，不是完整 TeX 语法解析器；错误、交叉或未闭合格式会跳过并继续寻找后续有效区域。
 
@@ -535,20 +543,24 @@ Vim 由 mv-AIDE 独立实现，不依赖 Obsidian 内置 Vim 或第三方 Vim �
 
 | 类别 | 支持内容 |
 | --- | --- |
-| 模式 | Normal、Insert、Replace、Visual、Visual Line、Visual Block、Operator-pending、Command-line |
+| 模式 | Normal、Insert、Replace、Virtual Replace、Visual/Select 字符、行、块选区、Operator-pending、Command-line；Insert 临时 Normal（`Ctrl-o`） |
 | 基础移动 | `h j k l`、方向键、`gj/gk`、`0 ^ $ g_`、Home/End、`w/W/b/B/e/E/ge/gE`、`gg/G`、`{ } ( )`、`%`、`|`、`f/F/t/T/;/,` |
 | 操作 | `d x X D`、`c s S C`、`y Y`、`p/P`、`>/<`、`=`、`~ g~ gu gU`、`J`、`u`、`Ctrl-r`、`.` |
 | 文本对象 | `iw/aw`、`iW/aW`、`is/as`、`ip/ap`、圆/方/花/尖括号与单/双/反引号对象 |
 | 状态 | unnamed、numbered、small-delete、named、black-hole、clipboard registers；宏 `q/@`；mark 命令 `m`、`'` 与反引号跳转；jump `Ctrl-o/Ctrl-i` |
-| 搜索 | `/`、`?`、`n`、`N` |
+| 搜索 | `/ ? n N * # g* g# gn/gN`、搜索历史、增量预览和高亮；常用 Vim magic、分组、回引用及字符组，不等同于完整 Vim 正则实现 |
 | Ex | `:s`、`:%s`、`:w`、`:q`、`:wq`、`:x`、`:e`、`:sp`、`:vsp`、`:registers`、`:marks`、`:jumps`、`:set`、`:setlocal`、`:normal`、`:sort`、`:obcommand`、`:!` |
 | vimrc | `set/setlocal`、map/noremap/unmap 系列、`mapleader`、Insert abbreviation、`source`、自定义 Ex、受控 autocmd |
 
 完整 Vimscript、Lua、`<expr>` 等未实现语法会明确拒绝并提示，不会“解析成功但静默失效”。Vim Motions 的 EasyMotion、Oil、Picker、Harpoon 等扩展生态不属于本引擎。
 
+核心编辑还覆盖次数与 `.` 重复、`qA` 追加宏和 `@@`、标签文本对象、`gp/gP`、`gv`、块插入/修改、跨文件标记，以及带范围的 `delete/yank/copy/move/put/normal/global/vglobal/sort`。`=` 使用编辑器语言缩进能力，`>/<` 只调整缩进宽度，`gq` 提供基础段落重排。`gj/gk` 使用实际显示行；滚动和折叠交给当前编辑器，不使用其它窗口的活动编辑器。
+
+这不是完整 Vim 的替代实现。复杂 Vim 正则、块选区切入 Tab/宽字符中间、完整命令行编辑、全套 Vim 选项和原生缓冲区生命周期仍未完成全部对照验收，不应据此推断所有命令组合均兼容。
+
 ### Vimrc 与选项
 
-全局配置固定在 `<vault>/mv-aide/vim/.vimrc`。每个后缀还可保存虚拟 vimrc，在全局文件之后按顺序执行。完全相同的规范化指令只执行一次，语义不同的映射不合并。
+全局配置固定在 `<vault>/mv-aide/vim/.vimrc`。每个后缀还可保存虚拟 vimrc，在全局文件之后按顺序执行。重复指令也按出现顺序执行，例如“开启→关闭→开启”的最终状态为开启。配置文件、虚拟配置和交互式 `:set/setlocal` 使用同一选项解析器；非法值保留之前的有效设置并报告原因。
 
 | 选项 | 默认值 |
 | --- | --- |
@@ -560,6 +572,14 @@ Vim 由 mv-AIDE 独立实现，不依赖 Obsidian 内置 Vim 或第三方 Vim �
 | `number` / `relativenumber` | 关 / 关 |
 | `timeoutlen` | 1000 ms |
 | `clipboard` | 空 |
+| `softtabstop` / `textwidth` | 0 / 0 |
+| `autoindent` | 开（保留原有 `o/O` 继承缩进的行为） |
+| `wrapscan` / `magic` | 开 / 开 |
+| `hlsearch` / `incsearch` | 关 / 关 |
+| `scrolloff` / `maxmapdepth` | 0 / 1000 |
+| `iskeyword` | `@,48-57,_,192-255` |
+
+`set clipboard=unnamed,unnamedplus` 可直接使用。启用共享后，普通 `p/P` 每次读取系统当前内容，`y` 写回系统剪贴板；命名寄存器保留显式目标，`"_` 不写入剪贴板。插件保留并验证字符/整行/块类型，外部复制会使旧类型失效。读取失败不粘贴过期内容；异步读取按输入顺序执行，取消或编辑器失效后不再落入旧目标。所有 Obsidian 窗口使用同一宿主剪贴板服务。
 
 旧用户目录或旧插件目录配置只用于设置页中的显式迁移；运行时不直接读取旧路径。旧用户目录文件在迁移成功后移除，旧插件目录文件只读复制且不被改写。`source` 文件按加载顺序监听，循环引用会被阻断。解析错误按指令隔离，不修改文档。
 
@@ -637,7 +657,7 @@ Windows 上的库外 PDF 使用独立的短生命周期镜像 `<vault>/mv-aide/e
 
 Windows 不申请管理员权限、不写受保护的 `UserChoice`。在系统列表中应选择 **MV AIDE File Opener**，不是 Windows Based Script Host。
 
-mv-AIDE 自有打开器产物的当前 authority 是 `~/.mv-aide/file-opener/`，包含 owner、runtime、wrapper、helper 和图标。操作系统关联本身不在该目录中：macOS 由 Launch Services 保持，Windows 位于当前用户 `HKCU`，Linux 使用 desktop/MIME 数据库。wrapper 不是守护进程：Obsidian 关闭时先通过 Obsidian URL 唤醒目标 vault，再等待插件服务；Obsidian 已打开时会将窗口带到前台。
+mv-AIDE 自有打开器产物的当前 authority 是 `~/.mv-aide/file-opener/`，包含 owner、runtime、wrapper、helper 和图标。操作系统关联本身不在该目录中：macOS 由 Launch Services 保持，Windows 位于当前用户 `HKCU`，Linux 使用 desktop/MIME 数据库。wrapper 不是守护进程：Obsidian 关闭时先通过 Obsidian URL 唤醒目标 vault，再等待插件服务；重试等待期间只唤醒一次，不会反复把窗口带到前台。vault 布局就绪后，接收服务会先于 IDE 桥接发现/注册启动（仅当本 vault 已是默认打开器 owner 且总开关启用）并立即生效打开器路由，因此 Obsidian 完全冷启动时双击打开的等待明显更短。Obsidian 已打开时会将窗口带到前台。
 
 升级时只把 `~/.mv-aide/` 根下精确命名且能验证 owner 的旧 wrapper/runtime/helper/icon 视为 legacy。迁移会先在新 authority 生成并校验产物，再完成 macOS Launch Services 激活、Windows owned registration 切换并确认有效默认项不变，或 Linux desktop 入口切换；成功后才退役 legacy owner/runtime，旧产物则只按已知路径清理。无效、冲突、自定义路径、符号链接或切换前的任何失败均保留 legacy owner 与旧入口供继续使用和下次重试；已验证的旧启动器仍在生效时，兼容层会同步刷新那一个精确 legacy runtime 文件。
 
@@ -670,6 +690,7 @@ mv-AIDE 自有打开器产物的当前 authority 是 `~/.mv-aide/file-opener/`�
 - 下拉菜单包含常用位置和去重后的最近路径。
 - 点击目录继续进入；点击文件使用与下载列表相同的插件路由。
 - 插件支持的格式直接在当前 vault 打开，不经过系统默认打开器；明确点击“默认应用”时才走系统关联。
+- 弹窗头部提供「显示隐藏文件和文件夹」切换（眼睛图标）：默认不显示 `.` 开头的文件和文件夹；点亮后与「显示全部」文件类型过滤相互独立，隐藏条目先参与过滤再受单页条数上限截断。该状态只保存在当前会话内存中，重启 Obsidian 后恢复默认不显示。
 
 关闭入口后只移除对应按钮和监听器，不删除下载、历史或任何外部文件。
 
@@ -860,6 +881,7 @@ API Key 明文存储在 `data.json`，可能随 vault 备份或同步传播。�
 2. 完整注入的就绪状态必须同时包含 `@mv-aide/mv-agent`、`@mv-aide/mv-dsh-manager` 和 `@mv-aide/mv-dsh-subworkspace`；缺一项或 `--dump-config` 校验不通过时使用「修复」。IDE 自动注入仍只负责 `mv-agent`，不安装后两者。
 3. 插件图发生变化后，运行中的 DSH 会被协调重启一次。若界面仍是旧模块图，先查看重启报错，再使用命令面板的「重启 mv-agent」。
 4. 用户导入插件始终经由 `dsh plugin add`。该命令、本地路径、`package.json` 名称或 profile manifest 校验失败时，修正原因后重试；不要期待 `file:` 热加载回退，也不要手工追加 patch 行。
+5. Windows 上报「枚举 Windows 进程超时：系统 WMI 响应异常缓慢」时，说明系统 WMI 服务退化：以管理员身份执行 `Restart-Service Winmgmt`（或重启电脑）修复 WMI 后重试。WMI 退化期间包安装/升级会拒绝继续（不会在进程状态未知时改动包），但打开 mv-agent 不受影响。
 
 ### Diff 没有出现
 

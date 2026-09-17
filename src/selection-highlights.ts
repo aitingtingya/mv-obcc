@@ -10,6 +10,7 @@ import {
   ViewPlugin,
 } from "@codemirror/view";
 import type { App, View, WorkspaceLeaf } from "obsidian";
+import { snapshotWorkspaceLeaves } from "./workspace-leaves";
 
 const HIGHLIGHT_NAME = "mv-aide-persistent-selection";
 const WEB_STATE_KEY = "__mvAidePersistentSelection";
@@ -259,12 +260,6 @@ function resolvedSelectionColor(document: Document): string {
     : "rgba(126, 87, 194, 0.32)";
 }
 
-function liveLeaves(app: App): Set<WorkspaceLeaf> {
-  const leaves = new Set<WorkspaceLeaf>();
-  app.workspace.iterateAllLeaves((leaf) => leaves.add(leaf));
-  return leaves;
-}
-
 export class SelectionHighlightController {
   private enabled: boolean;
   private readonly editorViews = new Set<EditorView>();
@@ -308,15 +303,15 @@ export class SelectionHighlightController {
     }
   }
 
-  sync(forceWeb = false): void {
-    const leaves = liveLeaves(this.app);
-    this.prunePdfHighlights(leaves);
-    for (const leaf of this.webLeaves) {
-      if (!leaves.has(leaf)) this.webLeaves.delete(leaf);
-    }
+  sync(forceWeb = false, snapshot?: readonly WorkspaceLeaf[]): void {
     if (!this.enabled) {
       this.refreshDocumentWatchers(new Set());
       return;
+    }
+    const leaves = new Set(snapshot ?? snapshotWorkspaceLeaves(this.app));
+    this.prunePdfHighlights(leaves);
+    for (const leaf of this.webLeaves) {
+      if (!leaves.has(leaf)) this.webLeaves.delete(leaf);
     }
     this.refreshDocumentWatchers(leaves);
 

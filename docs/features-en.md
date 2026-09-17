@@ -182,7 +182,7 @@ mv-agent embeds DeepSeek Harness (DSH) directly into Obsidian: use the DSH web U
 ### Purpose and Enablement
 
 - The **bridge master switch** lives in the “Adapted agents” area of IDE Bridge (**Enable DSH IDE support**, off by default). When off, the bridge does not start and no lock file is written, so bridge tools and passive context pause. Environment management, the DSH view, and file drop are independent and remain available.
-- **View**: the command palette provides **Open mv-agent**, **Stop mv-agent**, and **Restart mv-agent**; hotkeys can be bound in Obsidian's hotkey settings. **Stop mv-agent** closes every open mv-agent view and stops its DSH backend. The custom Obsidian view embeds the DSH web UI directly in an iframe (no browser toolbar), with an Obsidian-side status bar below it. The bar shows a connection dot, current page or file, selection, port, and a disclosure; expanded details include the DSH URL, bridge state, selection range and text, plus entries for plugin, skill, subagent, and browser management. Location and Selection checkboxes independently control which snapshot fields accompany the next message. The connection dot reads the real TCP relationship between that view's DSH endpoint and the current Vault bridge: gray while checking, green when connected, and red only after a confirmed disconnect. Every view probes independently; the result does not depend on the Vault that started the shared DSH instance or on runtime-environment detection caches.
+- **View**: the command palette provides **Open mv-agent**, **Stop mv-agent**, and **Restart mv-agent**; hotkeys can be bound in Obsidian's hotkey settings. **Stop mv-agent** closes every open mv-agent view and stops its DSH backend. The custom Obsidian view embeds the DSH web UI directly in an iframe (no browser toolbar), with an Obsidian-side status bar below it. The bar shows a connection dot, current page or file, selection, port, and a disclosure; expanded details include the DSH URL, bridge state, selection range and text, plus entries for plugin, skill, subagent, and browser management. Location and Selection checkboxes independently control which snapshot fields accompany the next message. The connection dot reads the real TCP relationship between that view's DSH endpoint and the current Vault bridge: gray while checking, green when connected, and red only after a confirmed disconnect. Every view probes independently; the result does not depend on the Vault that started the shared DSH instance or on runtime-environment detection caches. Connection state is probed at most once every 15 seconds (paused during install, upgrade, or restart), and immediately on navigation or view creation.
 - **Open region**: left, right, or bottom; right by default. “Restart mv-agent” restarts the plugin-managed `dsh web` process and refreshes every open view.
 - **Enhanced terminal awareness**: off by default and scoped to mv-agent / DSH only. When enabled, mv-agent does not register the basic `mv_aide__getTerminalOutput`; it registers seven native mv-AIDE terminal tools for list/read/send/run/open/focus/close instead. When disabled, those seven disappear and the original `getTerminalOutput` returns. `sendTerminalInput` is the raw path for Ctrl+C, TUI/REPL input, and optional Enter; `runInTerminal` is the reliable shell-command path and preserves quotes, `!`, whitespace, Unicode, multiline commands, and same-shell `cd`/`export` effects. Deferred tabs restored after an Obsidian restart start a fresh shell only: `readTerminal` waits for its new prompt to be committed to xterm and never restores old output. `closeTerminal` requires an explicit id and closes the Obsidian tab and its PTY without waking a deferred tab. Switching refreshes tools live without restarting DSH and never changes the public `tools/list` seen by other IDE clients. Outside-vault access continues to reuse the existing `getTerminalOutput` scope setting.
 - **Automatically fit image size**: on by default. Images are processed before they are sent and written into DSH history. A longest edge above 2000px is proportionally reduced to 2000px; smaller image bytes and the original local file are left unchanged. Turning it off restores DSH's native size limit.
@@ -196,6 +196,7 @@ Settings exposes Node.js, DSH, pnpm, and plugin injection as four layers. Clicki
 
 - DSH supports Node.js 22.19+ within Node 22, or Node 24+. When mv-AIDE actively installs or upgrades Node.js, it selects the latest stable Node release with major version 24 or newer and verifies the package against that release's official `SHASUMS256.txt`.
 - The DSH update target follows npm's `@deepseek-ai/dsh@next` channel, while pnpm follows `pnpm@latest`. Dist-tags are used only to resolve a target; installation uses the resolved exact version.
+- npm 11 and npm 12 both work for detection, installation, and upgrade; npm 12's array-shaped version output is resolved against the same dist-tag and never switches the release channel. When a global DSH/pnpm command shim is missing but the package still exists in the npm global root, mv-AIDE resolves the package's declared CLI entry directly and treats it as installed; a broken package reports "Found the npm package, but its CLI entry is unavailable". npm 12's security policy can block install scripts while still returning success, leaving the command unusable: the operation then fails and asks you to review and authorize the package through npm's `install-scripts` flow (vault installs) or the `--allow-scripts` option (global installs) before retrying; mv-AIDE never relaxes script permissions on its own.
 - When Node.js, DSH, or pnpm is absent, clicking its action asks for a vault or global location. An installed dependency is upgraded or reinstalled strictly in place. If the local version is newer than the current channel target, mv-AIDE does not downgrade it automatically.
 - Acting on a lower layer satisfies its prerequisites first. Plugin injection, for example, ensures Node.js, DSH, and pnpm in order and re-inspects real state after every layer. A successful installer exit code is not sufficient: the post-install version must exactly match the chosen target or the operation reports failure.
 - Final vault-installed runtimes live under `<vault>/mv-aide/dsh/`. Downloads, npm caches, installer scripts, and staging files exist only in an operation-scoped temporary workspace and are removed after success, failure, or cancellation. A global write to a protected directory requests native macOS administrator authorization, Windows UAC, or Linux `pkexec`. Refusing authorization stops the chain and never falls back to the vault.
@@ -288,7 +289,12 @@ Ordinary DSH uploads use the confirmed Vault policy for their session. A file dr
 
 ### DSH Model Capability Settings
 
-mv-dsh-manager appends **Model capabilities** inside the capacity disclosure of each model in DSH's native Models catalog; it does not create a second model-settings page. Both hand-declared models and DSH built-in catalog models can declare text/image input, disabled or mapped reasoning levels, and every model-level compatibility field exposed by DSH 0.1.1's `llm-pi-ai` schema. Reasoning uses canonical DSH levels (`off/minimal/low/medium/high/xhigh/max`) mapped to the provider's wire value, for example `max → 最大`.
+mv-dsh-manager appends **Model capabilities** inside the capacity disclosure of each model in DSH's native Models catalog; it does not create a second model-settings page. Models fall into two families with non-overlapping editable fields, and writes go into each family's own settings namespace:
+
+- Hand-declared models and `llm-pi-ai` built-in catalog models can declare text/image input, disabled or mapped reasoning levels, and every model-level compatibility field exposed by DSH's `llm-pi-ai` schema. Reasoning uses canonical DSH levels (`off/minimal/low/medium/high/xhigh/max`) mapped to the provider's wire value, for example `max → 最大`.
+- DSH's built-in DeepSeek catalog (`llm-deepseek`) models can declare input modalities (text/image), an image pixel budget (inheriting the 640000 default, low detail 512×512, or a custom value) and max bytes per image, plus display name, context window, and max output tokens; reasoning levels and compatibility parameters are not offered. Turning off the image modality also removes the image limit fields; fields not shown in the UI (such as the description) are preserved as-is on write.
+
+The input, reasoning, and expert-area descriptions below apply to hand-declared and `llm-pi-ai` family models:
 
 - Selecting Text + Image stores `input: ['text', 'image']`; the next model resolution and request sees it immediately. This is a user declaration about the endpoint, so a provider can still reject an incorrect declaration.
 - Reasoning may inherit, be explicitly disabled, or map several levels. `off` may omit its wire value; every other level requires one. The default reasoning level remains session- or provider-owned.
@@ -302,8 +308,9 @@ mv-dsh-manager appends **Model capabilities** inside the capacity disclosure of 
 | Cache and Anthropic compatibility | `cacheControlFormat` (`anthropic`); `supportsLongCacheRetention`; `supportsCacheControlOnTools`; `supportsTemperature`; `forceAdaptiveThinking`; `allowEmptySignature` |
 | Chat template | `chatTemplateKwargs` values may be string, number, boolean, or `null`, or refer to `thinking.enabled` / `thinking.effort`; dynamic values may set `omitWhenOff` |
 - Editing a built-in model shows a warning and creates only that model's `modelOverrides`; it never changes or copies the installed catalog. Clearing the last field removes the empty override and restores catalog defaults.
-- Capability drafts share the native provider card's Save action. DSH first saves the native model, capacity, credential, and provider fields; only after that editor closes successfully are capabilities committed atomically against a fresh revision. Cancel or native failure writes nothing. A second-stage failure explicitly reports that the base model was saved while capabilities were not and offers a retry.
-- Independent host/client modules implement the feature. The host accepts only whitelisted `llm-pi-ai` model fields and preserves other models, unknown fields, and future compat keys. Older DSH schemas are reported as unsupported and are never guessed into.
+- Each model card writes only to a precisely identified provider: the card's own Provider ID is preferred, with a unique match between the card's model list and the catalog as fallback. When no unique target exists, a provider chooser appears below the card and nothing is written until the user chooses.
+- Capability drafts share the native provider card's Save action. DSH first saves the native model, capacity, credential, and provider fields; only after that editor closes successfully are capabilities committed atomically against a fresh revision. Cancel or native failure writes nothing. If the native save re-registers the model ID, the capability write waits until the server and card views agree and then submits with the new ID; when they cannot be reconciled, saving stops with a "model row is inconsistent with the server" message and the provider must be reopened. A second-stage failure explicitly reports that the base model was saved while capabilities were not; the failure banner offers retry and close buttons, disappears after 3 seconds, and never stacks.
+- Independent host/client modules implement the feature. The host accepts only whitelisted model fields of the corresponding namespace and preserves other models, unknown fields, and future compat keys. Older DSH schemas are reported as unsupported and are never guessed into. When a hand-declared `llm-pi-ai` model's list comes from the composition layer rather than the user layer, save the provider once in the native editor before editing capabilities.
 
 ### DSH Plugin, Skill, and Preset Management
 
@@ -499,6 +506,7 @@ Code Suite is a per-profile Latex Suite-compatible editing kernel, not merely a 
 - Supports native `\(...\)`, `\[...\]`, dollar math, and user-defined `n/j/nl/jl` regions.
 - Analysis and rewriting produce one unified math-region model; Obsidian MathJax and Code Suite consume the same result independently.
 - Inactive formulas can render in place; clicking restores original editable source. Failure preserves source rather than showing an empty widget.
+- Math replacement and in-place previews apply only in Live Preview mode. Source mode never creates replacement widgets or editing previews — a late MathJax load does not inject previews into source mode either — and rendering resumes automatically on returning to Live Preview.
 - Math previews appear above the formula by default and may show the `▶` cursor indicator and bracket highlighting; position, indicator, and highlighting have independent settings.
 - Three-part formats use exact string matching, not a complete TeX parser. Invalid, crossing, or unclosed formats are skipped while scanning continues for later valid regions.
 
@@ -535,20 +543,24 @@ Before enablement, mv-AIDE checks built-in Vim and known conflicting plugins. A 
 
 | Category | Supported behavior |
 | --- | --- |
-| Modes | Normal, Insert, Replace, Visual, Visual Line, Visual Block, Operator-pending, Command-line |
+| Modes | Normal, Insert, Replace, Virtual Replace, character/line/block Visual and Select, Operator-pending, Command-line; temporary Normal from Insert (`Ctrl-o`) |
 | Motions | `h j k l`, arrows, `gj/gk`, `0 ^ $ g_`, Home/End, `w/W/b/B/e/E/ge/gE`, `gg/G`, `{ } ( )`, `%`, `|`, `f/F/t/T/;/,` |
 | Operators/actions | `d x X D`, `c s S C`, `y Y`, `p/P`, `>/<`, `=`, `~ g~ gu gU`, `J`, `u`, `Ctrl-r`, `.` |
 | Text objects | `iw/aw`, `iW/aW`, `is/as`, `ip/ap`, paired parentheses/brackets/braces/angles, and single/double/backtick quotes |
 | State | unnamed, numbered, small-delete, named, black-hole, and clipboard registers; macros `q/@`; mark commands `m`, `'`, and the backtick jump; jumps `Ctrl-o/Ctrl-i` |
-| Search | `/`, `?`, `n`, `N` |
+| Search | `/ ? n N * # g* g# gn/gN`, search history, incremental preview and highlighting; common Vim magic, groups, backreferences and collections, not the complete Vim pattern language |
 | Ex | `:s`, `:%s`, `:w`, `:q`, `:wq`, `:x`, `:e`, `:sp`, `:vsp`, `:registers`, `:marks`, `:jumps`, `:set`, `:setlocal`, `:normal`, `:sort`, `:obcommand`, `:!` |
 | vimrc | `set/setlocal`, map/noremap/unmap families, `mapleader`, Insert abbreviations, `source`, custom Ex, controlled autocmd |
 
 Complete Vimscript, Lua, `<expr>`, and similar unsupported syntax is rejected explicitly instead of parsing successfully and failing silently. Vim Motions extras such as EasyMotion, Oil, Picker, and Harpoon are outside this engine's scope.
 
+Core editing also covers counts and dot-repeat, appended macros (`qA`) and `@@`, tag text objects, `gp/gP`, `gv`, block insertion/change, cross-file marks, and ranged `delete/yank/copy/move/put/normal/global/vglobal/sort`. `=` uses the editor's language indentation, `>/<` shift indentation, and `gq` provides basic paragraph reflow. `gj/gk` follow actual display rows; scrolling and folding belong to the originating editor, not another window's active editor.
+
+This is not a complete Vim replacement. Complex Vim patterns, block boundaries inside tabs/wide characters, full command-line editing, all Vim options, and native buffer lifecycle semantics have not completed full reference verification. Do not infer compatibility for every command combination.
+
 ### Vimrc and Options
 
-The global configuration is fixed at `<vault>/mv-aide/vim/.vimrc`. Every extension can also store a virtual vimrc that executes afterward. Exactly identical normalized directives execute once; semantically distinct mappings are not merged.
+The global configuration is fixed at `<vault>/mv-aide/vim/.vimrc`. Every extension can also store a virtual vimrc that executes afterward. Repeated directives execute in order: enabling, disabling, then enabling an option leaves it enabled. Files, virtual configuration and interactive `:set/setlocal` use the same option parser; invalid values preserve the previous valid setting and report the reason.
 
 | Option | Default |
 | --- | --- |
@@ -560,6 +572,14 @@ The global configuration is fixed at `<vault>/mv-aide/vim/.vimrc`. Every extensi
 | `number` / `relativenumber` | Off / Off |
 | `timeoutlen` | 1,000 ms |
 | `clipboard` | Empty |
+| `softtabstop` / `textwidth` | 0 / 0 |
+| `autoindent` | On (preserves the existing indentation inherited by `o/O`) |
+| `wrapscan` / `magic` | On / On |
+| `hlsearch` / `incsearch` | Off / Off |
+| `scrolloff` / `maxmapdepth` | 0 / 1000 |
+| `iskeyword` | `@,48-57,_,192-255` |
+
+`set clipboard=unnamed,unnamedplus` is supported. With sharing enabled, ordinary `p/P` read the current system clipboard every time and yanks write back to it. Named registers retain their explicit destination; `"_` does not write the clipboard. Character/line/block metadata is verified and invalidated by foreign copies. Failed reads never paste stale content; asynchronous reads preserve input order and cannot apply after cancellation or editor invalidation. All Obsidian windows share the host clipboard service.
 
 Legacy user-directory or plugin-directory files are read only through explicit migration in settings and are never runtime sources. A migrated user-directory file is removed only after success; an old plugin-directory file is copied read-only and never rewritten. Sourced files are watched in load order; source cycles are blocked. Parse errors are isolated by directive and never modify the document.
 
@@ -637,7 +657,7 @@ The receiver must not live under `.obsidian`, and Obsidian startup must never sc
 
 Windows requests no elevation and never writes protected `UserChoice`. Select **MV AIDE File Opener**, not Windows Based Script Host, in the system UI.
 
-The current authority for mv-AIDE-owned opener artifacts is `~/.mv-aide/file-opener/`, including owner, runtime, wrapper, helper, and icon files. Operating-system associations do not live in that directory: macOS keeps them in Launch Services, Windows in the current user's `HKCU`, and Linux in desktop/MIME databases. The wrapper is not a daemon: if Obsidian is closed it first wakes the target vault through an Obsidian URL, then waits for the plugin service; if Obsidian is already running it brings the window forward.
+The current authority for mv-AIDE-owned opener artifacts is `~/.mv-aide/file-opener/`, including owner, runtime, wrapper, helper, and icon files. Operating-system associations do not live in that directory: macOS keeps them in Launch Services, Windows in the current user's `HKCU`, and Linux in desktop/MIME databases. The wrapper is not a daemon: if Obsidian is closed it first wakes the target vault through an Obsidian URL, then waits for the plugin service; the wake is issued only once during the retry loop instead of repeatedly bringing windows forward. Once the vault layout is ready, the receiver service starts before IDE bridge discovery/registration (only when this vault is already the default-opener owner and the master switch is on) and the opener route takes effect immediately, so a fully cold Obsidian start opens a double-clicked file noticeably faster. If Obsidian is already running it brings the window forward.
 
 During upgrade, only exact legacy wrapper/runtime/helper/icon names under the `~/.mv-aide/` root with a verifiable owner are considered. Migration generates and verifies the new-authority assets first, then completes macOS Launch Services activation, switches the Windows-owned registration while confirming effective defaults are unchanged, or switches the Linux desktop entry. Only then are the legacy owner/runtime retired; old artifacts are cleaned only at known paths. Invalid data, conflicts, custom paths, symlinks, or any failure before the switch preserve the legacy owner and old entry for continued use and a later retry. While a verified old launcher remains active, the compatibility path refreshes only that exact legacy runtime file.
 
@@ -670,6 +690,7 @@ Adds a directory button to the file explorer toolbar and opens a path browser:
 - A dropdown contains common locations and deduplicated recent paths.
 - Clicking a directory descends; clicking a file uses the same route as Downloads.
 - Supported formats open directly in the current vault rather than through the system default handler. Only an explicit “default app” action uses system association.
+- A "Show hidden files and folders" toggle (eye icon) sits in the dialog header: dot-prefixed files and folders are hidden by default; when enabled it is independent of the "Show all" file-type filter, and hidden entries join filtering before the per-page row limit is applied. The state lives only in session memory and returns to hidden after an Obsidian restart.
 
 Disabling an entry removes only its button and listeners and never deletes downloads, history, or external files.
 
@@ -860,6 +881,7 @@ The following settings are pure local fields in `data.json`; none of them reache
 2. Full injection is ready only when `@mv-aide/mv-agent`, `@mv-aide/mv-dsh-manager`, and `@mv-aide/mv-dsh-subworkspace` are all present and `--dump-config` verification succeeds. Use Repair when any package or verification is missing. Automatic IDE injection still manages only `mv-agent` and does not install the other two packages.
 3. A plugin-graph change coordinates one restart of a running DSH instance. If the UI still has the old module graph, inspect the restart error, then use **Restart mv-agent** from the command palette.
 4. User plugin imports always go through `dsh plugin add`. If the command, local path, `package.json` name, or profile-manifest verification fails, correct the cause and retry. Do not expect a `file:` hot-load fallback and do not append a patch row manually.
+5. If Windows reports "Timed out while enumerating Windows processes: the system WMI service is responding abnormally slowly", the system WMI service has degraded: run `Restart-Service Winmgmt` as administrator (or reboot) to repair WMI, then retry. While WMI is degraded, package installs and upgrades refuse to proceed (packages are never touched while process state is unknown), but opening mv-agent is unaffected.
 
 ### Diff Does Not Appear
 

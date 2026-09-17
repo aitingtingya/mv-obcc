@@ -44,6 +44,7 @@ import {
   type DshSourceRuntime,
 } from "./source-runtime";
 import type { DshProcessDiscoveryAdapter } from "./process-discovery";
+import { inspectNpmPackageEntry } from "./npm-package-entry";
 
 export type DshLayerState =
   | "unknown"
@@ -804,7 +805,7 @@ export async function inspectDshRuntime(
         },
       }
     : null;
-  const globalDsh: LocatedCommand | null = globalDshExecutable
+  let globalDsh: LocatedCommand | null = globalDshExecutable
     ? {
         location: "global",
         command: {
@@ -826,7 +827,7 @@ export async function inspectDshRuntime(
         requireRuntimeOwner: options.requireRuntimeOwner === true,
       }
     : null;
-  const globalPnpm: DshCommand | null = globalPnpmExecutable
+  let globalPnpm: DshCommand | null = globalPnpmExecutable
     ? {
         executable: globalPnpmExecutable,
         argsPrefix: [],
@@ -835,6 +836,26 @@ export async function inspectDshRuntime(
         requireRuntimeOwner: options.requireRuntimeOwner === true,
       }
     : null;
+
+  let globalDshPackageIssue: DshLayerStatus | null = null;
+  let globalPnpmPackageIssue: DshLayerStatus | null = null;
+  if (globalNode?.executable && globalNpmExecutable &&
+      ((!globalDsh && !globalDshIssue) || (!globalPnpm && !globalPnpmIssue))) {
+    const modulesRoot = await npmGlobalRoot(globalNpmExecutable, runner, globalCommandEnv);
+    if (modulesRoot) {
+      const fallbackEnvironment = commandEnvironment(vaultRoot, false, globalNode, homeDirectory, commandEnv);
+      if (!globalDsh && !globalDshIssue) {
+        const found = await inspectNpmPackageEntry(modulesRoot, "dsh", globalNode.executable, fallbackEnvironment, homeDirectory);
+        if (found.command) globalDsh = { location: "global", command: { ...found.command, requireRuntimeOwner: options.requireRuntimeOwner === true } };
+        globalDshPackageIssue = found.status;
+      }
+      if (!globalPnpm && !globalPnpmIssue) {
+        const found = await inspectNpmPackageEntry(modulesRoot, "pnpm", globalNode.executable, fallbackEnvironment, homeDirectory);
+        globalPnpm = found.command;
+        globalPnpmPackageIssue = found.status;
+      }
+    }
+  }
 
   const sourceEnvironment = commandEnvironment(
     vaultRoot,
@@ -877,14 +898,14 @@ export async function inspectDshRuntime(
     await Promise.all([
       probeCommand(vaultDsh?.command ?? null, runner, vaultDsh ? dshCliPath(vaultRoot) : undefined),
       globalDsh?.command
-        ? probeCommand(globalDsh.command, runner, globalDsh.command.executable)
-        : Promise.resolve(statusFromBinaryIssue(globalDshIssue)),
+        ? probeCommand(globalDsh.command, runner, globalDsh.command.argsPrefix[0] ?? globalDsh.command.executable)
+        : Promise.resolve(globalDshPackageIssue ?? statusFromBinaryIssue(globalDshIssue)),
       vaultPnpm
         ? probeCommand(vaultPnpm, runner, vaultPnpm.executable)
         : Promise.resolve(statusFromBinaryIssue(vaultPnpmIssue)),
       globalPnpm
-        ? probeCommand(globalPnpm, runner, globalPnpm.executable)
-        : Promise.resolve(statusFromBinaryIssue(globalPnpmIssue)),
+        ? probeCommand(globalPnpm, runner, globalPnpm.argsPrefix[0] ?? globalPnpm.executable)
+        : Promise.resolve(globalPnpmPackageIssue ?? statusFromBinaryIssue(globalPnpmIssue)),
     ]);
   if (
     !options.customDirectory
@@ -1046,7 +1067,14 @@ async function inspectPackageInstallTargets(
   const repairs: BinaryOccupancy[] = [];
   const blockers: BinaryOccupancy[] = [];
   for (const spec of packages) {
-    const expectedPackageDirectory = packageDirectory(layout.modulesRoot, spec.name);
+    const packagePath = packageDirectory(layout.modulesRoot, spec.name);
+    // inspectBinaryPath resolves a shim through symlinked parent directories.
+    // Compare its target to the same canonical package identity (e.g. macOS
+    // /var versus /private/var), not to a different spelling of that directory.
+    const expectedPackageDirectory = await fs.realpath(packagePath).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return packagePath;
+      throw error;
+    });
     for (const binaryName of PACKAGE_BIN_NAMES[spec.name]) {
       for (const candidate of installBinCandidates(layout.binDirectory, binaryName)) {
         let occupancy = await inspectBinaryPath(candidate);
@@ -1155,6 +1183,12 @@ export function describeDshInstallFailure(
   result: ProcessResult,
 ): string {
   const output = processOutput(result) || t("无输出");
+  if (npmBlockedInstallScripts(result)) {
+    if (target === "global") {
+      return t("npm 已下载软件包，但其安全策略阻止了安装脚本。全局安装需审查目标包后，通过 npm 的 --allow-scripts 选项授权该包再重试；mv-AIDE 不会自动放开脚本权限。\n{detail}", { detail: output });
+    }
+    return t("npm 已下载软件包，但其安全策略阻止了安装脚本。请使用 npm 的 install-scripts 命令审查并批准目标包后重试；mv-AIDE 不会自动放开脚本权限。\n{detail}", { detail: output });
+  }
   if (result.failureKind === "launch") {
     return t("无法启动 npm 安装命令：{detail}", { detail: output });
   }
@@ -1187,6 +1221,11 @@ function isGlobalPermissionOutput(output: string): boolean {
 
 function isGlobalPermissionFailure(result: ProcessResult): boolean {
   return isGlobalPermissionOutput(processOutput(result));
+}
+
+/** npm 12 can exit successfully while leaving required native bins unbuilt. */
+export function npmBlockedInstallScripts(result: ProcessResult): boolean {
+  return /\binstall scripts (?:were |had been )?blocked\b/iu.test(processOutput(result));
 }
 
 export async function installDshPackages(
@@ -1286,5 +1325,7 @@ export async function installDshPackages(
       };
     }
   }
+  // Warnings alone cannot determine usability: npm may report skipped scripts
+  // for a removed version. The caller verifies the actual installed command.
   return result;
 }

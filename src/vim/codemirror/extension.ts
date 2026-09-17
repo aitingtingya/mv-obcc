@@ -37,10 +37,13 @@ import type {
 import {
   CodeMirrorVimBuffer,
   setVimVisualSnapshot,
+  setVimSearch,
   vimTransaction,
   vimVisualSnapshotField,
+  vimSearchField,
 } from "./buffer";
 import { isVimImeKeyboardEvent, vimKeyFromEvent } from "./keys";
+import { CodeMirrorVimDocument } from "./document";
 
 export interface VimEditorExtensionContext {
   session: VimSession;
@@ -208,6 +211,7 @@ export function createVimEditorExtension(
     viewStatusField,
     vimCaretLayer,
     vimVisualSnapshotField,
+    vimSearchField,
     vimVisualLayer,
     commandLineTextField,
     cursorMetricsPlugin,
@@ -376,9 +380,9 @@ class VimEditorController {
     if (!engine) return false;
     const mode = engine.mode;
     if (
-      (mode === "insert" || mode === "replace") &&
+      (mode === "insert" || mode === "replace" || mode === "virtual-replace") &&
       isPlainTextKey(event) &&
-      !engine.awaitingInsertKey
+      !engine.awaitingInsertKey && !engine.busy
     ) {
       return false;
     }
@@ -395,8 +399,9 @@ class VimEditorController {
   }
 
   acceptsNativeInput(): boolean {
+    if (this.engineValue?.busy) return false;
     const mode = this.engineValue?.mode;
-    return mode === "insert" || mode === "replace";
+    return mode === "insert" || mode === "replace" || mode === "virtual-replace";
   }
 
   requiresInsertKey(): boolean {
@@ -571,9 +576,11 @@ class VimEditorController {
       engine.mode === "insert"
     ) {
       for (const transaction of hostDocTransactions) {
-        transaction.changes.iterChanges((_fromA, _toA, _fromB, _toB, inserted) => {
-          const text = inserted.toString();
-          if (text) engine.noteNativeInsert(text);
+        const before = new CodeMirrorVimDocument(transaction.startState.doc);
+        transaction.changes.iterChanges((fromA, toA, _fromB, _toB, inserted) => {
+          if (!transaction.isUserEvent("input") && !transaction.isUserEvent("delete")) return;
+          engine.noteNativeEdit(before, fromA, toA, inserted.toString(),
+            transaction.startState.selection.main.head, transaction.state.selection.main.head);
         });
       }
     }
@@ -583,7 +590,7 @@ class VimEditorController {
       !this.pointerSelectionPending &&
       !this.pointerSyncQueued &&
       !this.isComposing() &&
-      engine.mode.startsWith("visual")
+      (engine.mode.startsWith("visual") || engine.mode.startsWith("select"))
     ) {
       this.scheduleExternalCaretAdoption(update.state.selection.main.head);
     }
@@ -692,6 +699,7 @@ class VimEditorController {
     this.view.dispatch({
       effects: [
         setVimVisualSnapshot.of(null),
+        setVimSearch.of([]),
         this.viewStatusEffect.of(null),
         this.commandLineTextEffect.of(null),
         this.optionsCompartment.reconfigure([]),
@@ -790,8 +798,8 @@ class VimEditorController {
 
   private renderStatus(status: VimStatus): void {
     if (this.destroyed) return;
-    const enteredVisual = status.mode.startsWith("visual") &&
-      !this.lastStatusMode?.startsWith("visual");
+    const enteredVisual = (status.mode.startsWith("visual") || status.mode.startsWith("select")) &&
+      !(this.lastStatusMode?.startsWith("visual") || this.lastStatusMode?.startsWith("select"));
     this.lastStatusMode = status.mode;
     if (enteredVisual) this.context.onEnterVisual?.(this.view);
     const className = statusClass(status);
@@ -1462,7 +1470,7 @@ function measureBlockCursorWidth(view: EditorView): number | null {
 }
 
 function ownsUnmappedKey(mode: VimStatus["mode"], event: KeyboardEvent): boolean {
-  if (mode === "insert" || mode === "replace") return false;
+  if (mode === "insert" || mode === "replace" || mode === "virtual-replace") return false;
   if (event.metaKey) return false;
   return !event.isComposing;
 }
@@ -1477,10 +1485,10 @@ function isPlainTextKey(event: KeyboardEvent): boolean {
 
 function statusClass(status: VimStatus): string {
   if (status.mode === "insert") return "mv-aide-vim-insert";
-  if (status.mode === "replace") return "mv-aide-vim-replace";
+  if (status.mode === "replace" || status.mode === "virtual-replace") return "mv-aide-vim-replace";
   if (status.mode === "command-line") return "mv-aide-vim-command-line";
   if (status.mode === "operator-pending") return "mv-aide-vim-operator";
-  if (status.mode.startsWith("visual")) return "mv-aide-vim-visual";
+  if (status.mode.startsWith("visual") || status.mode.startsWith("select")) return "mv-aide-vim-visual";
   return "mv-aide-vim-normal";
 }
 
