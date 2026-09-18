@@ -75,6 +75,8 @@ import {
   rebuildOrUpgradeDshSource,
 } from "./runtime/source-runtime";
 import { effectiveDshHomeDirectory } from "./paths";
+import { createDshWebAuthStore } from "./runtime/web-auth-store";
+import { promptDshAuthorizationUrl } from "./ui/authorization-modal";
 
 const COMMAND_ID = "open-mv-agent-for-obsidian";
 
@@ -274,6 +276,11 @@ export class DshFeature {
         }
         return runtime.command;
       },
+      undefined,
+      undefined,
+      undefined,
+      createDshWebAuthStore(),
+      (message: string) => new Notice(message, 10_000),
     );
     // The palette command is always available, independent of the enable
     // toggle (the toggle only controls the IDE bridge / lock file).
@@ -345,6 +352,11 @@ export class DshFeature {
       name: t("重启 mv-agent"),
       callback: () => void this.restartDshWithNotice(),
     });
+    this.plugin.addCommand({
+      id: "authorize-mv-agent",
+      name: t("使用 DSH 授权 URL 重新连接"),
+      callback: () => void this.authorizeMvAgentWithNotice(),
+    });
     this.commandRegistered = true;
   }
 
@@ -354,6 +366,7 @@ export class DshFeature {
       this.plugin.removeCommand(COMMAND_ID);
       this.plugin.removeCommand("close-mv-agent");
       this.plugin.removeCommand("restart-mv-agent");
+      this.plugin.removeCommand("authorize-mv-agent");
     }
     this.commandRegistered = false;
     this.registerCommand();
@@ -365,6 +378,7 @@ export class DshFeature {
       this.plugin.removeCommand(COMMAND_ID);
       this.plugin.removeCommand("close-mv-agent");
       this.plugin.removeCommand("restart-mv-agent");
+      this.plugin.removeCommand("authorize-mv-agent");
       this.commandRegistered = false;
     }
     this.processManager.dispose();
@@ -1461,6 +1475,24 @@ export class DshFeature {
         }),
         8000,
       );
+    }
+  }
+
+  private async authorizeMvAgentWithNotice(): Promise<void> {
+    const launchUrl = await promptDshAuthorizationUrl(this.plugin.app);
+    if (!launchUrl) return;
+    const generation = ++this.mvAgentOperationGeneration;
+    try {
+      const confirmed = await this.processManager.confirmDshUrl(launchUrl, 5000);
+      if (!confirmed) throw new Error(t("该 URL 不是当前运行环境中的 DSH 实例。"));
+      if (generation !== this.mvAgentOperationGeneration) return;
+      await this.navigateOpenViewsTo(confirmed);
+      new Notice(t("DSH 已重新授权，mv-agent 已连接原实例。"), 8000);
+    } catch (error) {
+      if (generation !== this.mvAgentOperationGeneration) return;
+      new Notice(t("重新授权失败：{message}", {
+        message: error instanceof Error ? error.message : String(error),
+      }), 10_000);
     }
   }
 

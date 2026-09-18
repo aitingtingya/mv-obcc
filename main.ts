@@ -98,7 +98,7 @@ import { parseTexSections } from "./src/source-assist/tex-outline";
 import { normalizeMvRunSettings } from "./src/terminal/mv-run-types";
 import { TerminalRegistry } from "./src/terminal-control/terminal-registry";
 import { DshTerminalRpc } from "./src/terminal-control/dsh-terminal-rpc";
-import { runFileBottomCommandWithTerminalRegistry } from "./src/terminal-control/mv-run-command";
+import { MvRunFeature } from "./src/mv-run/feature";
 import {
   normalizeTerminalOpenMode,
   normalizeTerminalOpenPosition,
@@ -435,6 +435,7 @@ function customMarkdownHighlightRefreshRequested(update: ViewUpdate): boolean {
 }
 
 export default class MvAideIdePlugin extends Plugin {
+  private mvRunFeature: MvRunFeature | null = null;
   settings: BridgeSettings = { ...DEFAULT_SETTINGS };
   port = 0;
   mcpStatus = t("尚未检查");
@@ -698,6 +699,7 @@ export default class MvAideIdePlugin extends Plugin {
       this.app,
       () => this.createTerminalView(),
     );
+    this.mvRunFeature = new MvRunFeature(this, this.terminalRegistry);
     this.dshTerminalRpc = new DshTerminalRpc(this.terminalRegistry);
     this.applyObsidianStatusBarVisibility();
     this.syncCustomMarkdownExtensions();
@@ -921,6 +923,8 @@ export default class MvAideIdePlugin extends Plugin {
     clearObsidianStatusBarVisibility(document);
     this.dshTerminalRpc?.dispose();
     this.dshTerminalRpc = null;
+    this.mvRunFeature?.dispose();
+    this.mvRunFeature = null;
     this.terminalRegistry?.dispose();
     this.terminalRegistry = null;
     this.unloaded = true;
@@ -1350,15 +1354,10 @@ export default class MvAideIdePlugin extends Plugin {
     this.addCommand({
       id: "run-file-bottom-command",
       name: t("运行 mv-run 指令"),
-      editorCallback: (_editor, view) => {
-        const registry = this.terminalRegistry;
-        if (!registry) return;
-        void runFileBottomCommandWithTerminalRegistry(
-          this,
-          registry,
-          view instanceof MarkdownView ? view : undefined,
-        );
-      },
+      // 与 LLM 模板命令同一考虑（llm-feature.ts）：用 callback 而非
+      // editorCallback，命令在终端、PDF、web 视图聚焦时也能在命令面板
+      // 出现；没有活跃 Markdown 视图时由 MvRunFeature 给出提示。
+      callback: () => this.mvRunFeature?.open(),
     });
     this.registeredStaticCommandIds.add("run-file-bottom-command");
 

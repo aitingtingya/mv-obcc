@@ -53,6 +53,8 @@ Full injection manages three independent DSH plugins: mv-agent, mv-dsh-manager, 
 
 The three DSH plugins share an internal compatibility library, `@mv-aide/mv-dsh-compat`, to preserve the established behavior of the DSH preview while adapting Alpha interfaces. It is not a fourth DSH plugin and adds no settings card or independent runtime state. An unrecognized interface disables only the corresponding enhancement rather than DSH or unrelated features.
 
+For DSH builds that require Web authentication, the issued login cookie is encrypted with the operating system's secure storage and used only to reconnect to the same local instance after Obsidian reopens. Launch-URL tokens are never persisted. If secure storage is unavailable or authorization expires, mv-agent requests reauthorization instead of starting another backend against the same data directory.
+
 File drop is likewise independent of the IDE bridge, so local files can still be appended to the current DSH draft while the bridge is disabled. The injected DSH plugins support opt-in automatic updates aligned to the current mv-AIDE build, with an optional restart of mv-agent after the update; the native Obsidian status bar can also be hidden from the mv-agent section.
 
 ![Real DSH answers from the current selection and expands the live mv-agent status](media/readme/mv-agent.gif)
@@ -90,6 +92,8 @@ Run a real system terminal in the main area, a sidebar, or a bottom split, keepi
 ![Obsidian editor and the real mv-AIDE system terminal](media/readme/terminal.png)
 
 [Terminal support](docs/features-en.md#terminal)
+
+**Ordered mv-run tasks**: choose “Run mv-run command” in the command palette. Enter runs unprotected commands in file order; “Specified execution” accepts sequences such as `pdf,@refs -p,pdf`. Definitions support `--name`, `--group`, and `--protect`. Each step waits for real completion, and failure stops the sequence. [Syntax and examples](docs/features-en.md#mv-run)
 
 ### 5. Source Assist
 

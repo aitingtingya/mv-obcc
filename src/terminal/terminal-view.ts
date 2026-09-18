@@ -38,6 +38,8 @@ import type MvAideIdePlugin from "../../main";
 const TERMINAL_FRAME_INPUT = 0;
 const TERMINAL_FRAME_RESIZE = 1;
 
+export type TerminalSessionEvent = { type: "input"; data: string } | { type: "reset" | "exit" };
+
 export class TerminalView extends ItemView {
   private plugin: MvAideIdePlugin;
   private term: Terminal | null = null;
@@ -62,6 +64,26 @@ export class TerminalView extends ItemView {
   private firstParsedOutput = false;
   private outputRevision = 0;
   private currentShellKind: TerminalShellKind = process.platform === "win32" ? "cmd" : "posix";
+  private readonly sessionListeners = new Set<(event: TerminalSessionEvent) => void>();
+
+  sessionGeneration(): number { return this.shellStartGeneration; }
+
+  subscribeSession(listener: (event: TerminalSessionEvent) => void): () => void {
+    this.sessionListeners.add(listener);
+    return () => this.sessionListeners.delete(listener);
+  }
+
+  registerControlSequence(ident: number, handler: (data: string) => boolean): () => void {
+    if (!this.term) throw new Error("Terminal is not ready");
+    const registration = this.term.parser.registerOscHandler(ident, handler);
+    return () => registration.dispose();
+  }
+
+  private publishSession(event: TerminalSessionEvent): void {
+    for (const listener of this.sessionListeners) {
+      try { listener(event); } catch (error) { console.error("[mv-aide] terminal observer failed", error); }
+    }
+  }
 
   constructor(leaf: WorkspaceLeaf, plugin: MvAideIdePlugin) {
     super(leaf);
@@ -368,6 +390,7 @@ export class TerminalView extends ItemView {
 
   /** Atomically queue a sequence of raw input payloads before PTY startup. */
   sendInputSequence(payloads: string[]): boolean {
+    if (this.sessionListeners.size) for (const data of payloads) this.publishSession({ type: "input", data });
     return this.inputQueue.enqueueManyOrWrite(
       payloads.map((payload) => ({ type: TERMINAL_FRAME_INPUT, payload })),
       this.frameSink(),
@@ -375,6 +398,7 @@ export class TerminalView extends ItemView {
   }
 
   private writeTerminalFrame(type: number, payload: string): boolean {
+    if (type === TERMINAL_FRAME_INPUT && this.sessionListeners.size) this.publishSession({ type: "input", data: payload });
     // PTY 尚未挂载时不再静默丢帧：入队等待 startShell 完成后按序冲刷。
     return this.inputQueue.enqueueOrWrite(type, payload, this.frameSink());
   }
@@ -577,6 +601,7 @@ export class TerminalView extends ItemView {
 
       child.on("exit", (code, signal) => {
         if (generation !== this.shellStartGeneration || this.proc !== child) return;
+        this.publishSession({ type: "exit" });
         if (isWindows && code === 9009) {
           this.term?.writeln(t("\r\n[Python 解释器未找到]"));
           this.term?.writeln(t("请在设置中配置 Python 可执行文件路径，或者安装 Python 到系统。"));
@@ -588,6 +613,7 @@ export class TerminalView extends ItemView {
 
       child.on("error", (err) => {
         if (generation !== this.shellStartGeneration || this.proc !== child) return;
+        this.publishSession({ type: "exit" });
         if (isWindows && err.message.includes("ENOENT")) {
           this.term?.writeln(t("\r\n[Python 执行失败 - Python 未找到]"));
           this.term?.writeln(t("请检查 Python 是否已安装且在 PATH 中，或在设置中手动指定。"));
@@ -627,6 +653,7 @@ export class TerminalView extends ItemView {
 
   /** 停止 PTY（插件卸载清扫与「刷新终端」共用）。 */
   stopShell() {
+    this.publishSession({ type: "reset" });
     this.shellStartGeneration += 1;
     // 进程被终止，未冲刷的输入帧随之作废，避免串到下一个 shell 会话。
     this.inputQueue.clear();

@@ -53,6 +53,8 @@ mv-AIDE 完整注入会管理 mv-agent、mv-dsh-manager 和独立的 mv-dsh-subw
 
 三个 DSH 插件共用内部兼容库 `@mv-aide/mv-dsh-compat`，以同时保持 DSH 预览版的既有行为并适配 Alpha 接口。该库不是第四个 DSH 插件，不增加设置卡或独立运行状态；未识别的接口只会关闭对应增强，不影响 DSH 和其他功能。
 
+需要 Web 鉴权的 DSH 会把登录 Cookie 交给系统安全存储加密，仅用于重开 Obsidian 后接回同一个本机实例；启动 URL 中的 token 不落盘。系统安全存储不可用或登录态失效时，mv-agent 会要求重新授权，不会另起同数据目录的后台争抢会话。
+
 注入的 DSH 插件支持自动更新对齐到当前 mv-AIDE 版本（默认关闭），可选地在更新完成后自动重启 mv-agent；Obsidian 原生状态栏可在 mv-agent 分区一键隐藏。
 
 ![真实 DSH 根据当前选区回答并展开 mv-agent 现场状态](media/readme/mv-agent.gif)
@@ -90,6 +92,8 @@ mv-AIDE 完整注入会管理 mv-agent、mv-dsh-manager 和独立的 mv-dsh-subw
 ![Obsidian 编辑器与 mv-AIDE 真实系统终端](media/readme/terminal.png)
 
 [查看终端支持范围](docs/features.md#terminal)
+
+**mv-run 顺序执行**：在命令面板选择「运行 mv-run 指令」，直接回车按文件顺序执行未受保护的命令；也可选「指定执行」，输入 `pdf,@refs -p,pdf`。文件内支持 `--name` 命名、`--group` 分组和 `--protect` 默认跳过；每一步真正结束后才执行下一步，失败即停止。[语法与示例](docs/features.md#mv-run)
 
 ### 5. 源码编写辅助
 

@@ -204,6 +204,26 @@ export class TerminalRegistry {
     return { terminalId: target.id };
   }
 
+  /** Resolve an explicit command target without changing ordinary run/send contracts. */
+  async prepareCommandTarget(options: TerminalRunOptions = {}): Promise<{ terminalId: string; view: TerminalView; send: (command: string) => Promise<void> }> {
+    this.refresh();
+    const target = options.newTerminal || (!options.terminalId && !this.recentTerminalId)
+      ? await this.createTarget() : await this.resolveLoadedTarget(options.terminalId);
+    const ready = await this.ensureShellReady(target);
+    const generation = ready.view.sessionGeneration();
+    return { terminalId: ready.id, view: ready.view, send: command => {
+      // A prepared target must never silently restart or resolve a different
+      // terminal after an asynchronous caller has bound its lifecycle hooks.
+      this.refresh();
+      if (this.leaves.get(ready.id)?.view !== ready.view || !ready.view.isShellAlive() || ready.view.sessionGeneration() !== generation) {
+        return Promise.reject(new Error("Terminal session changed"));
+      }
+      this.deliverShellCommand(ready.view, command);
+      this.recentTerminalId = ready.id;
+      return Promise.resolve();
+    } };
+  }
+
   async create(): Promise<{ terminalId: string }> {
     const target = await this.createTarget();
     await this.ensureShellReady(target);

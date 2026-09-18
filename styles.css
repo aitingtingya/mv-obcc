@@ -1942,3 +1942,23 @@ body.mv-aide-chrome-autohide-web
   padding: 0;
   pointer-events: auto;
 }
+/* mv-run owns its chooser, completion list and execution preview. */
+.mv-run-dialog .mv-run-mode,
+.mv-run-dialog .mv-run-completion {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  height: auto;
+  width: 100%;
+  text-align: left;
+  white-space: normal;
+}
+.mv-run-dialog .mv-run-mode { padding: 10px 12px; margin-bottom: 6px; }
+/* Completion rows stay dense so more candidates fit before scrolling. */
+.mv-run-dialog .mv-run-completion { padding: 3px 10px; margin-bottom: 1px; line-height: 1.2; }
+.mv-run-dialog .is-selected { background: var(--background-modifier-hover); }
+.mv-run-dialog button span { color: var(--text-muted); font-size: var(--font-ui-small); overflow-wrap: anywhere; }
+.mv-run-order { display: block; width: 100%; margin-top: 8px; }
+.mv-run-completions { max-height: min(320px, 45vh); overflow-y: auto; }
+.mv-run-preview { max-height: 280px; overflow-y: auto; overflow-wrap: anywhere; }
+.mv-run-feedback { color: var(--text-warning); margin: 8px 0; }

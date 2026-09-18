@@ -967,14 +967,15 @@ export const en: Record<string, string> = {
   "留空则跳过该类型的 Lint。手动触发「Lint 当前文件」时执行。支持 {file} 占位符（当前文件路径，自动带引号）；无 {file} 时追加到命令末尾。输出需符合 文件:行:列: 消息（列号可省）。示例：chktex -f%f -v0 {file}；ruff check --output-format=concise {file}": "Leave empty to skip Lint for this type. Runs when you trigger “Lint current file”. Supports the {file} placeholder (current file path, quoted automatically); if absent, the path is appended to the command. Output should follow file:line:col: message (column optional). Examples: chktex -f%f -v0 {file}; ruff check --output-format=concise {file}",
   "如 ruff check --output-format=concise {file}": "e.g. ruff check --output-format=concise {file}",
 
-  // ── 文件底部指令 / File bottom command ──────────────────────────────
+  // ── mv-run 指令 / mv-run command ──────────────────────────────
   "运行 mv-run 指令": "Run mv-run command",
   "当前没有打开的 Markdown 视图": "No Markdown view is open",
   "指令注释前缀": "Command comment prefix",
   "未配置该文件类型的指令注释前缀": "No command comment prefix configured for this file type",
   "保存当前文件失败，未执行 mv-run 指令": "Failed to save the current file; mv-run was not executed",
   "未在文件中找到 mv-run 指令": "No mv-run instruction found in the file",
-  "用于「运行文件底部指令」：文件注释里的 mv-run: <命令> 行会发送到终端。填写该文件类型的注释前缀，多个用分号分隔（如 Python 填 #;#:，Markdown 填 <!--，TeX 填 %，JS 填 //）。留空则禁用该类型。": "Used by “Run file bottom command”: a `mv-run: <command>` line in a file comment is sent to the terminal. Enter the comment prefix(es) for this file type, separated by semicolons (e.g. Python `#;#:`, Markdown `<!--`, TeX `%`, JS `//`). Leave empty to disable this type.",
+  "用于命令「运行 mv-run 指令」：扫描本类型文件中以前缀开头的注释指令行（如 # mv-run: python main.py），在弹窗中选择默认或指定顺序后送入集成终端逐条执行。多个前缀用分号分隔（Python 填 #;#:，Markdown 填 <!--，TeX 填 %，JS 填 //）；<!-- 与 /* 前缀会连同 --> 与 */ 结尾一起识别。留空则禁用该类型。命名、分组与顺序语法见右侧文档按钮。": "Used by the “Run mv-run command” palette command: comment lines starting with a configured prefix in files of this type (e.g. `# mv-run: python main.py`) are collected, then sent to an integrated terminal one by one after you confirm the default or a specified order in the dialog. Separate multiple prefixes with semicolons (Python `#;#:`, Markdown `<!--`, TeX `%`, JS `//`); the `<!--` and `/*` prefixes also recognize the closing `-->` and `*/`. Leave empty to disable this type. See the documentation button on the right for name, group, and ordering syntax.",
+  "查看 mv-run 语法文档": "Open the mv-run syntax guide",
   "如 #;#: 或 <!-- 或 %": "e.g. #;#: or <!-- or %",
 
   // ── 正则查找替换 / Regex find & replace ────────────────────────────
@@ -1274,6 +1275,16 @@ export const en: Record<string, string> = {
   "已打开 mv-agent。": "mv-agent opened.",
   "停止 mv-agent": "Stop mv-agent",
   "重启 mv-agent": "Restart mv-agent",
+  "使用 DSH 授权 URL 重新连接": "Reconnect with a DSH authorization URL",
+  "粘贴原 DSH 进程启动时输出的完整授权 URL。启动令牌只用于本次连接，不会保存到磁盘或日志。": "Paste the complete authorization URL printed when the original DSH process started. Its launch token is used only for this connection and is never stored or logged.",
+  "DSH 授权 URL": "DSH authorization URL",
+  "粘贴完整授权 URL": "Paste the complete authorization URL",
+  "重新连接": "Reconnect",
+  "请输入 DSH 输出的本机完整授权 URL。": "Enter the complete local authorization URL printed by DSH.",
+  "该 URL 不是当前运行环境中的 DSH 实例。": "This URL is not a DSH instance from the current runtime environment.",
+  "DSH 已重新授权，mv-agent 已连接原实例。": "DSH was reauthorized and mv-agent reconnected to the original instance.",
+  "重新授权失败：{message}": "Reauthorization failed: {message}",
+  "mv-agent 重连失败：{message}": "mv-agent reconnection failed: {message}",
   "mv-agent 已重启。": "mv-agent has been restarted.",
   "已停止 {count} 个 mv-agent 界面。": "Stopped {count} open mv-agent view(s).",
   "没有打开的 mv-agent 界面。": "No mv-agent view was open.",

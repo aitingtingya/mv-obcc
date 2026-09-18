@@ -63,7 +63,7 @@ mv-AIDE 是 Obsidian 桌面端 AI IDE 插件。八个主设置分区保持功能
 | 2 | mv-agent | 关 | 内置 DSH：环境安装、插件注入、视图与库外策略 |
 | 3 | 文件内AI助手 | 三个子区默认折叠；划词与行内开关均关 | API 提供商、划词任务、Markdown ghost text |
 | 4 | 终端 | 可用，默认右侧打开 | 系统 Shell、路径联动、MCP 输出 |
-| 5 | 源码编写辅助 | 开；仅内置 Markdown profile | 非 md 后缀、Code Suite、Lint、TeX |
+| 5 | 源码编写辅助 | 开；仅内置 Markdown profile | 非 md 后缀、Code Suite、Lint、mv-run 前缀、TeX |
 | 6 | Vim 增强 | 所有后缀均关 | 独立 Vim 引擎与仓库级 vimrc |
 | 7 | 默认文件打开器 | 关 | 系统文件关联与库外文件镜像 |
 | 8 | 文件系统与浏览器 | 三个入口均开 | 下载、历史、任意目录浏览、自动收起、自定义网页按钮 |
@@ -188,7 +188,7 @@ mv-agent 把 DeepSeek Harness（DSH）内嵌进 Obsidian：直接使用 DSH Web 
 - **自动适应图片大小**：默认开启。图片在发送并写入 DSH 历史前处理，最长边超过 2000px 时等比缩到 2000px；小图保持原字节，原始本地文件不修改。关闭后恢复 DSH 原生尺寸限制。
 - **隐藏 Obsidian 原生状态栏**：默认关闭，只给 `body` 增减专用 class 并隐藏 Obsidian 自身 `.status-bar` 容器；不针对 mv-agent 自有状态栏写选择器，也不会触发桥接重连、DSH 重启或工具刷新。
 - **地址与端口**：DSH Web 服务只绑定 `127.0.0.1`，默认首选端口 `3080`，可在设置中修改。只复用与当前 CLI/源码目录和 DSH 数据目录匹配的运行实例；该端口被全局 DSH、另一 Vault 的 DSH 或其它程序占用时会自动使用后续空闲端口，不会接管或停止它。
-- **授权模式与回环代理**：当 DSH 端点带 launch token 授权（Alpha）时，mv-agent 的 iframe 实际加载的是 mv-AIDE 自有的回环反向代理地址（端口由系统分配，仍只绑定 `127.0.0.1`）：启动令牌在插件侧换取代换 Cookie，Cookie 只保存在插件进程内存，不出现在页面或磁盘；`/api/` 下的 WebSocket 全部经代理隧道；上游重启导致 Cookie 失效时会自动重新兑换。无鉴权端点（预览版）不建代理，保持直连。「用浏览器打开」与「复制 DSH 地址」给出的是原始启动地址（顶层导航可正常落 Cookie），永远不会是代理地址。
+- **授权模式与回环代理**：当 DSH 端点带 launch token 授权（Alpha）时，mv-agent 的 iframe 实际加载的是 mv-AIDE 自有的回环反向代理地址（端口由系统分配，仍只绑定 `127.0.0.1`）：启动令牌只在当前进程内完成一次交换以换取会话 Cookie，从不落盘或记入日志；Cookie 不出现在页面。为支持重连，插件会把 Cookie 经系统安全存储（Electron safeStorage）加密后，按 DSH 运行身份与精确 loopback origin 隔离保存到 `~/.mv-aide/dsh/web-auth/`（原子写入，目录 `0700`、文件 `0600`）；系统安全存储不可用（含 Linux `basic_text`）时不做明文降级，登录态仅在本次 Obsidian 运行期间有效并会明确提示。`/api/` 下的 WebSocket 全部经代理隧道；上游重启导致 Cookie 失效时会自动重新兑换。需要鉴权的实例重连时，先按保存的 endpoint 与运行身份恢复 Cookie 并完成真实验证；无凭据、凭据过期或验证失败时停在原实例并报告「DSH 要求重新授权」，不会另起第二实例争抢会话——此时使用命令面板「使用 DSH 授权 URL 重新连接」，粘贴原 DSH 进程启动时输出的完整授权 URL 即可重连原实例。无鉴权端点（预览版）不建代理也不读写鉴权缓存，保持直连。「用浏览器打开」与「复制 DSH 地址」给出的是原始启动地址（顶层导航可正常落 Cookie），永远不会是代理地址。
 
 ### 运行环境
 
@@ -517,7 +517,7 @@ Code Suite 是按 profile 独立开关的 Latex Suite 兼容编辑内核，不�
 | Lint | 每 profile 配置命令；`{file}` 替换为带引号文件路径，否则路径追加到命令末尾 |
 | 自动 Lint | 持续模式下编辑停止约 600 ms 后运行；可手动运行或清除 |
 | 诊断格式 | `file:line:col: message`，列号可省略；可推送给 IDE 桥接 |
-| `mv-run` | 读取文件底部匹配前缀的注释行；多个前缀以分号分隔。`mv-run: <命令>` 在最近活跃的 mv-AIDE 集成终端运行，没有终端时自动新建；`mv-run -n: <命令>` 始终新建一个集成终端再运行 |
+| `mv-run` | 扫描整个文件中匹配前缀的注释行；多个前缀以分号分隔。命令面板支持默认执行或指定名称/分组顺序；`-n` 始终新建终端，详见下文 |
 | 当前文件正则 | 使用 CodeMirror 搜索面板 |
 | 多文件正则 | 当前目录或整个 vault，先预览再应用 |
 | 范围上限 | 每 profile 为关闭/当前文件/当前目录/整个 vault；Markdown 默认当前文件 |
@@ -525,6 +525,41 @@ Code Suite 是按 profile 独立开关的 Latex Suite 兼容编辑内核，不�
 外部命令以当前用户权限运行。命令为空时功能不执行；插件不会自动为 Lint 或 `mv-run` 安装工具链。
 
 常见写法：`# mv-run: python main.py` 会复用最近活跃终端；`# mv-run -n: pytest` 会强制新建终端。块注释前缀同样支持，例如 `<!-- mv-run: npm run build -->`；TeX 可配置 `% mv-run -n: latexmk -pdf main.tex`。
+
+<a id="mv-run"></a>
+### mv-run：命名、分组与顺序执行
+
+执行命令面板的「运行 mv-run 指令」对当前 Markdown 视图打开执行弹窗：命令在终端、PDF、网页等任何界面聚焦时都能在命令面板找到，当前没有打开的 Markdown 视图时会以 Notice 提示。快捷键可在 Obsidian 快捷键设置中绑定；命令 ID 保持 `run-file-bottom-command`，既有绑定不受影响。前缀在当前 profile 的「指令注释前缀」设置中配置：分号分隔多个前缀，`<!--` 与 `/*` 前缀会把行尾的 `-->` / `*/` 一并剥离，留空则禁用该类型；该设置行右侧的文档按钮按界面语言打开本手册 GitHub 版的 mv-run 章节（中文界面打开 `docs/features.md#mv-run`，英文界面打开 `docs/features-en.md#mv-run`）。入口校验在打开弹窗前完成：该类型未配置前缀、文件中没有指令、或任一指令行存在语法错误时弹窗不会打开，Notice 分别提示未配置前缀、未找到指令，或以 `行号:列号` 指出语法错误位置。
+
+弹窗默认选中「默认执行」：直接回车按文件顺序执行所有没有 `--protect` 的命令。选择「指定执行」可输入名称与分组列表，查看实际执行顺序及被过滤的成员。
+
+```tex
+% mv-run --name bib --group refs,full --protect: bibtex main
+% mv-run --name pdf --group build,full: pdflatex main.tex
+% mv-run --name clean --protect: latexmk -c main.tex
+```
+
+元数据与 shell 命令以第一个未加引号的冒号分隔：冒号前是 mv-run 参数，之后的全部内容原样作为 shell 命令（其中的冒号、引号、`!` 等不再被 mv-run 解释）。参数支持 `--name 名称`、`--group 组甲,组乙`、`--protect` 和原有 `-n`，可组合使用；`--group` 可重复书写（与逗号分隔等效，同一条命令上的组名去重），`--name` 重复书写会报错。名称/组名区分大小写，支持中文；包含空格、逗号、冒号等分隔符或以 `-` 开头时需要加引号，引用以 `@` 开头的任务名同样要加引号（否则被当作分组）；引号内可用 `\` 转义引号与反斜杠。没有名称的命令仍可默认执行或通过分组执行；没有名称、没有分组且受保护的命令不会被触发。不生成自动编号，不新增配置文件。参数与引用的解析错误信息以英文显示。
+
+指定顺序示例：
+
+- `pdf`：执行命名命令，包括受保护的命令。
+- `pdf,bib,pdf,pdf`：按输入顺序执行，每次引用都保留。
+- `clean,pdf`：清理成功后编译。
+- `@full`：按文件顺序执行 full 的全部成员，包括受保护成员。
+- `@full -p,pdf`：仅此次 full 分组排除受保护成员，然后再次执行 pdf。
+
+分组不能嵌套；一条命令可属于多个组。重复引用、组间重叠均不去重。重名不影响默认执行，但单条名称引用有歧义时拒绝执行并列出全部候选行号。未知引用、非法参数或语法错误会指出位置，整段序列不会部分执行。过滤后为空则跳过；整个序列为空不创建终端。
+
+弹窗内可用 ↑/↓ 在两种执行方式间切换。指定执行的预览区分两栏：「实际执行顺序」逐步列出名称、🔒（受保护）、`[-n]`（新建终端）与命令文本，「因保护规则跳过」列出被过滤的成员。Tab 接受补全（候选含名称、`@分组` 与 `@分组 -p`，详情列出成员命令），点击补全项只填入，Enter 执行，Esc 取消；空输入直接 Enter 会报错且不执行。确认前不保存文件、不运行命令。指定执行时若文件指令发生变化，会刷新预览并要求再次确认。
+
+确认后先保存发起操作的文件，再在确认时绑定的最近活跃终端中执行（没有则新建）。不会自动 `cd` 到文件目录；后续步骤保留当前 shell 的目录与环境变量。`-n` 为该步骤创建新终端，后续普通步骤沿用它。切换窗口、文件或激活另一个终端不会改投正在运行的序列。
+
+每一步通过真实开始/结束回执和退出状态串行调度：只有开始回执有 10 秒等待上限（终端前台被其它程序占用时会报 "Terminal did not acknowledge execution"，可改用 `-n` 新建终端），已开始执行的命令没有时间限制。交互程序仍可正常接受用户输入；不会把后面的步骤提前送入程序。首次失败（退出状态非 0）即停止并显示命令及状态。Ctrl+C、终端关闭/刷新和插件卸载取消剩余步骤，不强杀已有程序。同一终端不交错执行两个 mv-run 序列（报 "already has an mv-run sequence"），不同终端可独立运行。
+
+除 Windows cmd 外，每步会把带开始/结束回执的脚本临时写入 `~/.mv-aide/tmp/mv-run/step-*/` 并在当前 shell 内加载以保留状态，步骤结束或取消后精确清理；Windows cmd 不加载脚本，命令本体留在交互命令行，仅回执来自同目录的临时 begin/end 批处理文件。不要在正在运行其它程序的终端启动序列；需要独立终端时使用 `-n`。
+
+本次真实终端验收覆盖 macOS bash/zsh；Linux、Windows cmd/PowerShell 及 fish 尚未完成原生平台验收，不以模拟测试替代。
 
 ### 高亮主题
 
@@ -788,7 +823,7 @@ mv-agent 与 IDE 桥接共享同一条本地桥接服务、同一组公共工具
 
 - 将当前选区发送给 Claude/Agent。
 - 打开系统终端。
-- 打开、停止、重启 mv-agent。
+- 打开、停止、重启 mv-agent，以及使用 DSH 授权 URL 重新连接（仅授权模式的实例需要）。
 - 运行当前文件 `mv-run`。
 - 新建已注册的非 Markdown 源码文件。
 - 打开库外文件、按路径打开、清理失效库外链接。
@@ -833,9 +868,10 @@ mv-agent 与 IDE 桥接共享同一条本地桥接服务、同一组公共工具
 | `$DSH_HOME/profiles/web/`（默认 `~/.dsh/profiles/web/`） | DSH web profile、patch 层以及三个独立受管插件：`@mv-aide/mv-agent` / `@mv-aide/mv-dsh-manager` / `@mv-aide/mv-dsh-subworkspace` |
 | `~/.mv-aide/ide/` | 统一 IDE 桥接发现注册表（mv-AIDE 权威 lock 文件） |
 | `~/.mv-aide/dsh/bridge-selection.json` | dsh 各会话的桥接选择（持久化，会话键分区） |
+| `~/.mv-aide/dsh/web-auth/` | 经系统安全存储加密的 DSH Web 登录 Cookie，按运行身份与精确 loopback origin 隔离；不含启动令牌、明文 Cookie 或聊天内容；安全存储不可用时不明文落盘 |
 | `~/.mv-aide/file-opener/` | 默认打开器当前 authority：owner、runtime、wrapper、helper 和图标；不包含 OS 系统关联数据库 |
 | `~/.mv-aide/runtime/` | 终端、通用 MCP 和 Codex 集成所需的可重建运行产物 |
-| `~/.mv-aide/tmp/` | DSH 安装、打开器预检等操作范围的临时文件 |
+| `~/.mv-aide/tmp/` | DSH 安装、打开器预检等操作范围的临时文件；`mv-run/step-*/` 为 mv-run 单步脚本与控制回执，步骤结束、取消或失败后精确删除 |
 | `$DSH_HOME/.mv-aide/runtime-owners/<port>.json` | mv-AIDE 启动的 DSH 实例 owner 记录：不含密钥的 PID、端口与身份指纹（目录 `0700`、文件 `0600`，临时文件+rename 原子写），仅用于防止误接管或停止另一个 DSH |
 | `$CLAUDE_CONFIG_DIR/ide/`（默认 `~/.claude/ide/`） | Claude Code 只读的 discovery 兼容镜像；权威来源仍是 `~/.mv-aide/ide/` |
 | `$CODEX_HOME/config.toml`（默认 `~/.codex/config.toml`） | mv-AIDE 带标记的 `mcp_servers.mv_aide_obsidian` 受管块 |
@@ -882,6 +918,10 @@ API Key 明文存储在 `data.json`，可能随 vault 备份或同步传播。�
 3. 插件图发生变化后，运行中的 DSH 会被协调重启一次。若界面仍是旧模块图，先查看重启报错，再使用命令面板的「重启 mv-agent」。
 4. 用户导入插件始终经由 `dsh plugin add`。该命令、本地路径、`package.json` 名称或 profile manifest 校验失败时，修正原因后重试；不要期待 `file:` 热加载回退，也不要手工追加 patch 行。
 5. Windows 上报「枚举 Windows 进程超时：系统 WMI 响应异常缓慢」时，说明系统 WMI 服务退化：以管理员身份执行 `Restart-Service Winmgmt`（或重启电脑）修复 WMI 后重试。WMI 退化期间包安装/升级会拒绝继续（不会在进程状态未知时改动包），但打开 mv-agent 不受影响。
+
+### mv-agent 提示「DSH 要求重新授权」
+
+原实例仍在运行，mv-AIDE 不会另起实例争抢其会话。使用命令面板「使用 DSH 授权 URL 重新连接」，粘贴原 DSH 进程启动时输出的完整授权 URL；URL 不属于当前运行环境中的实例时会被拒绝。系统安全存储不可用（如 Linux `basic_text`）时登录态只在本次 Obsidian 运行期间有效，重启 Obsidian 后需重新授权一次。
 
 ### Diff 没有出现
 

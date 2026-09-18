@@ -378,9 +378,12 @@ export class DshWebView extends ItemView {
     if (!url && feature) {
       try {
         url = await feature.resolveDshViewUrl();
-      } catch {
+      } catch (error) {
         this.loadFailed = true;
         this.renderStatus();
+        new Notice(t("mv-agent 重连失败：{message}", {
+          message: error instanceof Error ? error.message : String(error),
+        }), 10_000);
         return;
       }
     }

@@ -1,4 +1,10 @@
 // 纯类型 + 归一化：不 import obsidian，保持可独立单测。
+/** 「指令注释前缀」设置行文档按钮的跳转地址，按界面语言选择手册版本。 */
+export const MV_RUN_DOC_URL = {
+  zh: "https://github.com/aitingtingya/mv-obcc/blob/main/docs/features.md#mv-run",
+  en: "https://github.com/aitingtingya/mv-obcc/blob/main/docs/features-en.md#mv-run",
+} as const;
+
 export interface MvRunProfile {
   extension: string;
   /** 分号分隔的注释前缀，如 "#;#:"。 */

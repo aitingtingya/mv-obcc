@@ -25,6 +25,7 @@ import {
   type DshWebProxyDeps,
   type DshWebProxyLike,
 } from "./web-proxy";
+import type { DshWebAuthStore } from "./web-auth-store";
 
 /** The dsh web SPA root HTML carries this stable marker. */
 const DSH_WEB_MARKER = "__DSH_BOOT__";
@@ -166,8 +167,8 @@ export class DshPortOccupiedError extends Error {
 }
 
 export class DshAuthorizationRequiredError extends Error {
-  constructor(readonly identityUrl: string) {
-    super("DSH Alpha 要求浏览器授权，但当前进程没有可恢复的启动授权 URL。请重新启动该 DSH 实例以获取新的授权 URL。");
+  constructor(readonly identityUrl: string, options?: ErrorOptions) {
+    super(`DSH 要求重新授权。原实例仍在 ${identityUrl} 运行，mv-AIDE 不会另起实例争抢其会话。请使用“使用 DSH 授权 URL 重新连接 mv-agent”，或明确重启该实例。`, options);
     this.name = "DshAuthorizationRequiredError";
   }
 }
@@ -285,6 +286,9 @@ export class DshProcessManager {
   private announcedUrl: string | null = null;
   /** One-shot Alpha authorization URL; memory-only and never persisted. */
   private launchUrl: string | null = null;
+  /** Endpoint capability: this DSH requires the authenticated loopback proxy. */
+  private authGatedEndpoint: string | null = null;
+  /** Transient failure: the auth-gated endpoint currently lacks valid authority. */
   private authorizationRequiredEndpoint: string | null = null;
   private launchedPort: number | null = null;
   private managedCommand: DshCommand | null = null;
@@ -307,6 +311,8 @@ export class DshProcessManager {
       createDefaultDshProcessDiscoveryAdapter(),
     private readonly proxyFactory: DshWebProxyFactory =
       (upstream, deps) => new DshWebProxy(upstream, deps),
+    private readonly authStore?: DshWebAuthStore,
+    private readonly authPersistenceWarning: (message: string) => void = () => {},
   ) {}
 
   isRunning(): boolean {
@@ -367,6 +373,7 @@ export class DshProcessManager {
     if (launch && launch !== normalized) this.launchUrl = launch;
     else if (!sameEndpoint) {
       this.launchUrl = null;
+      this.authGatedEndpoint = null;
       this.stopWebProxy();
     }
     if (this.launchUrl && sameDshWebUrl(this.launchUrl, normalized)) {
@@ -381,10 +388,20 @@ export class DshProcessManager {
     return this.navigationUrl() ?? normalized;
   }
 
+  private rememberUnauthenticatedEndpoint(url: string, fallbackPort?: number): string {
+    const normalized = this.rememberEndpoint(url, fallbackPort);
+    this.launchUrl = null;
+    this.authGatedEndpoint = null;
+    this.authorizationRequiredEndpoint = null;
+    this.stopWebProxy();
+    return normalizeDshWebUrl(normalized) ?? normalized;
+  }
+
   private clearUnmanagedEndpoint(): void {
     if (this.isRunning()) return;
     this.announcedUrl = null;
     this.launchUrl = null;
+    this.authGatedEndpoint = null;
     this.authorizationRequiredEndpoint = null;
     this.launchedPort = null;
     this.stopWebProxy();
@@ -407,8 +424,14 @@ export class DshProcessManager {
   private async ensureWebProxy(): Promise<DshWebProxyLike | null> {
     const identity = normalizeDshWebUrl(this.announcedUrl ?? "");
     const launch = this.launchUrl;
-    // No launch authority → the endpoint is not auth-gated → direct URL.
-    if (!launch || !identity || launch === identity) {
+    if (!identity) {
+      this.stopWebProxy();
+      return null;
+    }
+    const authRequired = this.authGatedEndpoint !== null
+      && sameDshWebUrl(this.authGatedEndpoint, identity);
+    // Preview serves its root directly and never enters the auth path.
+    if ((!launch || launch === identity) && !authRequired) {
       this.stopWebProxy();
       return null;
     }
@@ -423,14 +446,44 @@ export class DshProcessManager {
           // The held cookie stopped authenticating (upstream restarted).
           // Drop it so the next webViewUrl() re-exchanges the live token.
           this.webProxy?.invalidateExchange();
+          this.authorizationRequiredEndpoint = identity;
+          this.authGatedEndpoint = identity;
+          void this.selectedCommand().then((command) => command
+            ? this.authStore?.remove(command, identity)
+            : undefined).catch(() => undefined);
+        },
+        onSessionReady: async (credential) => {
+          try {
+            const command = await this.selectedCommand();
+            if (!command || !this.authStore) return;
+            await this.authStore.save(command, identity, credential);
+          } catch (error) {
+            this.authPersistenceWarning(error instanceof Error ? error.message : "DSH 登录态加密保存失败。");
+          }
         },
       });
       this.webProxy = proxy;
       try {
         if (!proxy.url) await proxy.start();
-        // No-op for an already-redeemed launch URL; re-exchanges after token
-        // rotation (upstream restart) or an invalidated session.
-        await proxy.ensureExchanged(launch);
+        if (launch && launch !== identity) {
+          // No-op for an already-redeemed launch URL; re-exchanges after token
+          // rotation (upstream restart) or an invalidated session.
+          await proxy.ensureExchanged(launch);
+        } else {
+          const command = await this.selectedCommand();
+          const credential = command && this.authStore
+            ? await this.authStore.load(command, identity)
+            : null;
+          if (!credential) throw new DshAuthorizationRequiredError(identity);
+          try {
+            if (!proxy.restoreSession) throw new Error("当前 DSH 代理不支持登录态恢复。");
+            await proxy.restoreSession(credential);
+            this.authorizationRequiredEndpoint = null;
+          } catch (error) {
+            if (command && this.authStore) await this.authStore.remove(command, identity);
+            throw new DshAuthorizationRequiredError(identity, { cause: error });
+          }
+        }
       } catch (error) {
         if (this.webProxy === proxy) this.stopWebProxy();
         throw error;
@@ -522,11 +575,15 @@ export class DshProcessManager {
       const suppliedLaunch = normalizeDshLaunchUrl(url);
       const hasLaunchAuthority = suppliedLaunch !== null && suppliedLaunch !== normalized;
       const rememberedAuthority = this.launchUrl !== null && sameDshWebUrl(this.launchUrl, normalized);
-      if (probe.authenticationRequired && !hasLaunchAuthority && !rememberedAuthority) {
+      this.rememberEndpoint(hasLaunchAuthority && suppliedLaunch ? suppliedLaunch : normalized);
+      if (probe.authenticationRequired) {
+        this.authGatedEndpoint = normalized;
         this.authorizationRequiredEndpoint = normalized;
-        throw new DshAuthorizationRequiredError(normalized);
+        if (!hasLaunchAuthority && !rememberedAuthority) this.launchUrl = null;
+        await this.ensureWebProxy();
+      } else {
+        this.rememberUnauthenticatedEndpoint(normalized);
       }
-      this.rememberEndpoint(url);
       return normalized;
     }
     if (
@@ -641,8 +698,12 @@ export class DshProcessManager {
       if (probe.reachable) {
         const expected = allowAdopt && probe.isDsh ? await resolveCommand() : null;
         if (allowAdopt && probe.isDsh && await this.endpointMatchesCommand(url, expected)) {
-          if (!probe.authenticationRequired) return this.rememberEndpoint(url, candidate);
-          this.authorizationRequiredEndpoint ??= url;
+          if (!probe.authenticationRequired) return this.rememberUnauthenticatedEndpoint(url, candidate);
+          this.rememberEndpoint(url, candidate);
+          this.authGatedEndpoint = url;
+          this.authorizationRequiredEndpoint = url;
+          await this.ensureWebProxy();
+          return this.navigationUrl() ?? url;
         }
         continue;
       }
@@ -692,6 +753,7 @@ export class DshProcessManager {
       this.output = "";
       this.announcedUrl = null;
       this.launchUrl = null;
+      this.authGatedEndpoint = null;
       this.stopWebProxy();
       this.authorizationRequiredEndpoint = null;
       this.launchedPort = port;
@@ -783,6 +845,7 @@ export class DshProcessManager {
             /* listener-pid hint is best-effort */
           }
           const url = this.rememberEndpoint(target, port);
+          if (probe.authenticationRequired) this.authGatedEndpoint = normalizeDshWebUrl(target);
           // Alpha token endpoints need the loopback proxy before any iframe
           // can load: exchange the token for a session cookie now, while the
           // launch authority is still fresh. A proxy failure is a boot
@@ -940,11 +1003,6 @@ export class DshProcessManager {
           if (!probe.reachable || !probe.isDsh) return null;
           if (!await this.endpointMatchesCommand(candidate.url, expectedCommand)) return null;
           candidate.authenticationRequired = probe.authenticationRequired === true;
-          if (candidate.authenticationRequired && !candidate.connected
-              && !(this.launchUrl && sameDshWebUrl(this.launchUrl, candidate.url))) {
-            this.authorizationRequiredEndpoint ??= candidate.url;
-            return null;
-          }
           return candidate;
         }),
       )
@@ -964,7 +1022,16 @@ export class DshProcessManager {
       }
       return left.port - right.port;
     });
-    return ranked[0] ?? null;
+    const selected = ranked[0] ?? null;
+    if (selected?.authenticationRequired) {
+      this.rememberEndpoint(selected.url, selected.port);
+      this.authGatedEndpoint = selected.url;
+      this.authorizationRequiredEndpoint = selected.url;
+      await this.ensureWebProxy();
+    } else if (selected) {
+      this.rememberUnauthenticatedEndpoint(selected.url, selected.port);
+    }
+    return selected;
   }
 
   private invalidatePendingStart(): void {
@@ -986,6 +1053,7 @@ export class DshProcessManager {
       this.managedOwnerReady = null;
       this.announcedUrl = null;
       this.launchUrl = null;
+      this.authGatedEndpoint = null;
       this.stopWebProxy();
       this.authorizationRequiredEndpoint = null;
       this.launchedPort = null;
@@ -1014,6 +1082,7 @@ export class DshProcessManager {
     this.managedOwnerReady = null;
     this.announcedUrl = null;
     this.launchUrl = null;
+    this.authGatedEndpoint = null;
     this.authorizationRequiredEndpoint = null;
     this.launchedPort = null;
     if (managedCommand && managedPort && child.pid) {
@@ -1085,6 +1154,7 @@ export class DshProcessManager {
         this.managedOwnerReady = null;
         this.announcedUrl = null;
         this.launchUrl = null;
+        this.authGatedEndpoint = null;
         this.stopWebProxy();
         this.authorizationRequiredEndpoint = null;
         this.launchedPort = null;
@@ -1118,6 +1188,7 @@ export class DshProcessManager {
       }
       this.announcedUrl = null;
       this.launchUrl = null;
+      this.authGatedEndpoint = null;
       this.stopWebProxy();
       this.authorizationRequiredEndpoint = null;
       this.launchedPort = null;
@@ -1236,6 +1307,7 @@ export class DshProcessManager {
       this.managedOwnerReady = null;
       this.announcedUrl = null;
       this.launchUrl = null;
+      this.authGatedEndpoint = null;
       this.stopWebProxy();
       this.authorizationRequiredEndpoint = null;
       this.launchedPort = null;
@@ -1285,6 +1357,7 @@ export class DshProcessManager {
     if (!probe.reachable || !probe.isDsh || !await this.endpointMatchesCommand(endpoint, expected)) {
       this.announcedUrl = null;
       this.launchUrl = null;
+      this.authGatedEndpoint = null;
       this.stopWebProxy();
       this.authorizationRequiredEndpoint = null;
       this.launchedPort = null;
@@ -1313,6 +1386,7 @@ export class DshProcessManager {
         if (expected) await removeDshRuntimeOwner(expected, actualPort);
         this.announcedUrl = null;
         this.launchUrl = null;
+        this.authGatedEndpoint = null;
         this.stopWebProxy();
         this.authorizationRequiredEndpoint = null;
         this.launchedPort = null;

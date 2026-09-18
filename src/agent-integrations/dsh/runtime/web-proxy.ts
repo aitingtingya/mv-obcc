@@ -65,13 +65,17 @@ const HOP_BY_HOP = new Set([
 export interface DshWebProxyDeps {
   /** Called once when the upstream starts answering 401 to the held cookie. */
   readonly onUnauthorized?: () => void;
+  readonly onSessionReady?: (credential: DshWebProxyCredential) => void | Promise<void>;
 }
+
+export interface DshWebProxyCredential { readonly cookie: string; readonly expiresAt: number }
 
 interface Session {
   /** Minted `name=value` cookie pair, or "" when the endpoint needs no auth. */
   readonly cookie: string;
   /** The launch URL whose token minted this session (redacted in output). */
   readonly launchUrl: string;
+  readonly expiresAt: number;
 }
 
 export interface UpstreamResponse {
@@ -90,12 +94,14 @@ export interface DshWebProxyLike {
   readonly ready: boolean;
   start(): Promise<string>;
   ensureExchanged(launchUrl: string): Promise<void>;
+  restoreSession?(credential: DshWebProxyCredential): Promise<void>;
   invalidateExchange(): void;
   stop(): void;
 }
 
 export class DshWebProxy {
   private readonly onUnauthorized?: () => void;
+  private readonly onSessionReady?: (credential: DshWebProxyCredential) => void | Promise<void>;
   private readonly upstreamUrl: URL;
   private readonly upstreamAuthority: string;
   private readonly sockets = new Set<Duplex>();
@@ -106,6 +112,7 @@ export class DshWebProxy {
 
   constructor(upstream: string, deps: DshWebProxyDeps = {}) {
     this.onUnauthorized = deps.onUnauthorized;
+    this.onSessionReady = deps.onSessionReady;
     const parsed = parseUpstream(upstream);
     this.upstreamUrl = parsed;
     this.upstreamAuthority = parsed.host;
@@ -172,6 +179,17 @@ export class DshWebProxy {
     return this.exchangePromise;
   }
 
+  async restoreSession(credential: DshWebProxyCredential): Promise<void> {
+    if (!validCookiePair(credential.cookie) || credential.expiresAt <= Date.now()) throw new Error("dsh 登录态已经过期或格式无效");
+    this.session = { ...credential, launchUrl: this.upstream };
+    const verify = await this.requestUpstream("/");
+    const body = await readProxyBody(verify.res);
+    if (verify.status !== 200 || !body.includes(DSH_WEB_MARKER)) {
+      this.session = null;
+      throw new Error(`dsh 登录态验证失败（HTTP ${String(verify.status)}）。`);
+    }
+  }
+
   /** Force the next ensureExchanged to redeem the current launch token. */
   invalidateExchange(): void {
     this.session = null;
@@ -232,15 +250,15 @@ export class DshWebProxy {
       // used for them in practice, but keep the contract explicit.
       const body = await readProxyBody(response.res);
       if (body.includes(DSH_WEB_MARKER)) {
-        this.session = { cookie: "", launchUrl: launch.href };
+        this.session = { cookie: "", launchUrl: launch.href, expiresAt: Number.MAX_SAFE_INTEGER };
         return;
       }
       throw new Error(`dsh 授权交换失败（HTTP ${String(status)}，无启动标记）。`);
     }
     if (status === 303 || status === 302 || status === 307 || status === 308) {
-      const cookie = firstCookie(response.headers["set-cookie"]);
-      if (!cookie) throw new Error("dsh 授权响应未携带会话 Cookie。");
-      this.session = { cookie, launchUrl: launch.href };
+      const credential = firstCookie(response.headers["set-cookie"]);
+      if (!credential) throw new Error("dsh 授权响应未携带有效会话 Cookie。");
+      this.session = { ...credential, launchUrl: launch.href };
       // Verify the minted cookie actually serves the SPA root.
       const verify = await this.requestUpstream("/");
       const verifyBody = await readProxyBody(verify.res);
@@ -248,6 +266,7 @@ export class DshWebProxy {
         this.session = null;
         throw new Error(`dsh 会话 Cookie 验证失败（HTTP ${String(verify.status)}）。`);
       }
+      await this.onSessionReady?.(credential);
       return;
     }
     throw new Error(`dsh 授权交换失败（HTTP ${String(status)}）。`);
@@ -388,12 +407,20 @@ function parseUpstream(raw: string): URL {
   }
 }
 
-function firstCookie(setCookie: string[] | string | undefined): string | null {
+function firstCookie(setCookie: string[] | string | undefined): DshWebProxyCredential | null {
   if (!setCookie) return null;
   const first = Array.isArray(setCookie) ? setCookie[0] : setCookie;
   if (!first) return null;
-  const pair = first.split(";", 1)[0];
-  return pair && pair.includes("=") ? pair.trim() : null;
+  const pair = first.split(";", 1)[0]?.trim();
+  if (!pair || !validCookiePair(pair)) return null;
+  const maxAge = /(?:^|;)\s*Max-Age=(\d+)/iu.exec(first)?.[1];
+  const expires = /(?:^|;)\s*Expires=([^;]+)/iu.exec(first)?.[1];
+  const expiresAt = maxAge ? Date.now() + Number(maxAge) * 1000 : expires ? Date.parse(expires) : Number.NaN;
+  return Number.isSafeInteger(expiresAt) && expiresAt > Date.now() ? { cookie: pair, expiresAt } : null;
+}
+
+function validCookiePair(value: string): boolean {
+  return value.length <= 16_384 && /^[^=;\s]+=[^;\r\n]+$/u.test(value);
 }
 
 export function readProxyBody(res: IncomingMessage): Promise<string> {

@@ -21,6 +21,10 @@ export function fileOpenerDirectory(): string {
   return path.join(mvAideSystemRoot(), "file-opener");
 }
 
+export function dshWebAuthDirectory(): string {
+  return path.join(mvAideSystemRoot(), "dsh", "web-auth");
+}
+
 export function legacyVimConfigPath(): string {
   return path.join(mvAideSystemRoot(), "vim", ".vimrc");
 }

@@ -63,7 +63,7 @@ Community Plugins is the recommended installation route. A manual installation m
 | 2 | mv-agent | Off | Built-in DSH: environment install, plugin injection, view, and out-of-vault policy |
 | 3 | In-file AI assistant | All three subsections collapsed; Selection and Inline switches off | API providers, selection tasks, and Markdown ghost text |
 | 4 | Terminal | Available; opens on the right | System shell, path links, and MCP output |
-| 5 | Source Assist | On; Markdown profile only | Non-md extensions, Code Suite, linting, and TeX |
+| 5 | Source Assist | On; Markdown profile only | Non-md extensions, Code Suite, linting, mv-run prefixes, and TeX |
 | 6 | Vim Enhancement | Off for every extension | Independent Vim engine and vault vimrc |
 | 7 | Default File Opener | Off | System associations and external-file mirrors |
 | 8 | Filesystem & Browser | All three entry points on | Downloads, history, arbitrary-directory browsing, auto-collapse, custom web page buttons |
@@ -188,7 +188,7 @@ mv-agent embeds DeepSeek Harness (DSH) directly into Obsidian: use the DSH web U
 - **Automatically fit image size**: on by default. Images are processed before they are sent and written into DSH history. A longest edge above 2000px is proportionally reduced to 2000px; smaller image bytes and the original local file are left unchanged. Turning it off restores DSH's native size limit.
 - **Hide Obsidian native status bar**: off by default. It only toggles a dedicated `body` class that hides Obsidian's own `.status-bar` container; it does not target mv-agent's own status UI and does not reconnect the bridge, restart DSH, or refresh tools.
 - **Address and port**: the DSH web service binds only to `127.0.0.1`, default preferred port `3080`, configurable in settings. Only a running instance whose CLI/source directory and DSH data directory match the current selection is reused; when the port is held by a global DSH, another Vault's DSH, or any other program, mv-AIDE moves to the next free port and never adopts or stops it.
-- **Authorization mode and loopback proxy**: when the DSH endpoint is launch-token authorized (Alpha), the mv-agent iframe actually loads a plugin-owned loopback reverse-proxy origin (OS-assigned port, still bound to `127.0.0.1`). The launch token is redeemed for a session cookie inside the plugin; the cookie lives only in plugin-process memory, never in the page or on disk. Every `/api/` WebSocket is tunneled through the proxy, and a cookie invalidated by an upstream restart is re-exchanged automatically. No-auth endpoints (preview) keep direct iframe URLs. **Open in browser** and **Copy DSH address** always hand out the original launch URL (a top-level navigation lands the cookie normally), never the proxy address.
+- **Authorization mode and loopback proxy**: when the DSH endpoint is launch-token authorized (Alpha), the mv-agent iframe actually loads a plugin-owned loopback reverse-proxy origin (OS-assigned port, still bound to `127.0.0.1`). The launch token is redeemed for a session cookie exactly once inside the current process and is never written to disk or logs; the cookie never appears in the page. To survive reconnects, the plugin also encrypts the cookie with the system secure store (Electron safeStorage) and keeps it under `~/.mv-aide/dsh/web-auth/`, isolated by DSH runtime identity and the exact loopback origin (atomic writes, `0700` directory, `0600` files). When the system secure store is unavailable (including Linux `basic_text`), there is no plaintext fallback: the session stays valid only for the current Obsidian run and a notice says so. Every `/api/` WebSocket is tunneled through the proxy, and a cookie invalidated by an upstream restart is re-exchanged automatically. When an auth-gated instance reconnects, the stored cookie is restored and verified against the real endpoint first; with no credential, an expired credential, or a failed verification, mv-AIDE stays on the original instance and reports that DSH requires reauthorization — it never starts a second instance to compete for the session. In that case run **Reconnect with a DSH authorization URL** from the command palette and paste the complete authorization URL printed when the original DSH process started. No-auth endpoints (preview) keep direct iframe URLs and never create a proxy or touch the credential store. **Open in browser** and **Copy DSH address** always hand out the original launch URL (a top-level navigation lands the cookie normally), never the proxy address.
 
 ### Runtime Environment
 
@@ -517,7 +517,7 @@ Code Suite is a per-profile Latex Suite-compatible editing kernel, not merely a 
 | Lint | Per-profile command; `{file}` becomes a quoted path, otherwise the path is appended |
 | Automatic lint | Persistent mode runs about 600 ms after editing stops; manual run and clear are available |
 | Diagnostic format | `file:line:col: message`, with optional column; diagnostics can be sent through IDE Bridge |
-| `mv-run` | Reads matching comment lines at the end of the file; prefixes are semicolon-separated. `mv-run: <command>` runs in the most recently active mv-AIDE integrated terminal, creating one when none exists; `mv-run -n: <command>` always creates a new integrated terminal first |
+| `mv-run` | Scans matching comment lines throughout the file; prefixes are semicolon-separated. The command palette offers default execution or an explicit task/group order; `-n` always creates a terminal. See below |
 | Current-file regex | Uses the CodeMirror search panel |
 | Multi-file regex | Current folder or full vault, with preview before apply |
 | Maximum scope | Off/current file/current folder/full vault per profile; Markdown defaults to current file |
@@ -525,6 +525,39 @@ Code Suite is a per-profile Latex Suite-compatible editing kernel, not merely a 
 External commands run with the current user's permissions. Empty commands do nothing; mv-AIDE does not install lint or `mv-run` toolchains.
 
 Typical forms: `# mv-run: python main.py` reuses the most recently active terminal, while `# mv-run -n: pytest` forces a new one. Block-comment prefixes also work, for example `<!-- mv-run: npm run build -->`; TeX can use `% mv-run -n: latexmk -pdf main.tex` when `%` is configured as a prefix.
+
+<a id="mv-run"></a>
+### mv-run: names, groups, and ordered execution
+
+Run “Run mv-run command” from the command palette to open the execution dialog for the current Markdown view: the command stays listed no matter which view is focused — a terminal, PDF, or web page included — and shows a notice when no Markdown view is open. Bind a hotkey in Obsidian's hotkey settings if desired; the command ID remains `run-file-bottom-command`, so existing bindings keep working. Prefixes are configured per profile in the “Command comment prefix” setting: separate multiple prefixes with semicolons; the `<!--` and `/*` prefixes also strip the trailing `-->` / `*/` from the line, and an empty value disables mv-run for that type. The documentation button at the right end of that setting row opens the mv-run section of this guide on GitHub in the current UI language (Chinese opens `docs/features.md#mv-run`, English opens `docs/features-en.md#mv-run`). Entry validation runs before the dialog opens: if no prefix is configured for the file type, no instruction exists in the file, or any instruction line has a syntax error, the dialog does not open and a notice reports the missing prefix, the missing instructions, or the syntax error position as `line:column`.
+
+The dialog initially selects “Default execution”: pressing Enter runs every command without `--protect` in file order. “Specified execution” accepts task/group references and previews both executed and filtered members.
+
+```tex
+% mv-run --name bib --group refs,full --protect: bibtex main
+% mv-run --name pdf --group build,full: pdflatex main.tex
+% mv-run --name clean --protect: latexmk -c main.tex
+```
+
+Metadata and the shell command are separated by the first unquoted colon: everything after it is opaque shell text (colons, quotes, `!`, and similar characters in the command are never interpreted by mv-run). Supported parameters are `--name NAME`, `--group GROUP1,GROUP2`, `--protect`, and the existing `-n`, freely combined; `--group` may be repeated (equivalent to comma separation, and duplicate group names on one command are deduplicated), while repeating `--name` is an error. Names are case-sensitive and support Unicode. Quote names containing spaces, commas, colons, or other separators, names beginning with `-`, and references to task names beginning with `@` (otherwise read as a group); inside quotes, `\` escapes the quote character and the backslash. Unnamed tasks can run by default or through a group. An unnamed, ungrouped, protected task is valid but unreachable. No automatic numbers or extra configuration files are introduced. Parsing errors for parameters and references are reported in English.
+
+- `pdf`: run that named task, even if protected.
+- `pdf,bib,pdf,pdf`: run every reference in that exact order.
+- `clean,pdf`: compile after successful cleanup.
+- `@full`: all members in file order, including protected members.
+- `@full -p,pdf`: exclude protected members from this group occurrence only, then run pdf again.
+
+Groups cannot nest. Membership may overlap; repeated references are never deduplicated. Duplicate names do not block default execution, but an ambiguous individual reference fails and lists every candidate line. Unknown references and invalid syntax reject the entire sequence before execution and report their location. Empty filtered groups are skipped; a completely empty sequence creates no terminal.
+
+Use ↑/↓ to switch between the two execution modes. The specified-execution preview has two parts: “Expanded execution order” lists each step's name, 🔒 (protected), `[-n]` (new terminal), and command text, while “Skipped by protection rules” lists the filtered members. Tab accepts a completion (candidates include names, `@group`, and `@group -p`, with member commands in the detail line); clicking a suggestion only inserts it. Enter runs, Esc cancels, and submitting an empty input reports an error without running. Nothing is saved or executed before confirmation. If task definitions change before specified execution, review the refreshed preview and confirm again.
+
+Confirmation saves the initiating file and binds the most recently active terminal captured at that moment (or creates one). There is no automatic directory change. Steps retain shell directory and environment state. `-n` creates a terminal for that occurrence; subsequent ordinary steps keep it. Changing windows, files, or active terminals does not redirect an ongoing sequence.
+
+Real start/end acknowledgements and exit status determine when the next step runs: only the start acknowledgement has a 10-second wait limit (if another program occupies the terminal foreground, execution reports "Terminal did not acknowledge execution" — use `-n` for a fresh terminal); a command that has started has no time limit. Interactive commands still accept user input; subsequent tasks are never fed to them early. The first failure (a non-zero exit status) stops the sequence and reports the command and status. Ctrl+C, terminal close/reset, or plugin unload cancels remaining steps without killing an existing program. Two sequences cannot interleave on the same terminal ("already has an mv-run sequence"), while separate terminals run independently.
+
+Except on Windows cmd, each step writes a script carrying the start/end receipts into `~/.mv-aide/tmp/mv-run/step-*/`, loads it inside the current shell to preserve state, and removes it precisely when the step finishes or is cancelled. Windows cmd loads no script: the command body stays on the interactive command line, and only the receipts come from temporary begin/end batch files in the same directory. Do not start a sequence in a terminal occupied by another program; use `-n` when needed.
+
+Native acceptance currently covers macOS bash/zsh. Linux, Windows cmd/PowerShell, and fish have not yet been verified on their native platforms; simulated checks do not substitute for that acceptance.
 
 ### Highlight Themes
 
@@ -788,7 +821,7 @@ Command names are localized with the interface language. Major groups include:
 
 - Send the current selection to Claude/an agent.
 - Open System Terminal.
-- Open, stop, and restart mv-agent.
+- Open, stop, and restart mv-agent, plus reconnecting with a DSH authorization URL (only needed for authorization-mode instances).
 - Run `mv-run` for the current file.
 - Create a registered non-Markdown source file.
 - Open an external file, open by path, and prune broken external links.
@@ -833,9 +866,10 @@ Only Inline Completion's accept/cancel behavior has default editing keys; mv-AID
 | `$DSH_HOME/profiles/web/` (default `~/.dsh/profiles/web/`) | DSH web profile, patch layer, and the three independent managed plugins: `@mv-aide/mv-agent` / `@mv-aide/mv-dsh-manager` / `@mv-aide/mv-dsh-subworkspace` |
 | `~/.mv-aide/ide/` | Unified IDE bridge discovery registry (authoritative mv-AIDE lock files) |
 | `~/.mv-aide/dsh/bridge-selection.json` | Per-session dsh bridge selections (persisted, partitioned by session key) |
+| `~/.mv-aide/dsh/web-auth/` | DSH Web login cookies encrypted by the system secure store, isolated by runtime identity and exact loopback origin; no launch tokens, plaintext cookies, or chat content; never written in plaintext when the secure store is unavailable |
 | `~/.mv-aide/file-opener/` | Current default-opener authority: owner, runtime, wrapper, helper, and icon files; excludes OS association databases |
 | `~/.mv-aide/runtime/` | Rebuildable runtime artifacts for Terminal, universal MCP, and Codex integration |
-| `~/.mv-aide/tmp/` | Operation-scoped temporary files for DSH installation, opener preflight, and similar work |
+| `~/.mv-aide/tmp/` | Operation-scoped temporary files for DSH installation, opener preflight, and similar work; `mv-run/step-*/` holds per-step mv-run scripts and control receipts, removed precisely when the step ends, is cancelled, or fails |
 | `$DSH_HOME/.mv-aide/runtime-owners/<port>.json` | Owner records for DSH instances started by mv-AIDE: secret-free PID, port, and identity fingerprint (directory `0700`, file `0600`, temp-file + rename atomic write), used only to avoid adopting or stopping another DSH |
 | `$CLAUDE_CONFIG_DIR/ide/` (default `~/.claude/ide/`) | Claude Code discovery compatibility mirror; `~/.mv-aide/ide/` remains authoritative |
 | `$CODEX_HOME/config.toml` (default `~/.codex/config.toml`) | Marked, managed `mcp_servers.mv_aide_obsidian` block |
@@ -882,6 +916,10 @@ The following settings are pure local fields in `data.json`; none of them reache
 3. A plugin-graph change coordinates one restart of a running DSH instance. If the UI still has the old module graph, inspect the restart error, then use **Restart mv-agent** from the command palette.
 4. User plugin imports always go through `dsh plugin add`. If the command, local path, `package.json` name, or profile-manifest verification fails, correct the cause and retry. Do not expect a `file:` hot-load fallback and do not append a patch row manually.
 5. If Windows reports "Timed out while enumerating Windows processes: the system WMI service is responding abnormally slowly", the system WMI service has degraded: run `Restart-Service Winmgmt` as administrator (or reboot) to repair WMI, then retry. While WMI is degraded, package installs and upgrades refuse to proceed (packages are never touched while process state is unknown), but opening mv-agent is unaffected.
+
+### mv-agent says DSH requires reauthorization
+
+The original instance is still running, and mv-AIDE never starts a second instance to compete for its session. Run **Reconnect with a DSH authorization URL** from the command palette and paste the complete authorization URL printed when the original DSH process started; a URL that does not belong to an instance of the current runtime environment is rejected. When the system secure store is unavailable (for example Linux `basic_text`), the session stays valid only for the current Obsidian run, so reauthorize once after restarting Obsidian.
 
 ### Diff Does Not Appear
 
