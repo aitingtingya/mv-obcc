@@ -10,6 +10,7 @@ export const DSH_RUNTIME_FAMILIES = Object.freeze({
 
 export const DSH_CAPABILITIES = Object.freeze({
   webLaunchAuth: 'web.launch-auth',
+  webNoOpenFlag: 'web.no-open-flag',
   hostSettings: 'host.settings',
   hostTools: 'host.tools',
   hostPresets: 'host.presets',

@@ -1,6 +1,6 @@
 import { Notice, requestUrl } from "obsidian";
 import { t } from "../../i18n";
-import { prependExecutableDirectory, resolveUserCommandEnvironment } from "../../process-environment";
+import { prependExecutableDirectory, resolveUserCommandEnvironment, invalidateUserCommandEnvironmentCache } from "../../process-environment";
 import { runProcess } from "../../process-runner";
 import { findSystemExecutable } from "../../universal-mcp-stdio-command";
 import type MvAideIdePlugin from "../../../main";
@@ -21,6 +21,7 @@ import {
   sameDshWebUrl,
   type DshWebProbe,
 } from "./runtime/process";
+import { resolveWebNoOpenCapability } from "./runtime/web-launch-capabilities";
 import {
   combinedToolStatus,
   describeDshInstallFailure,
@@ -77,8 +78,36 @@ import {
 import { effectiveDshHomeDirectory } from "./paths";
 import { createDshWebAuthStore } from "./runtime/web-auth-store";
 import { promptDshAuthorizationUrl } from "./ui/authorization-modal";
+import {
+  formatPopoutTag,
+  POPOUT_TAG_PROPERTY,
+  reapStaleTaggedWindows,
+  type ZombieWindowRemote,
+} from "./runtime/popout-zombies";
+import {
+  clampPopoutGeometryToScreens,
+  loadPopoutGeometries,
+  matchNativeWindow,
+  readPopoutGeometry,
+  samePopoutGeometry,
+  savePopoutGeometries,
+  type PopoutGeometry,
+  type PopoutGeometryRemote,
+  type PopoutGeometryStorage,
+  type PopoutScreenBounds,
+} from "./runtime/popout-geometry";
 
 const COMMAND_ID = "open-mv-agent-for-obsidian";
+
+/** mv-agent 视图自愈：失败退避起点与上限。 */
+const MV_AGENT_VIEW_ENSURE_INTERVAL_MS = 5_000;
+const MV_AGENT_VIEW_ENSURE_MAX_INTERVAL_MS = 30_000;
+/** 弹窗几何记录：拖动跟随的轮询周期（窗口移动不触发 layout-change）。 */
+const POPOUT_GEOMETRY_POLL_MS = 2_000;
+/** 布局恢复后的记录宽限期：防止把恢复出的居中默认位置写进记录。 */
+const POPOUT_GEOMETRY_RECORD_GRACE_MS = 3_000;
+/** DOM moveTo/resizeTo 后复核生效的延迟。 */
+const POPOUT_GEOMETRY_VERIFY_MS = 120;
 
 export interface ActionResult {
   ok: boolean;
@@ -215,6 +244,10 @@ export class DshFeature {
   private runtimeSelectionRestartRequired = false;
   private idePluginRuntimeState: DshIdePluginRuntimeState = { state: "disabled" };
   private mvAgentOperationGeneration = 0;
+  /** 单飞的 mv-agent 视图自愈任务与其失败退避。 */
+  private mvAgentViewsEnsureBusy: Promise<void> | null = null;
+  private mvAgentViewsEnsureNextAt = 0;
+  private mvAgentViewsEnsureBackoffMs = 0;
   /**
    * Memoized environment probe cascade (shell env + Node runtimes + DSH
    * runtime). On Windows every cascade spawns a dozen PowerShell-wrapped
@@ -243,6 +276,24 @@ export class DshFeature {
    * in-session only.
    */
   private readonly openSubsectionIds = new Set<string>();
+  /**
+   * Random per plugin load. Every window hosting an mv-agent leaf is tagged
+   * with it (see popout-zombies.ts): after an Obsidian reload, windows whose
+   * tag carries an older session of THIS vault are zombie popouts the
+   * platform failed to destroy, and are reaped once at layout-ready.
+   */
+  private readonly mvAgentPopoutSession =
+    `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+  /** undefined = not yet resolved; null = unavailable (non-desktop vault). */
+  private mvAgentPopoutVaultRoot: string | null | undefined;
+  /** 弹窗位置记录：内存真值，按 vaultRoot 镜像到 localStorage。 */
+  private mvAgentPopoutGeometries: PopoutGeometry[] = [];
+  private mvAgentPopoutGeometriesLoaded = false;
+  private mvAgentPopoutGeometryPoll: { owner: Window; id: number } | null = null;
+  /** 布局恢复期间暂停记录，避免把「恢复出来的居中位置」覆盖掉真实记录。 */
+  private mvAgentPopoutGeometryRecordSuppressedUntil = 0;
+  /** 布局恢复后补跑的恢复次数（等延迟创建的弹窗）。 */
+  private mvAgentPopoutGeometryRestorePasses = 0;
 
   private markRuntimeSelectionChanged(): void {
     if (
@@ -294,6 +345,12 @@ export class DshFeature {
     this.plugin.registerEvent(
       this.plugin.app.workspace.on("layout-change", () => {
         this.syncOpenViewWindowContexts();
+        // 布局恢复完成后的第一次 layout-change 再补跑一次位置恢复，覆盖
+        // 延迟创建的弹窗；两次都是幂等的（位置已一致时什么都不做）。
+        if (this.mvAgentPopoutGeometryRestorePasses > 0) {
+          this.mvAgentPopoutGeometryRestorePasses -= 1;
+          this.restoreMvAgentPopoutGeometry();
+        }
       }),
     );
     this.plugin.registerEvent(
@@ -302,6 +359,23 @@ export class DshFeature {
         hostWindow.queueMicrotask(() => this.syncOpenViewWindowContexts());
       }),
     );
+    // Views restored before this feature was ready would otherwise stay empty:
+    // run one reconnect pass as soon as the workspace is up.
+    this.plugin.app.workspace.onLayoutReady(() => {
+      // 顺序敏感：先设宽限期再恢复位置，最后才是回收——回收器内部会同步跑
+      // 一轮 syncOpenViewWindowContexts，若宽限期未先生效，恢复出的居中
+      // 默认位置会被当作用户位置写进记录。
+      this.mvAgentPopoutGeometryRestorePasses = 1;
+      this.mvAgentPopoutGeometryRecordSuppressedUntil =
+        Date.now() + POPOUT_GEOMETRY_RECORD_GRACE_MS;
+      this.restoreMvAgentPopoutGeometry();
+      void this.ensureMvAgentViewsConnected("layout-ready");
+      void this.reapStaleMvAgentPopouts();
+    });
+    // 重载时平台不销毁旧浮动窗口（Windows 实测）：插件构造早于布局恢复，
+    // 此时回收能在恢复出的新弹窗出现之前（或同时）杀死僵尸；
+    // onLayoutReady 里还有一次兜底回收。
+    void this.reapStaleMvAgentPopouts();
     // Modular auto-updater for the injected DSH plugins. It only consumes
     // the startup reconcile's cached status plus the two capability methods
     // below, so existing reconcile/manual flows stay byte-identical.
@@ -326,12 +400,261 @@ export class DshFeature {
 
   private syncOpenViewWindowContexts(): void {
     const leaves = this.plugin.app.workspace.getLeavesOfType(DSH_WEB_VIEW_TYPE);
+    const tag = this.popoutTagContext();
+    const mainWindow =
+      this.plugin.app.workspace.containerEl?.ownerDocument?.defaultView ?? null;
+    // 同一弹窗可能宿主多个 mv-agent 标签：几何记录按窗口去重，保序。
+    const popoutGeometries = new Map<Window, PopoutGeometry>();
     for (const leaf of leaves) {
       try {
         (leaf.view as DshWebView | null)?.syncWindowContext?.();
+        // Tag every non-main window hosting an mv-agent leaf. The tag lives in
+        // the window's own realm, so a popout that survives an app reload as a
+        // zombie keeps the OLD session's tag and provably belongs to this vault.
+        const hostWindow = leaf.view?.containerEl?.ownerDocument?.defaultView;
+        if (hostWindow && hostWindow !== mainWindow) {
+          if (tag) {
+            (hostWindow as unknown as Record<string, unknown>)[POPOUT_TAG_PROPERTY] =
+              formatPopoutTag(tag.vaultRoot, tag.session);
+          }
+          if (!popoutGeometries.has(hostWindow)) {
+            const geometry = readPopoutGeometry(hostWindow);
+            if (geometry) popoutGeometries.set(hostWindow, geometry);
+          }
+        }
       } catch {
         /* Per-view containment: one closing window must not block the rest. */
       }
+    }
+    this.syncPopoutGeometryPoll(tag !== null && popoutGeometries.size > 0);
+    // 布局恢复宽限期内不记录：恢复出的窗口还停在居中的默认位置，此时
+    // 写入会把用户真实的位置记录覆盖掉。
+    if (Date.now() < this.mvAgentPopoutGeometryRecordSuppressedUntil) return;
+    this.recordMvAgentPopoutGeometry([...popoutGeometries.values()]);
+  }
+
+  /** 记录弹窗几何（有变化才写 localStorage）。 */
+  private recordMvAgentPopoutGeometry(next: PopoutGeometry[]): void {
+    const tag = this.popoutTagContext();
+    if (!tag) return;
+    const previous = this.loadMvAgentPopoutGeometries();
+    const changed = next.length !== previous.length
+      || next.some((geometry, index) => !samePopoutGeometry(geometry, previous[index], 0));
+    if (!changed) return;
+    this.mvAgentPopoutGeometries = next;
+    savePopoutGeometries(this.popoutGeometryStorage(), tag.vaultRoot, next);
+  }
+
+  private loadMvAgentPopoutGeometries(): PopoutGeometry[] {
+    if (!this.mvAgentPopoutGeometriesLoaded) {
+      this.mvAgentPopoutGeometriesLoaded = true;
+      const tag = this.popoutTagContext();
+      this.mvAgentPopoutGeometries = tag
+        ? loadPopoutGeometries(this.popoutGeometryStorage(), tag.vaultRoot)
+        : [];
+    }
+    return this.mvAgentPopoutGeometries;
+  }
+
+  private popoutGeometryStorage(): PopoutGeometryStorage | null {
+    try {
+      return this.plugin.app.workspace.containerEl
+        ?.ownerDocument?.defaultView?.localStorage ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** 仅在存在已打标弹窗时运行的低频轮询：窗口拖动不触发任何 Obsidian 事件。 */
+  private syncPopoutGeometryPoll(active: boolean): void {
+    const owner =
+      this.plugin.app.workspace.containerEl?.ownerDocument?.defaultView ?? null;
+    if (active && !this.mvAgentPopoutGeometryPoll && owner) {
+      const id = owner.setInterval(
+        () => this.syncOpenViewWindowContexts(),
+        POPOUT_GEOMETRY_POLL_MS,
+      );
+      this.mvAgentPopoutGeometryPoll = { owner, id };
+      return;
+    }
+    if (!active && this.mvAgentPopoutGeometryPoll) {
+      this.mvAgentPopoutGeometryPoll.owner.clearInterval(
+        this.mvAgentPopoutGeometryPoll.id,
+      );
+      this.mvAgentPopoutGeometryPoll = null;
+    }
+  }
+
+  /**
+   * 布局恢复后把弹窗移回记录位置。只处理「当前位置 ≠ 记录」的窗口，所以
+   * 插件禁用再启用（未重载 app）时自动是 no-op；记录条数与弹窗数不一致时
+   * 按较短者配对（多弹窗可能互换位置，但都在最近真实位置集合内）。
+   */
+  private restoreMvAgentPopoutGeometry(): void {
+    const tag = this.popoutTagContext();
+    if (!tag) return;
+    const recorded = this.loadMvAgentPopoutGeometries();
+    if (recorded.length === 0) return;
+    const mainWindow =
+      this.plugin.app.workspace.containerEl?.ownerDocument?.defaultView ?? null;
+    const windows: Window[] = [];
+    for (const leaf of this.plugin.app.workspace.getLeavesOfType(DSH_WEB_VIEW_TYPE)) {
+      try {
+        const hostWindow = leaf.view?.containerEl?.ownerDocument?.defaultView;
+        if (hostWindow && hostWindow !== mainWindow && !windows.includes(hostWindow)) {
+          windows.push(hostWindow);
+        }
+      } catch {
+        /* per-view containment */
+      }
+    }
+    const count = Math.min(windows.length, recorded.length);
+    for (let index = 0; index < count; index += 1) {
+      this.applyPopoutGeometry(windows[index], recorded[index]);
+    }
+  }
+
+  /** DOM 移动 + 复核；复核失败退回 Electron 原生 setBounds。全程静默。 */
+  private applyPopoutGeometry(win: Window, target: PopoutGeometry): void {
+    const current = readPopoutGeometry(win);
+    if (!current || samePopoutGeometry(current, target)) return;
+    const clamped = this.clampPopoutGeometryToDisplays(target);
+    if (!clamped) return;
+    try {
+      win.resizeTo(clamped.width, clamped.height);
+      win.moveTo(clamped.x, clamped.y);
+    } catch {
+      /* fall through to the verification + native fallback */
+    }
+    const owner =
+      this.plugin.app.workspace.containerEl?.ownerDocument?.defaultView ?? win;
+    owner.setTimeout(() => {
+      try {
+        const now = readPopoutGeometry(win);
+        if (now && samePopoutGeometry(now, clamped)) return;
+        this.applyPopoutGeometryNative(win, clamped);
+      } catch {
+        /* window closed in between — nothing to fix */
+      }
+    }, POPOUT_GEOMETRY_VERIFY_MS);
+  }
+
+  /** 完全落在所有已知屏幕外的记录直接放弃（显示器已拔掉等情形）。 */
+  private clampPopoutGeometryToDisplays(target: PopoutGeometry): PopoutGeometry | null {
+    const remote = this.popoutGeometryRemote();
+    let screens: { bounds?: Partial<PopoutScreenBounds> }[] | undefined;
+    try {
+      screens = remote?.screen?.getAllDisplays?.();
+    } catch {
+      return target;
+    }
+    if (!screens?.length) return target;
+    const bounds = screens
+      .map((display) => display.bounds)
+      .filter((entry): entry is NonNullable<typeof entry> =>
+        !!entry &&
+        Number.isFinite(entry.x) && Number.isFinite(entry.y) &&
+        Number.isFinite(entry.width) && Number.isFinite(entry.height))
+      .map((entry) => ({
+        x: entry.x as number,
+        y: entry.y as number,
+        width: entry.width as number,
+        height: entry.height as number,
+      }));
+    if (bounds.length === 0) return target;
+    return clampPopoutGeometryToScreens(target, bounds);
+  }
+
+  private applyPopoutGeometryNative(win: Window, target: PopoutGeometry): void {
+    try {
+      const remote = this.popoutGeometryRemote();
+      const getAllWindows = remote?.BrowserWindow?.getAllWindows;
+      if (typeof getAllWindows !== "function") return;
+      const native = getAllWindows.call(remote?.BrowserWindow);
+      const matched = matchNativeWindow(
+        {
+          screenX: win.screenX,
+          screenY: win.screenY,
+          innerWidth: win.innerWidth,
+          innerHeight: win.innerHeight,
+        },
+        native,
+      );
+      if (!matched || typeof matched.setBounds !== "function") return;
+      const zoom = matched.webContents?.getZoomFactor?.() ?? 1;
+      const scale = Number.isFinite(zoom) && zoom > 0 ? zoom : 1;
+      matched.setBounds({
+        x: target.x,
+        y: target.y,
+        width: Math.round(target.width * scale),
+        height: Math.round(target.height * scale),
+      });
+    } catch {
+      /* 两条路径都失败：维持 Obsidian 的居中恢复，无副作用。 */
+    }
+  }
+
+  /** 几何模块视角的 remote（与回收器同一条获取链，只是用的方法不同）。 */
+  private popoutGeometryRemote(): PopoutGeometryRemote | null {
+    return this.popoutReaperRemote() as unknown as PopoutGeometryRemote | null;
+  }
+
+  /** Lazily resolved vault identity for the popout tag; null disables the reaper. */
+  private popoutTagContext(): { vaultRoot: string; session: string } | null {
+    if (this.mvAgentPopoutVaultRoot === undefined) {
+      try {
+        this.mvAgentPopoutVaultRoot = getVaultRoot(this.plugin.app);
+      } catch {
+        this.mvAgentPopoutVaultRoot = null;
+      }
+    }
+    return this.mvAgentPopoutVaultRoot
+      ? { vaultRoot: this.mvAgentPopoutVaultRoot, session: this.mvAgentPopoutSession }
+      : null;
+  }
+
+  /**
+   * Privileged Electron remote for native-window enumeration, following the
+   * established chrome-autohide acquisition chain. Returns null whenever the
+   * capability is unavailable — the reaper then simply does nothing.
+   */
+  private popoutReaperRemote(): ZombieWindowRemote | null {
+    try {
+      const privileged =
+        this.plugin.app.workspace.containerEl?.ownerDocument?.defaultView ?? null;
+      const requireModule = (
+        privileged as (Window & { require?: (id: string) => unknown }) | null
+      )?.require;
+      if (typeof requireModule !== "function") return null;
+      const electron = requireModule("electron") as
+        | { remote?: ZombieWindowRemote }
+        | undefined;
+      const remote = typeof electron?.remote?.BrowserWindow?.getAllWindows === "function"
+        ? electron.remote
+        : (requireModule("@electron/remote") as ZombieWindowRemote | undefined);
+      return typeof remote?.BrowserWindow?.getAllWindows === "function" ? remote : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Destroy popout windows left behind by an Obsidian reload: the platform
+   * restores the floating window from the saved layout but (on Windows) never
+   * destroys the previous session's BrowserWindow, so zombies accumulate.
+   * Only windows tagged by an older session of THIS vault are touched. Live
+   * windows are re-tagged FIRST, so a plugin reload without an app reload can
+   * never misclassify a surviving window as stale.
+   */
+  private async reapStaleMvAgentPopouts(): Promise<void> {
+    const tag = this.popoutTagContext();
+    if (!tag) return;
+    this.syncOpenViewWindowContexts();
+    const remote = this.popoutReaperRemote();
+    if (!remote) return;
+    const reaped = await reapStaleTaggedWindows(remote, tag);
+    if (reaped > 0) {
+      console.warn(`[mv-aide] 已清理 ${reaped} 个重载遗留的 mv-agent 窗口`);
     }
   }
 
@@ -374,6 +697,12 @@ export class DshFeature {
 
   dispose(): void {
     this.mvAgentOperationGeneration += 1;
+    if (this.mvAgentPopoutGeometryPoll) {
+      this.mvAgentPopoutGeometryPoll.owner.clearInterval(
+        this.mvAgentPopoutGeometryPoll.id,
+      );
+      this.mvAgentPopoutGeometryPoll = null;
+    }
     if (this.commandRegistered) {
       this.plugin.removeCommand(COMMAND_ID);
       this.plugin.removeCommand("close-mv-agent");
@@ -498,6 +827,8 @@ export class DshFeature {
     try {
       const vaultRoot = getVaultRoot(this.plugin.app);
       await this.cleanupInstallArtifactsStrict(vaultRoot);
+      // A manual re-check must read the live registry/login-shell PATH.
+      invalidateUserCommandEnvironmentCache();
       const commandEnv = await resolveUserCommandEnvironment();
       const nodes = await inspectNodeRuntimes(vaultRoot, runProcess, commandEnv);
       const node = selectedNodeStatus(nodes);
@@ -600,6 +931,14 @@ export class DshFeature {
         preferredPort: dsh.port,
         sourceProbe: probeDshWebViaRequestUrl,
       });
+      if (runtime.command) {
+        // Warm the persisted --no-open capability off the launch path: the
+        // probe is one full dsh CLI boot on slow machines, and every launch
+        // after inspection then reads the JSON cache without spawning.
+        void resolveWebNoOpenCapability(vaultRoot, runtime.command).catch(() => {
+          // A failed warm leaves launch to probe on demand; never surface here.
+        });
+      }
       return { nodes, runtime, commandEnv };
     })();
     const entry = { key, at: now, failed: false, promise };
@@ -722,17 +1061,25 @@ export class DshFeature {
     const target = existingTarget ?? requestedTarget ?? await chooseTarget(name);
     if (!target) throw new Error(t("已取消{layer}安装。", { layer: name === "dsh" ? "DSH" : "pnpm" }));
 
+    let nodesChanged = false;
     if (target === "global") {
       const globalNode = nodes.global;
       if (globalNode.state !== "ready" || !globalNode.npmExecutable) {
         const nodeTargetVersion = await resolveNodeTargetVersion();
         nodes = await this.ensureNodeForTarget(vaultRoot, "global", nodeTargetVersion);
+        nodesChanged = true;
       }
     } else {
+      const selected = selectedNodeStatus(nodes);
+      nodesChanged = !(selected.state === "ready" && selected.executable && selected.npmExecutable);
       nodes = await this.ensureAnyNode(vaultRoot, "vault", chooseTarget);
     }
-    commandEnv = await resolveUserCommandEnvironment();
-    nodes = await inspectNodeRuntimes(vaultRoot, runProcess, commandEnv);
+    if (nodesChanged) {
+      // The Node.js installer invalidated the cached command environment, so
+      // this re-reads the live PATH. Nodes are already post-install fresh:
+      // ensureNodeForTarget re-inspects after any install.
+      commandEnv = await resolveUserCommandEnvironment();
+    }
     const node = target === "global" ? nodes.global : selectedNodeStatus(nodes);
     const channelTargetVersion = await this.resolvePackageTargetVersion(name, node, commandEnv);
     const beforeVersion = runtime[name][target].version;
@@ -1316,6 +1663,122 @@ export class DshFeature {
     if (generation !== this.mvAgentOperationGeneration) leaf.detach();
   }
 
+  /**
+   * Keep open mv-agent views usable without user action: when this vault's
+   * mv-agent views are showing an endpoint that stopped serving, adopt an
+   * existing mv-aide DSH instance (or start one) and reconnect those views.
+   *
+   * Explicit 「停止 mv-agent」 closes every view, so this never fights a
+   * deliberate shutdown; the disabled integration and an in-flight stop or
+   * restart are skipped as well. Repeated failures back off instead of
+   * hammering the machine, and a healthy endpoint returns immediately.
+   * @param reason - diagnostic label for the log line of a failed pass.
+   */
+  async ensureMvAgentViewsConnected(reason: string): Promise<void> {
+    if (!this.plugin.settings.dsh.enabled) return;
+    if (this.plugin.app.workspace.getLeavesOfType(DSH_WEB_VIEW_TYPE).length === 0) return;
+    if (Date.now() < this.mvAgentViewsEnsureNextAt) return;
+    if (this.mvAgentViewsEnsureBusy) return this.mvAgentViewsEnsureBusy;
+    const generation = this.mvAgentOperationGeneration;
+    const busy = this.runMvAgentViewEnsure(generation, reason);
+    this.mvAgentViewsEnsureBusy = busy;
+    try {
+      await busy;
+    } finally {
+      if (this.mvAgentViewsEnsureBusy === busy) this.mvAgentViewsEnsureBusy = null;
+    }
+  }
+
+  /** View-side signal: one mv-agent view is empty, failed, or disconnected. */
+  notifyMvAgentViewUnhealthy(): void {
+    void this.ensureMvAgentViewsConnected("view-unhealthy");
+  }
+
+  private async runMvAgentViewEnsure(generation: number, reason: string): Promise<void> {
+    try {
+      const known = this.processManager.currentUrl();
+      if (await this.processManager.isEndpointLive(known)) {
+        // The endpoint serves, so no new instance is needed — but a view may
+        // still be loading the raw endpoint instead of the loopback proxy, and
+        // that document renders without being able to reach /api. Repair those
+        // frames in place.
+        if (known) await this.repairRawMvAgentFrames(known);
+        this.resetMvAgentViewEnsureBackoff();
+        return;
+      }
+      const url = await this.processManager.ensureStartedForOpen(this.collectActiveDshUrls());
+      if (generation !== this.mvAgentOperationGeneration) return;
+      await this.connectMvAgentViewsTo(url);
+      this.resetMvAgentViewEnsureBackoff();
+    } catch (error) {
+      const backoff = this.mvAgentViewsEnsureBackoffMs === 0
+        ? MV_AGENT_VIEW_ENSURE_INTERVAL_MS
+        : Math.min(this.mvAgentViewsEnsureBackoffMs * 2, MV_AGENT_VIEW_ENSURE_MAX_INTERVAL_MS);
+      this.mvAgentViewsEnsureBackoffMs = backoff;
+      this.mvAgentViewsEnsureNextAt = Date.now() + backoff;
+      console.warn(`[mv-aide] mv-agent 视图自愈失败（${reason}）`, error);
+    }
+  }
+
+  /**
+   * Re-navigate the views whose iframe holds the raw endpoint while the
+   * manager can serve the same endpoint through its authenticated loopback
+   * proxy. Only mismatching views are touched.
+   */
+  private async repairRawMvAgentFrames(endpoint: string): Promise<void> {
+    const target = normalizeDshWebUrl(endpoint);
+    if (!target) return;
+    let frameUrl: string;
+    try {
+      frameUrl = await this.frameUrlFor(endpoint);
+    } catch {
+      // Authorization is still missing: the view keeps its state and the user
+      // reconnects with the authorization URL command.
+      return;
+    }
+    if (normalizeDshWebUrl(frameUrl) && sameDshWebUrl(frameUrl, target)) return;
+    for (const leaf of this.plugin.app.workspace.getLeavesOfType(DSH_WEB_VIEW_TYPE)) {
+      const view = leaf.view as DshWebView | null;
+      if (!view?.navigateTo || !view.currentViewUrl || !view.frameSourceUrl) continue;
+      const current = view.currentViewUrl();
+      const frame = view.frameSourceUrl();
+      if (current === null || frame === "" || !sameDshWebUrl(current, target)) continue;
+      // The frame loads the endpoint itself (not the proxy): rebuild it.
+      if (!sameDshWebUrl(frame, target)) continue;
+      try {
+        void view.navigateTo(frameUrl);
+      } catch {
+        /* per-view containment */
+      }
+    }
+  }
+
+  /** Reconnect every mv-agent view to one endpoint; healthy views stay put. */
+  private async connectMvAgentViewsTo(url: string): Promise<void> {
+    const target = normalizeDshWebUrl(url);
+    if (!target) return;
+    const frameUrl = await this.frameUrlFor(url);
+    for (const leaf of this.plugin.app.workspace.getLeavesOfType(DSH_WEB_VIEW_TYPE)) {
+      const view = leaf.view as DshWebView | null;
+      if (!view?.navigateTo) continue;
+      const current = view.currentViewUrl?.() ?? null;
+      const healthy = current !== null
+        && sameDshWebUrl(current, target)
+        && view.isLoadFailed?.() !== true;
+      if (healthy) continue;
+      try {
+        void view.navigateTo(frameUrl);
+      } catch {
+        /* per-view containment */
+      }
+    }
+  }
+
+  private resetMvAgentViewEnsureBackoff(): void {
+    this.mvAgentViewsEnsureBackoffMs = 0;
+    this.mvAgentViewsEnsureNextAt = 0;
+  }
+
   /** dsh 实例实际运行的端口（未运行返回 null），供状态栏展示。 */
   currentDshPort(): number | null {
     return this.processManager.currentPort();
@@ -1381,9 +1844,15 @@ export class DshFeature {
     }
   }
 
-  /** Confirm that one exact URL serves DSH and synchronize shared state. */
+  /**
+   * Confirm one exact URL serves DSH and synchronize shared state. The URL
+   * comes from this vault's own view state (restored view or the frame the
+   * view is showing), so a live endpoint is adopted even when its ownership
+   * record is gone — that is what lets a reload reconnect to the instance this
+   * vault was using instead of starting a second one.
+   */
   async confirmDshViewUrl(url: string): Promise<string | null> {
-    return this.processManager.confirmDshUrl(url);
+    return this.processManager.confirmDshUrl(url, 1500, { trustOwnEndpoint: true });
   }
 
   /**
@@ -1510,7 +1979,13 @@ export class DshFeature {
       const backendMessage = summary.notRunning
         ? t("没有发现需要停止的 DSH 后台。")
         : t("已停止 {count} 个 DSH 后台。", { count: summary.stoppedPids.length });
-      new Notice(`mv-agent：${viewMessage}\n${backendMessage}`, 8000);
+      const summaryText = summary.failedPids.length > 0
+        ? `${backendMessage}\n${t("有 {count} 个 DSH 后台无法停止（PID：{pids}），端口仍被占用。", {
+          count: summary.failedPids.length,
+          pids: summary.failedPids.join("、"),
+        })}`
+        : backendMessage;
+      new Notice(`mv-agent：${viewMessage}\n${summaryText}`, 8000);
     } catch (error) {
       if (generation !== this.mvAgentOperationGeneration) return;
       new Notice(

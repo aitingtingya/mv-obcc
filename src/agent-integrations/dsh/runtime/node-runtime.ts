@@ -3,7 +3,7 @@ import { createWriteStream, promises as fs } from "node:fs";
 import https from "node:https";
 import path from "node:path";
 import { t } from "../../../i18n";
-import { prependExecutableDirectory } from "../../../process-environment";
+import { invalidateUserCommandEnvironmentCache, prependExecutableDirectory } from "../../../process-environment";
 import { mvAideTempDirectory } from "../../../storage/temp-paths";
 import {
   normalizeProcessEnvironment,
@@ -594,6 +594,7 @@ export async function installOrUpgradeNodeRuntime(
   const environment = options.environment ?? process.env;
   if (target === "global" && existingOrigin && MANAGED_NODE_ORIGINS.has(existingOrigin)) {
     const managed = await upgradeManagedNode(existingOrigin, targetVersion, runner, environment);
+    if (managed?.code === 0) invalidateUserCommandEnvironmentCache();
     return managed ?? {
       code: null,
       stdout: "",
@@ -648,5 +649,8 @@ export async function installOrUpgradeNodeRuntime(
       };
     }
   }
+  // An installed Node.js can rewrite the user-visible PATH (the Windows
+  // installer writes the registry); drop the memoized command environment.
+  if (result.code === 0) invalidateUserCommandEnvironmentCache();
   return result;
 }

@@ -18,7 +18,7 @@ DSH `0.1.5-rc.2` (preview) is the first-priority compatibility baseline. Every r
 - `@mv-aide/mv-dsh-compat/contracts` — runtime-family and capability constants plus `identifyDshRuntimeFamily` / `createCompatibilityReport` / `requireCapabilities` helpers for diagnostics.
 - `@mv-aide/mv-dsh-compat/host` — Host-side resolvers: host settings/tools surfaces, session log reader and session inspector, preset opener and agent presets, model settings.
 - `@mv-aide/mv-dsh-compat/client` — Browser-side resolvers: settings-card host, sessions and conversation, composer input, image encoder, pending plan review, chat projection, current session id, workspace client.
-- `@mv-aide/mv-dsh-compat/obsidian` — the small subset used by the Obsidian-side runtime.
+- `@mv-aide/mv-dsh-compat/obsidian` — the small subset used by the Obsidian-side runtime, including the `dsh web` launch-flag probe (`dshWebSupportsNoOpen`, first shipped in dsh v0.1.0-rc.8; earlier web profiles never open a browser, so omission there is equivalent).
 
 ## Test matrix
 

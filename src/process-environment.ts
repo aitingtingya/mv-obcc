@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { runProcess, type ProcessResult } from "./process-runner";
+import { runProcess, windowsPowerShellEncodingLines, type ProcessResult } from "./process-runner";
 
 const PATH_MARKER = "__MV_AIDE_PATH__";
 
@@ -107,6 +107,11 @@ async function resolveWindowsRegisteredPath(
   runner: typeof runProcess,
 ): Promise<string | null> {
   const script = [
+    // UTF-8 output first: registry PATH values can contain non-ASCII user
+    // directories, and the runner decodes child stdout as UTF-8 while WinPS
+    // defaults to the OEM codepage. Under the default Continue preference a
+    // failed encoding switch is non-fatal.
+    ...windowsPowerShellEncodingLines(),
     "$machine = [Environment]::ExpandEnvironmentVariables([Environment]::GetEnvironmentVariable('Path', 'Machine'))",
     "$user = [Environment]::ExpandEnvironmentVariables([Environment]::GetEnvironmentVariable('Path', 'User'))",
     `[Console]::Out.WriteLine('${PATH_MARKER}')`,
@@ -147,25 +152,69 @@ function standardFallbackPath(
  * inherit a smaller PATH. Windows merges the process PATH with current User and
  * Machine PATH values so newly installed user tools are discoverable without a
  * plugin-specific hardcoded install directory.
+ *
+ * The read is a subprocess (PowerShell on Windows), so the result is memoized
+ * per (platform, base environment) for the session. A failed discovery is
+ * never pinned — the next call retries. Flows that can rewrite the
+ * user-visible PATH (Node.js installers write the registry on Windows) call
+ * {@link invalidateUserCommandEnvironmentCache} before re-resolving, and the
+ * settings "检测" action does the same for manual re-checks.
  */
-export async function resolveUserCommandEnvironment(
-  platform: NodeJS.Platform = process.platform,
-  baseEnvironment: NodeJS.ProcessEnv = process.env,
-  runner: typeof runProcess = runProcess,
-): Promise<NodeJS.ProcessEnv> {
-  let discoveredPath: string | null = null;
+let userCommandEnvironmentCache: {
+  platform: NodeJS.Platform;
+  base: NodeJS.ProcessEnv;
+  promise: Promise<NodeJS.ProcessEnv>;
+} | null = null;
+
+/** Drop the memoized command environment so the next resolve re-reads the OS. */
+export function invalidateUserCommandEnvironmentCache(): void {
+  userCommandEnvironmentCache = null;
+}
+
+async function discoverUserCommandPath(
+  platform: NodeJS.Platform,
+  baseEnvironment: NodeJS.ProcessEnv,
+  runner: typeof runProcess,
+): Promise<string | null> {
   try {
-    discoveredPath = platform === "win32"
+    return platform === "win32"
       ? await resolveWindowsRegisteredPath(baseEnvironment, runner)
       : await resolveUnixLoginPath(platform, baseEnvironment, runner);
   } catch {
-    discoveredPath = null;
+    return null;
   }
+}
+
+function withCommandPath(
+  platform: NodeJS.Platform,
+  baseEnvironment: NodeJS.ProcessEnv,
+  discoveredPath: string | null,
+): NodeJS.ProcessEnv {
   const basePath = environmentValue(baseEnvironment, "PATH", platform);
   const PATH = platform === "win32"
     ? mergeCommandPath(platform, basePath, discoveredPath ?? undefined, standardFallbackPath(platform, baseEnvironment))
     : mergeCommandPath(platform, discoveredPath ?? undefined, basePath, standardFallbackPath(platform, baseEnvironment));
   return { ...baseEnvironment, PATH };
+}
+
+export function resolveUserCommandEnvironment(
+  platform: NodeJS.Platform = process.platform,
+  baseEnvironment: NodeJS.ProcessEnv = process.env,
+  runner: typeof runProcess = runProcess,
+): Promise<NodeJS.ProcessEnv> {
+  const cached = userCommandEnvironmentCache;
+  if (cached && cached.platform === platform && cached.base === baseEnvironment) {
+    return cached.promise;
+  }
+  const promise = discoverUserCommandPath(platform, baseEnvironment, runner)
+    .then((discoveredPath) => {
+      if (discoveredPath === null && userCommandEnvironmentCache?.promise === promise) {
+        userCommandEnvironmentCache = null;
+      }
+      return withCommandPath(platform, baseEnvironment, discoveredPath);
+    });
+  userCommandEnvironmentCache = { platform, base: baseEnvironment, promise };
+  return promise;
 }
 
 export type ProcessRunner = (

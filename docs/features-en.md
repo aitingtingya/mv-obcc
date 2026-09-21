@@ -20,6 +20,7 @@ This guide records mv-AIDE features in the same order as the settings page, cove
 - [6. Vim Enhancement](#vim)
 - [7. Default File Opener](#default-opener)
 - [8. Filesystem & Browser](#filesystem-browser)
+- [9. Git](#git)
 - [Cross-feature behavior](#cross-feature)
 - [Commands and entry points](#commands)
 - [Platform matrix](#platform-matrix)
@@ -67,6 +68,7 @@ Community Plugins is the recommended installation route. A manual installation m
 | 6 | Vim Enhancement | Off for every extension | Independent Vim engine and vault vimrc |
 | 7 | Default File Opener | Off | System associations and external-file mirrors |
 | 8 | Filesystem & Browser | All three entry points on | Downloads, history, arbitrary-directory browsing, auto-collapse, custom web page buttons |
+| 9 | Git | On; edit markers and line blame off | Native-Git workspace, command-palette actions, diffs, history, conflict resolution |
 
 Inside **In-file AI assistant**, the order is fixed: **API Providers**, **Selection Assistant**, then **Inline Completion**. All three start collapsed. Their expansion state is remembered only for the current settings-page session and creates no persisted field. This is an information-architecture change only: provider, selection, and inline settings retain their existing fields, defaults, persistence, and runtime paths.
 
@@ -182,13 +184,15 @@ mv-agent embeds DeepSeek Harness (DSH) directly into Obsidian: use the DSH web U
 ### Purpose and Enablement
 
 - The **bridge master switch** lives in the “Adapted agents” area of IDE Bridge (**Enable DSH IDE support**, off by default). When off, the bridge does not start and no lock file is written, so bridge tools and passive context pause. Environment management, the DSH view, and file drop are independent and remain available.
-- **View**: the command palette provides **Open mv-agent**, **Stop mv-agent**, and **Restart mv-agent**; hotkeys can be bound in Obsidian's hotkey settings. **Stop mv-agent** closes every open mv-agent view and stops its DSH backend. The custom Obsidian view embeds the DSH web UI directly in an iframe (no browser toolbar), with an Obsidian-side status bar below it. The bar shows a connection dot, current page or file, selection, port, and a disclosure; expanded details include the DSH URL, bridge state, selection range and text, plus entries for plugin, skill, subagent, and browser management. Location and Selection checkboxes independently control which snapshot fields accompany the next message. The connection dot reads the real TCP relationship between that view's DSH endpoint and the current Vault bridge: gray while checking, green when connected, and red only after a confirmed disconnect. Every view probes independently; the result does not depend on the Vault that started the shared DSH instance or on runtime-environment detection caches. Connection state is probed at most once every 15 seconds (paused during install, upgrade, or restart), and immediately on navigation or view creation.
+- **View**: the command palette provides **Open mv-agent**, **Stop mv-agent**, and **Restart mv-agent**; hotkeys can be bound in Obsidian's hotkey settings. **Stop mv-agent** closes every open mv-agent view and stops its DSH backend: the outcome is reported honestly — when individual backend processes cannot be terminated, the notice lists their PIDs and states that their ports remain in use, with no fake success. Otherwise the DSH backend survives plugin or Obsidian reloads; reopening Obsidian re-adopts this Vault's original instance on the same port, and only **Stop mv-agent** truly terminates it. The custom Obsidian view embeds the DSH web UI directly in an iframe (no browser toolbar), with an Obsidian-side status bar below it. The bar shows a connection dot, current page or file, selection, port, and a disclosure; expanded details include the DSH URL, bridge state, selection range and text, plus entries for plugin, skill, subagent, and browser management. Location and Selection checkboxes independently control which snapshot fields accompany the next message. The connection dot reads the real TCP relationship between that view's DSH endpoint and the current Vault bridge: gray while checking, green when connected, and red only after a confirmed disconnect. Every view probes independently; the result does not depend on the Vault that started the shared DSH instance or on runtime-environment detection caches. Connection state is probed at most once every 15 seconds (paused during install, upgrade, or restart), and immediately on navigation or view creation.
 - **Open region**: left, right, or bottom; right by default. “Restart mv-agent” restarts the plugin-managed `dsh web` process and refreshes every open view.
 - **Enhanced terminal awareness**: off by default and scoped to mv-agent / DSH only. When enabled, mv-agent does not register the basic `mv_aide__getTerminalOutput`; it registers seven native mv-AIDE terminal tools for list/read/send/run/open/focus/close instead. When disabled, those seven disappear and the original `getTerminalOutput` returns. `sendTerminalInput` is the raw path for Ctrl+C, TUI/REPL input, and optional Enter; `runInTerminal` is the reliable shell-command path and preserves quotes, `!`, whitespace, Unicode, multiline commands, and same-shell `cd`/`export` effects. Deferred tabs restored after an Obsidian restart start a fresh shell only: `readTerminal` waits for its new prompt to be committed to xterm and never restores old output. `closeTerminal` requires an explicit id and closes the Obsidian tab and its PTY without waking a deferred tab. Switching refreshes tools live without restarting DSH and never changes the public `tools/list` seen by other IDE clients. Outside-vault access continues to reuse the existing `getTerminalOutput` scope setting.
 - **Automatically fit image size**: on by default. Images are processed before they are sent and written into DSH history. A longest edge above 2000px is proportionally reduced to 2000px; smaller image bytes and the original local file are left unchanged. Turning it off restores DSH's native size limit.
 - **Hide Obsidian native status bar**: off by default. It only toggles a dedicated `body` class that hides Obsidian's own `.status-bar` container; it does not target mv-agent's own status UI and does not reconnect the bridge, restart DSH, or refresh tools.
 - **Address and port**: the DSH web service binds only to `127.0.0.1`, default preferred port `3080`, configurable in settings. Only a running instance whose CLI/source directory and DSH data directory match the current selection is reused; when the port is held by a global DSH, another Vault's DSH, or any other program, mv-AIDE moves to the next free port and never adopts or stops it.
-- **Authorization mode and loopback proxy**: when the DSH endpoint is launch-token authorized (Alpha), the mv-agent iframe actually loads a plugin-owned loopback reverse-proxy origin (OS-assigned port, still bound to `127.0.0.1`). The launch token is redeemed for a session cookie exactly once inside the current process and is never written to disk or logs; the cookie never appears in the page. To survive reconnects, the plugin also encrypts the cookie with the system secure store (Electron safeStorage) and keeps it under `~/.mv-aide/dsh/web-auth/`, isolated by DSH runtime identity and the exact loopback origin (atomic writes, `0700` directory, `0600` files). When the system secure store is unavailable (including Linux `basic_text`), there is no plaintext fallback: the session stays valid only for the current Obsidian run and a notice says so. Every `/api/` WebSocket is tunneled through the proxy, and a cookie invalidated by an upstream restart is re-exchanged automatically. When an auth-gated instance reconnects, the stored cookie is restored and verified against the real endpoint first; with no credential, an expired credential, or a failed verification, mv-AIDE stays on the original instance and reports that DSH requires reauthorization — it never starts a second instance to compete for the session. In that case run **Reconnect with a DSH authorization URL** from the command palette and paste the complete authorization URL printed when the original DSH process started. No-auth endpoints (preview) keep direct iframe URLs and never create a proxy or touch the credential store. **Open in browser** and **Copy DSH address** always hand out the original launch URL (a top-level navigation lands the cookie normally), never the proxy address.
+- **mv-agent popout windows**: a popout window's geometry is remembered per Vault and restored after a reload or restart (fixing Windows always recentering popouts after reload); geometry that ends up off-screen is discarded in favor of the system default. At startup, zombie popouts left by this Vault's previous session are reclaimed using a Vault+session marker — other Vaults' or applications' windows are never touched — and the reclaimed count only goes to the console.
+- **View self-healing and load failures**: when the endpoint disappears, the view repairs itself: if the instance is still alive the proxy is re-attached to fix read-only pages; if it is gone, the original instance is re-adopted or relaunched and every view reconnects, with retries backing off from 5 seconds up to 30. After **Stop mv-agent**, no further intervention happens. A single view whose address resolution fails retries about every 0.5 seconds for ~10 seconds, then stays in a failure state showing the reason; right-click the tab → **Refresh view** resolves again. No path ever connects an iframe directly to the token-bearing launch address.
+- **Authorization mode and loopback proxy**: when the DSH endpoint is launch-token authorized (Alpha), the mv-agent iframe actually loads a plugin-owned loopback reverse-proxy origin (OS-assigned port, still bound to `127.0.0.1`). The launch token is redeemed for a session cookie exactly once inside the current process and is never written to disk or logs; the cookie never appears in the page. To survive reconnects, the plugin also encrypts the cookie with the system secure store (Electron safeStorage) and keeps it under `~/.mv-aide/dsh/web-auth/`, isolated by the exact loopback origin (endpoint) — no longer by runtime identity, so the session survives switching between vault-installed and global DSH or an upgrade, and legacy identity-keyed records are migrated automatically (atomic writes, `0700` directory, `0600` files). When the system secure store is unavailable (including Linux `basic_text`), there is no plaintext fallback: the session stays valid only for the current Obsidian run and a notice says so. Every `/api/` WebSocket is tunneled through the proxy, and a cookie invalidated by an upstream restart is re-exchanged automatically. When an auth-gated instance reconnects, the stored cookie is restored and verified against the real endpoint first; with no credential, an expired credential, or a failed verification, mv-AIDE stays on the original instance and reports that DSH requires reauthorization — it never starts a second instance to compete for the session. In that case run **Reconnect with a DSH authorization URL** from the command palette and paste the complete authorization URL printed when the original DSH process started. No-auth endpoints (preview) keep direct iframe URLs and never create a proxy or touch the credential store. **Open in browser** and **Copy DSH address** always hand out the original launch URL (a top-level navigation lands the cookie normally), never the proxy address.
 
 ### Runtime Environment
 
@@ -449,7 +453,7 @@ Multiple terminals can coexist in main, side, and bottom areas. Closing a termin
 - A Nerd Font such as `MesloLGS NF` can fix missing terminal icons or dividers; leaving the field empty restores the default font stack.
 - Custom themes store structured color values only and execute no CSS or JavaScript.
 - A custom palette is copied from the built-in light or dark palette and can be reset to defaults in one action.
-- With key passthrough enabled, Ctrl, Alt, function-key, and arrow combinations go to the focused terminal before Obsidian hotkeys.
+- With key passthrough enabled, Ctrl, Alt, function-key, and arrow combinations go to the focused terminal before Obsidian hotkeys. While a modal is open — the command palette, settings, or a confirmation box — keys yield to the modal: an Enter pressed in the palette never leaks into the terminal shell, and the keystroke that closes the modal does not reach the terminal either.
 - Double-clicking or Ctrl-clicking a recognized path attempts to open and locate it in Obsidian.
 
 `getTerminalOutput` returns only the requested recent lines and does not continuously transmit terminal content. Network activity by commands inside the shell remains the user's responsibility.
@@ -529,9 +533,9 @@ Typical forms: `# mv-run: python main.py` reuses the most recently active termin
 <a id="mv-run"></a>
 ### mv-run: names, groups, and ordered execution
 
-Run “Run mv-run command” from the command palette to open the execution dialog for the current Markdown view: the command stays listed no matter which view is focused — a terminal, PDF, or web page included — and shows a notice when no Markdown view is open. Bind a hotkey in Obsidian's hotkey settings if desired; the command ID remains `run-file-bottom-command`, so existing bindings keep working. Prefixes are configured per profile in the “Command comment prefix” setting: separate multiple prefixes with semicolons; the `<!--` and `/*` prefixes also strip the trailing `-->` / `*/` from the line, and an empty value disables mv-run for that type. The documentation button at the right end of that setting row opens the mv-run section of this guide on GitHub in the current UI language (Chinese opens `docs/features.md#mv-run`, English opens `docs/features-en.md#mv-run`). Entry validation runs before the dialog opens: if no prefix is configured for the file type, no instruction exists in the file, or any instruction line has a syntax error, the dialog does not open and a notice reports the missing prefix, the missing instructions, or the syntax error position as `line:column`.
+Run “Run mv-run command” from the command palette to open a palette-style chooser for the current Markdown view (focused on open, fully keyboard-driven): the command stays listed no matter which view is focused — a terminal, PDF, or web page included — and shows a notice when no Markdown view is open. Bind a hotkey in Obsidian's hotkey settings if desired; the command ID remains `run-file-bottom-command`, so existing bindings keep working. Prefixes are configured per profile in the “Command comment prefix” setting: separate multiple prefixes with semicolons; the `<!--` and `/*` prefixes also strip the trailing `-->` / `*/` from the line, and an empty value disables mv-run for that type. The documentation button at the right end of that setting row opens the mv-run section of this guide on GitHub in the current UI language (Chinese opens `docs/features.md#mv-run`, English opens `docs/features-en.md#mv-run`). Entry validation runs before the chooser opens: if no prefix is configured for the file type, no instruction exists in the file, or any instruction line has a syntax error, the chooser does not open and a notice reports the missing prefix, the missing instructions, or the syntax error position as `line:column`.
 
-The dialog initially selects “Default execution”: pressing Enter runs every command without `--protect` in file order. “Specified execution” accepts task/group references and previews both executed and filtered members.
+With an empty input the first row is “Default execution” (highlighted): pressing Enter runs every command without `--protect` in file order; from the second row down the chooser lists every available name and `@group` completion, ending with an example hint row. Typing task/group references turns the first row into a “▶” run row carrying the typed sequence, followed by completions and a live preview of the expanded order and the filtered members; preview, hint, and error rows are not executable — selecting one reopens the chooser with the input preserved.
 
 ```tex
 % mv-run --name bib --group refs,full --protect: bibtex main
@@ -549,7 +553,7 @@ Metadata and the shell command are separated by the first unquoted colon: everyt
 
 Groups cannot nest. Membership may overlap; repeated references are never deduplicated. Duplicate names do not block default execution, but an ambiguous individual reference fails and lists every candidate line. Unknown references and invalid syntax reject the entire sequence before execution and report their location. Empty filtered groups are skipped; a completely empty sequence creates no terminal.
 
-Use ↑/↓ to switch between the two execution modes. The specified-execution preview has two parts: “Expanded execution order” lists each step's name, 🔒 (protected), `[-n]` (new terminal), and command text, while “Skipped by protection rules” lists the filtered members. Tab accepts a completion (candidates include names, `@group`, and `@group -p`, with member commands in the detail line); clicking a suggestion only inserts it. Enter runs, Esc cancels, and submitting an empty input reports an error without running. Nothing is saved or executed before confirmation. If task definitions change before specified execution, review the refreshed preview and confirm again.
+Completion candidates (names, `@group`, and `@group -p`, with member commands in the detail line) and the execution preview share the suggestion list: after the “▶” run row, each step lists its name, 🔒 (protected), `[-n]` (new terminal), and command text (collapsed past 8 steps), with filtered members marked “Skipped by protection rules”. Enter on a completion inserts it (the palette reopens with the text and cursor preserved), Enter on the run row executes, Esc cancels; invalid expressions show an error row instead of a run row, so nothing partially executes. Nothing is saved or executed before confirmation. If task definitions change before specified execution, a notice appears and the palette reopens against the refreshed definitions for a second confirmation.
 
 Confirmation saves the initiating file and binds the most recently active terminal captured at that moment (or creates one). There is no automatic directory change. Steps retain shell directory and environment state. `-n` creates a terminal for that occurrence; subsequent ordinary steps keep it. Changing windows, files, or active terminals does not redirect an ongoing sequence.
 
@@ -773,6 +777,79 @@ Behavior and boundaries:
 
 The "Hide the native Obsidian status bar" switch belongs to the mv-agent section — see §2 "Obsidian status bar".
 
+<a id="git"></a>
+## 9. Git
+
+On by default. Drives the Git installed on this machine to manage the **repository containing the current vault**; there is no bundled Git engine, no DSH integration, and it never commits, syncs, or touches the network automatically. Global Git configuration is never modified.
+
+### Settings
+
+| Setting | Default | Description |
+| --- | --- | --- |
+| Enable Git integration | On | Disabling stops registering view entries; command execution explains it is off |
+| Git executable path | Empty | Empty uses the system PATH; a custom path takes effect on the next call |
+| Repository detection & diagnostics | — | Shows version, real repository root, branch, and in-progress operations; offers "Initialize this vault" when absent |
+| Workspace placement | Left sidebar | Right sidebar, dedicated full tab, or split panes |
+| Diff placement | Main area | Where diff and conflict editors open: new tab in the main area / split from the Git workspace / right sidebar / left sidebar |
+| Diff layout | Auto | Side-by-side / inline, or automatic by panel width |
+| File tree view | On | Directory-collapsed grouping; off is a flat list |
+| Auto-refresh repository state | On | File events and timers only invalidate caches; periodic scanning stops when nothing is viewing |
+| Show Git status in the status bar | On | Branch, ahead/behind, in-progress operation; click opens the workspace |
+| Operation result notices | On | Successful writes show a top-right notice; failures always notify, whether or not the workspace is open |
+| Editor change markers | Off | Gutter markers for added/modified/deleted lines versus HEAD |
+| Current-line blame hint | Off | End-of-line summary of the line's most recent commit |
+| Pull strategy | Repository config | Fast-forward only when the repository is unconfigured; explicit merge/rebase available |
+| Commit message template | Empty | Plain-text initial content; never executes scripts |
+
+### Capability table (one registry, two surfaces)
+
+Everything lives in `src/git/` behind one action registry: stable action id + target type + parameter collection + enablement + confirmation flow + executor. GUI context menus carry the selected target; the command palette runs the same actions and opens a searchable picker when no target exists. `scripts/check-git-coverage.mjs` statically verifies dual-surface reachability and runs in `npm run verify`.
+
+| Object | Operations |
+| --- | --- |
+| Repository | Initialize, refresh, view status/output, cancel the running command, edit `.gitignore`, set repo-local author identity |
+| Worktree files/directories | Open, diff, stage, discard (confirmed), ignore, file history, copy path, reveal in system; multi-select and directory actions |
+| Staged files/directories | Staged diff (HEAD→index), unstage (with a reverse preview); single/multi-select/all |
+| Hunks / selected lines | Stage, unstage; validated against native Git patches and rejected once the index changed |
+| Commits | Commit staged, stage all & commit, commit & push, stage all & commit & push, commit & sync, amend, undo last commit keeping changes; the commit button remembers the last dropdown action |
+| History nodes | Details/changed files, compare with parent/HEAD/upstream/merge-base/arbitrary ref, copy SHA/message, checkout (explicit detached-HEAD notice), create branch/tag, cherry-pick, revert, reset (soft/mixed/hard with impact notes), reset current branch here and reload Obsidian, merge, rebase onto |
+| Batch nodes | The "Batch operations" button reveals commit checkboxes (hidden by default); multi-select cherry-pick/revert: topologically sorted oldest-first, order previewed before execution, stops at the first conflict and reports completed/remaining |
+| Local branches | Create, switch, rename, delete (confirmed), set upstream, publish, compare, merge, rebase, show branch history |
+| Remote branches | Fetch, checkout tracking branch, set upstream, compare, merge/rebase, confirmed remote-branch deletion |
+| Tags | Lightweight/annotated create, view, compare, checkout, branch-from, push, delete local/remote tags |
+| Stashes | Create (optionally including untracked or staged-only), view, apply, pop, drop, branch-from |
+| Remotes & sync | Add/edit/rename/remove remotes; fetch one remote, fetch all remotes (`git fetch --all`, downloads every remote branch without touching the worktree — SourceTree's "Fetch"), prune, pull, push, first upstream push, sync, lease-protected force push |
+| In-progress operations | Continue/abort for merge/rebase/cherry-pick/revert; rebase/cherry-pick/revert also support skip (Git itself has no merge --skip); three-way conflict editing and mark-resolved |
+| History recovery | Reflog view and branch-from recovery reusing the standard confirmation flow |
+| File history & blame | Rename-following history, diffs against historical versions, confirmed restore of a version to the worktree, current-line blame |
+
+### Semantics
+
+- With staged content, only the staged content is committed; otherwise a scoped prompt offers staging everything.
+- "Commit & push" = commit → push; "Sync" = pull → push; "Commit & sync" = commit → pull → push. A failure stops later steps and reports partial success.
+- Cherry-pick/revert of a merge commit requires an explicit mainline parent.
+- Checking out a commit always enters detached HEAD, stated in the action name and its confirmation.
+- Revert creates inverse commits and never pretends to be a reset; reset clearly separates soft/mixed/hard.
+- Destructive actions (discard, delete, reset, remote deletion, force push, overwrite-restore) always carry target-specific confirmation; nothing is forced by default.
+
+### Reliability
+
+- Argument-array process invocation, NUL-separated machine output, `--` and `--literal-pathspecs` protect special filenames (stash subcommands opt out because of an upstream bug that breaks `--include-untracked` cleanup).
+- Writes enter a serial queue; compound actions queue as one unit; cancellation only terminates this module's own process; a foreign `index.lock` is reported, never deleted, and state is re-read.
+- User credential helpers, SSH agents, signing, and hooks are honored; authentication/hook failures surface as-is instead of pretending success.
+- Line/hunk staging is validated against `git diff` and `git ls-files` fingerprints; file write-backs bind identity and byte revisions, and external edits keep the draft with a warning.
+- The conflict editor shows the base, both real sources (labeled per merge/cherry-pick/revert/rebase, with correct semantic swap under rebase), and an editable result; saving and mark-resolved are separate steps.
+- History rows show the hash, subject, branch/tag badges, and the absolute commit time; successful and failed writes raise global notices (success notices can be disabled in settings).
+- Workspace section order: file groups → branches → history → tags → stashes → remotes; the history area filters via a "Select branch" menu (current branch / all branches / any branch), and a branch context menu jumps straight to that branch's history.
+- Multiple windows: dialogs, diffs, and conflict views stay in the initiating window; selection sets, input drafts, and scroll positions never overwrite each other; all windows share one repository snapshot and write queue.
+
+### Boundaries
+
+- Only the repository containing the current vault is managed; when the vault belongs to a parent repository, the real root is shown and confirmation is required — nested repositories are never created silently.
+- When the current repository is a linked worktree, the real git-dir is used; submodules display correctly but are never recursively committed.
+- Not included: scheduled auto-commit/sync, GitHub PRs, cloud repository creation, management of other worktrees, interactive rebase planning.
+- Binary and special entries support whole-file operations only, not fine-grained text operations.
+
 <a id="cross-feature"></a>
 ## Cross-feature Behavior
 
@@ -830,6 +907,7 @@ Command names are localized with the interface language. Major groups include:
 - One `open-web-page-<entryId>` command per configured custom web page button ("Open web page: \{name\}").
 - Run lint, clear diagnostics, and enable/disable persistent lint.
 - Commands registered by the Code Suite kernel for snippets, tabstops, and previews.
+- One `Git: …` command per Git action (stable id `git-<action>`), sharing the action registry with workspace context menus; commands started from the palette **keep every follow-up interaction inside the palette**: choices use a fuzzy picker, single-line text rides the suggestion row of what you typed (Enter submits), confirmations become a Confirm/Cancel pick with the details shown under Confirm, and multi-line parameters such as commit messages degrade to a single palette row. Everything is focused on open, fully keyboard-driven, Escape cancels. File-scoped commands automatically target the active file.
 
 The three auto-collapse switches (`browserAutoHideToolbar` / `tabBarAutoHide` / `fileHeaderAutoHide`) and **Hide the native Obsidian status bar** are settings only — none of them registers a command.
 
@@ -849,6 +927,7 @@ Only Inline Completion's accept/cancel behavior has default editing keys; mv-AID
 | Default Opener | `.app`/Launch Services | HKCU ProgId + system confirmation | `.desktop`/MIME | Windows cannot silently set UserChoice |
 | Symbolic-link mirror | Native | Depends on permission/developer mode | Native | Managed-copy fallback only after proven failure |
 | Web Viewer toolbar | Yes | Yes | Yes | Requires Obsidian's built-in Web Viewer |
+| Git | Yes | Yes | Yes | Requires a locally installed Git; verified on macOS, Windows/Linux need platform acceptance |
 
 <a id="storage-network"></a>
 ## Data and Network Boundaries
@@ -866,7 +945,7 @@ Only Inline Completion's accept/cancel behavior has default editing keys; mv-AID
 | `$DSH_HOME/profiles/web/` (default `~/.dsh/profiles/web/`) | DSH web profile, patch layer, and the three independent managed plugins: `@mv-aide/mv-agent` / `@mv-aide/mv-dsh-manager` / `@mv-aide/mv-dsh-subworkspace` |
 | `~/.mv-aide/ide/` | Unified IDE bridge discovery registry (authoritative mv-AIDE lock files) |
 | `~/.mv-aide/dsh/bridge-selection.json` | Per-session dsh bridge selections (persisted, partitioned by session key) |
-| `~/.mv-aide/dsh/web-auth/` | DSH Web login cookies encrypted by the system secure store, isolated by runtime identity and exact loopback origin; no launch tokens, plaintext cookies, or chat content; never written in plaintext when the secure store is unavailable |
+| `~/.mv-aide/dsh/web-auth/` | DSH Web login cookies encrypted by the system secure store, isolated by the exact loopback origin (endpoint), with legacy identity-keyed records migrated automatically; no launch tokens, plaintext cookies, or chat content; never written in plaintext when the secure store is unavailable |
 | `~/.mv-aide/file-opener/` | Current default-opener authority: owner, runtime, wrapper, helper, and icon files; excludes OS association databases |
 | `~/.mv-aide/runtime/` | Rebuildable runtime artifacts for Terminal, universal MCP, and Codex integration |
 | `~/.mv-aide/tmp/` | Operation-scoped temporary files for DSH installation, opener preflight, and similar work; `mv-run/step-*/` holds per-step mv-run scripts and control receipts, removed precisely when the step ends, is cancelled, or fails |
@@ -916,6 +995,7 @@ The following settings are pure local fields in `data.json`; none of them reache
 3. A plugin-graph change coordinates one restart of a running DSH instance. If the UI still has the old module graph, inspect the restart error, then use **Restart mv-agent** from the command palette.
 4. User plugin imports always go through `dsh plugin add`. If the command, local path, `package.json` name, or profile-manifest verification fails, correct the cause and retry. Do not expect a `file:` hot-load fallback and do not append a patch row manually.
 5. If Windows reports "Timed out while enumerating Windows processes: the system WMI service is responding abnormally slowly", the system WMI service has degraded: run `Restart-Service Winmgmt` as administrator (or reboot) to repair WMI, then retry. While WMI is degraded, package installs and upgrades refuse to proceed (packages are never touched while process state is unknown), but opening mv-agent is unaffected.
+6. If mv-agent reports that the current DSH version does not support `--no-open` (the option first shipped in 0.1.0-rc.8), the DSH in use is older than 0.1.0-rc.8 — upgrade it in the mv-agent settings. The plugin probes and caches this capability per binary: `--no-open` is passed when supported (avoiding a browser pop-up at startup) and omitted automatically on older versions (which never opened a browser anyway).
 
 ### mv-agent says DSH requires reauthorization
 

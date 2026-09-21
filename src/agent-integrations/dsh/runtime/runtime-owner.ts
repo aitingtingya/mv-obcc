@@ -4,7 +4,7 @@ import path from "node:path";
 import type { DshCommand } from "./process";
 import { resolveDshHomeDirectory } from "../paths";
 
-interface RuntimeOwnerRecord {
+export interface RuntimeOwnerRecord {
   schema: 1;
   pid: number;
   /**
@@ -94,6 +94,41 @@ export async function readMatchingDshRuntimeOwner(
   } catch {
     return null;
   }
+}
+
+/**
+ * Every still-valid ownership record for one command identity under this DSH
+ * home, keyed by the port in the record file name.
+ *
+ * Stop needs this source because discovery can miss an instance this plugin
+ * launched — a degraded WMI snapshot, or a port no open view points at any
+ * more — and an instance that stays alive keeps the session write lease, so
+ * the next launch cannot resume the workspace session.
+ * @param command - expected runtime identity; records of other identities are skipped.
+ * @returns validated records, newest first.
+ */
+export async function listDshRuntimeOwners(
+  command: DshCommand,
+): Promise<RuntimeOwnerRecord[]> {
+  const directory = ownerDirectory(command);
+  if (!directory) return [];
+  let names: string[];
+  try {
+    names = await fs.readdir(directory);
+  } catch {
+    return [];
+  }
+  const records: RuntimeOwnerRecord[] = [];
+  for (const name of names) {
+    const match = /^(\d+)\.json$/u.exec(name);
+    if (!match) continue;
+    const port = Number(match[1]);
+    if (!Number.isInteger(port) || port <= 0) continue;
+    const record = await readMatchingDshRuntimeOwner(command, port);
+    if (record) records.push(record);
+  }
+  records.sort((left, right) => right.createdAt - left.createdAt);
+  return records;
 }
 
 export async function removeDshRuntimeOwner(

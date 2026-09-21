@@ -48,9 +48,37 @@ export function parseDshWebAnnouncement(output) {
   });
 }
 
+/**
+ * Whether a URL carries launch authority (token etc.). Frame URLs must never
+ * carry it: the SameSite=Strict cookie minted by the token navigation is
+ * bound to the dsh origin, and the cross-site Obsidian iframe never attaches
+ * it to /api requests — a direct token load yields a page that renders but
+ * whose every API call fails with 401.
+ */
+export function dshUrlHasSecretQuery(raw) {
+  const url = httpUrl(raw);
+  if (!url) return false;
+  for (const key of url.searchParams.keys()) {
+    if (SECRET_QUERY_KEYS.has(key.toLowerCase())) return true;
+  }
+  return false;
+}
+
 export function redactDshWebSecrets(value) {
   if (typeof value !== 'string') return value;
   return value.replace(/([?&](?:token|access_token|auth|authorization)=)[^&#\s)]+/giu, '$1<redacted>');
+}
+
+/**
+ * Whether a probed `dsh web --help` output advertises the `--no-open` flag.
+ * The flag first shipped in dsh v0.1.0-rc.8; earlier web profiles never open
+ * a browser on their own, so omitting the flag there is semantically
+ * identical. A missing or failed probe resolves to `true`, preserving the
+ * established behavior for every runtime whose capability is unknown.
+ */
+export function dshWebSupportsNoOpen(helpOutput) {
+  if (typeof helpOutput !== 'string' || !helpOutput) return true;
+  return helpOutput.includes('--no-open');
 }
 
 export function classifyDshWebProbe(status, text) {

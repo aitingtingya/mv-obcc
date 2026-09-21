@@ -24,7 +24,7 @@ Claude Code, Codex CLI, and any MCP agent can read active tabs, selections, diag
 
 Edit TeX and other source types, run a real terminal, use an independent Vim engine, browse the filesystem, and open external files in a chosen Obsidian vault. Every module can be disabled independently.
 
-## Eight Settings Sections
+## Nine Settings Sections
 
 The order below matches **Settings → mv-AIDE**. See the [complete feature guide](docs/features-en.md) for defaults, platform boundaries, and troubleshooting.
 
@@ -37,6 +37,9 @@ The active file, selection, and editor state are passively synchronized with the
 [IDE Bridge details](docs/features-en.md#ide-bridge)
 
 ### 2. mv-agent (DSH-powered)
+
+> [!NOTE] Maintenance Notice
+> Due to heavy research commitments lately, frequent breaking changes in DSH mean mv-agent cannot be guaranteed to adapt to all upstream versions. If you encounter any issues, please feel free to submit an issue, and you can always enable the IDE Bridge to use DSH's official UI while keeping live Obsidian context.
 
 mv-agent puts the DSH web interface directly inside Obsidian. Its bottom status bar shows the real bridge state, current page or file, selection, port, and expandable live details; the command palette provides **Open / Stop / Restart mv-agent**.
 
@@ -131,6 +134,12 @@ Browse arbitrary directories, open downloaded files, and add Downloads and Histo
 
 [File routing rules](docs/features-en.md#filesystem-browser)
 
+### 9. Git
+
+Drives the Git installed on this machine to manage the repository containing the current vault — no bundled Git engine, and never commits, syncs, or goes online automatically. The workspace panel (staged / worktree / untracked / conflict groups, commit topology graph, and the branch / tag / stash reference area) and the command palette share one action registry, so every action is reachable from both. Diff views support side-by-side or inline layouts, line- and hunk-level staging, and an editable worktree side; the three-way conflict editor labels sources truthfully (correctly swapping ours/theirs under rebase). You can also initialize the current vault in place, then configure a remote and complete the first push.
+
+[Git capability table and boundaries](docs/features-en.md#git)
+
 ## Installation
 
 ### Community Plugins
@@ -185,6 +194,8 @@ See [Data and network boundaries](docs/features-en.md#storage-network) and the [
 ## Acknowledgements
 
 The CodeMirror architecture of Inline Completion was informed by the public design of [obsidian-github-copilot](https://github.com/Pierrad/obsidian-github-copilot), and the terminal process bridge by [obsidian-claude-sidebar](https://github.com/derek-larson14/obsidian-claude-sidebar). Source Assist's Code Suite kernel is based on [obsidian-latex-suite](https://github.com/artisticat1/obsidian-latex-suite) `1.11.5` with its MIT notice preserved. Vim compatibility targets and configuration UX were informed by the public documentation and user-visible ideas of [obsidian-vimrc-support](https://github.com/esm7/obsidian-vimrc-support) and [Vim Motions](https://github.com/saberzero1/motions); mv-AIDE's core engine is independently implemented against Vim/Neovim behavior and CodeMirror 6 APIs.
+
+The Git integration's command design and testing approach were informed by [Obsidian Git](https://github.com/Vinzent03/obsidian-git) (MIT), and the menu organization for commit nodes, branches, tags, and stashes by the public menu definitions of the [VS Code built-in Git extension](https://github.com/microsoft/vscode/blob/main/extensions/git/package.json) (MIT); neither project's functional gaps are inherited. The Git frontend is an independent implementation that copies no source code and always drives the native Git binary.
 
 The DSH compatibility layer's adapter/capability boundary was informed by the public ideas in [dsh-std](https://github.com/Yan-Zero/dsh-std), while its version matrix and conformance gates were informed by the public ideas in [dsh-ecosystem-spec](https://github.com/T-Auto/dsh-ecosystem-spec). mv-AIDE's adapters are independently implemented: no source code is copied, neither project is a runtime dependency, and no third-party specification certification is claimed.
 

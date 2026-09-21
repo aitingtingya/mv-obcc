@@ -7,7 +7,7 @@ const messages = {
   defaultHint: ["按文件顺序执行未受保护的命令", "Run unprotected commands in file order"],
   specifiedHint: ["通过名称和 @分组指定顺序", "Choose an order using names and @groups"],
   order: ["执行顺序", "Execution order"],
-  help: ["例如 pdf,@refs -p,pdf。Tab 补全，Enter 执行，Esc 取消。", "Example: pdf,@refs -p,pdf. Tab completes, Enter runs, Esc cancels."],
+  help: ["例如 pdf,@refs -p,pdf。Enter 选中补全或执行，Esc 取消。", "Example: pdf,@refs -p,pdf. Enter accepts a completion or runs, Esc cancels."],
   preview: ["实际执行顺序", "Expanded execution order"],
   filtered: ["因保护规则跳过", "Skipped by protection rules"],
   unnamed: ["未命名", "Unnamed"],
@@ -22,6 +22,8 @@ const messages = {
   failed: ["mv-run 已停止", "mv-run stopped"],
   running: ["mv-run 正在执行", "mv-run is running"],
   waiting: ["正在保存并确认…", "Saving and confirming…"],
+  instEnter: ["执行或选择", "Run or select"],
+  instEsc: ["取消", "Cancel"],
 } as const;
 
 export function message(key: keyof typeof messages): string {

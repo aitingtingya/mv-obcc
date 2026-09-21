@@ -4,6 +4,7 @@ import type { RegexReplaceSettings } from "./regex-replace/regex-replace-types";
 import type { MvRunSettings } from "./terminal/mv-run-types";
 import type { VimSettings } from "./vim/settings";
 import type { DshSettings } from "./agent-integrations/dsh/settings";
+import type { GitSettings } from "./git/model";
 
 export interface ToolToggles {
   getLatestSelection: boolean;
@@ -375,6 +376,8 @@ export interface BridgeSettings {
   mvRun: MvRunSettings;
   externalFileOpener: ExternalFileOpenerSettings;
   dsh: DshSettings;
+  /** 原生 Git 集成：当前 Vault 所属仓库的工作区、命令面板与 diff。 */
+  git: GitSettings;
   /** Hide Obsidian's native `.status-bar` container via a body class only. */
   hideObsidianStatusBar: boolean;
   mcpEnabled: boolean;

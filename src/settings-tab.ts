@@ -92,6 +92,7 @@ type MainSettingsSectionId =
   | "vim"
   | "external-file-opener"
   | "filesystem-browser"
+  | "git"
   | "mv-agent";
 
 class SourceAssistExtensionModal extends Modal {
@@ -890,6 +891,7 @@ export class MvAideIdeSettingTab extends PluginSettingTab {
       "filesystem-browser",
       t("文件系统与浏览器"),
     );
+    const gitEl = this.createSettingsSection(rootEl, "git", "Git");
     let containerEl = ideEl;
 
     const universalMcpEl = this.createIdeSubsection(
@@ -938,6 +940,8 @@ export class MvAideIdeSettingTab extends PluginSettingTab {
 
     containerEl = filesystemBrowserEl;
     this.renderFilesystemBrowserSettings(containerEl);
+
+    this.renderGitSettings(gitEl);
 
     containerEl = createRememberedSettingsSubsection(
       inDocumentAiEl,
@@ -1734,6 +1738,204 @@ export class MvAideIdeSettingTab extends PluginSettingTab {
         t("完全跟随 Claude Code 权限模式：默认权限会显示审核；acceptEdits 会直接接受编辑，插件不会额外弹窗。"),
       );
   }
+
+  private renderGitSettings(containerEl: HTMLElement): void {
+    const settings = this.plugin.settings.git;
+    const feature = this.plugin.gitFeature;
+    new Setting(containerEl)
+      .setName(t("启用 Git 集成"))
+      .setDesc(
+        t("调用本机安装的 Git 管理当前 Vault 所属仓库：工作区面板、命令面板动作、差异视图与提交历史。不内置 Git 引擎；不会自动提交、推送或联网。"),
+      )
+      .addToggle((toggle) =>
+        toggle.setValue(settings.enabled).onChange(async (value) => {
+          settings.enabled = value;
+          await this.plugin.saveAndApplySettings();
+          this.rerenderSettings("git");
+        }),
+      );
+
+    new Setting(containerEl)
+      .setName(t("Git 可执行文件路径"))
+      .setDesc(t("留空使用系统 PATH 中的 git。自定义路径在下次 Git 调用时生效。"))
+      .addText((text) =>
+        text
+          .setPlaceholder("Git")
+          .setValue(settings.executable)
+          .onChange(async (value) => {
+            settings.executable = value.trim();
+            await this.plugin.saveAndApplySettings();
+          }),
+      );
+
+    const snapshot = feature?.repository.snapshot ?? null;
+    const diagnostic = new Setting(containerEl).setName(t("仓库检测与诊断"));
+    if (snapshot) {
+      diagnostic.setDesc(
+        `${snapshot.version}\n${t("Git 仓库根目录")}: ${snapshot.root}\n${t("分支")}: ${snapshot.branch || t("（分离 HEAD）")}${
+          snapshot.operation ? `\n${t("进行中的操作")}: ${snapshot.operation}` : ""
+        }`,
+      );
+    } else {
+      diagnostic.setDesc(
+        feature?.repository.error || t("当前 Vault 尚未初始化为 Git 仓库。"),
+      );
+    }
+    diagnostic.addButton((button) =>
+      button.setButtonText(t("重新检测")).onClick(async () => {
+        await feature?.repository.refresh().catch(() => undefined);
+        this.rerenderSettings("git");
+      }),
+    );
+    if (!snapshot) {
+      diagnostic.addButton((button) =>
+        button
+          .setButtonText(t("初始化当前 Vault"))
+          .setCta()
+          .onClick(() => {
+            void feature?.run("init");
+            window.setTimeout(() => this.rerenderSettings("git"), 800);
+          }),
+      );
+    }
+
+    new Setting(containerEl)
+      .setName(t("工作区位置"))
+      .setDesc(t("Git 工作区面板默认位于左侧；也可选择右侧、独立标签页或分栏。"))
+      .addDropdown((dropdown) =>
+        dropdown
+          .addOption("left", t("左侧面板"))
+          .addOption("right", t("右侧面板"))
+          .addOption("tab", t("独立完整标签页"))
+          .addOption("split", t("分栏"))
+          .setValue(settings.position)
+          .onChange(async (value) => {
+            settings.position = value as typeof settings.position;
+            await this.plugin.saveAndApplySettings();
+          }),
+      );
+
+    new Setting(containerEl)
+      .setName(t("diff 打开位置"))
+      .setDesc(t("diff 与冲突编辑器的打开位置：默认在 Obsidian 中间主区新建标签页；也可沿 Git 工作区分屏，或固定到左／右侧栏。"))
+      .addDropdown((dropdown) =>
+        dropdown
+          .addOption("main", t("中间主区"))
+          .addOption("split", t("沿 Git 工作区分屏"))
+          .addOption("right", t("右侧栏"))
+          .addOption("left", t("左侧栏"))
+          .setValue(settings.diffPlacement)
+          .onChange(async (value) => {
+            settings.diffPlacement = value as typeof settings.diffPlacement;
+            await this.plugin.saveAndApplySettings();
+          }),
+      );
+
+    new Setting(containerEl)
+      .setName(t("diff 布局"))
+      .setDesc(t("并排、行内或按面板宽度自动选择。"))
+      .addDropdown((dropdown) =>
+        dropdown
+          .addOption("auto", t("自动"))
+          .addOption("split", t("并排"))
+          .addOption("inline", t("行内"))
+          .setValue(settings.layout)
+          .onChange(async (value) => {
+            settings.layout = value as typeof settings.layout;
+            await this.plugin.saveAndApplySettings();
+          }),
+      );
+
+    new Setting(containerEl)
+      .setName(t("文件树视图"))
+      .setDesc(t("开启按目录折叠分组，关闭则使用平铺列表。"))
+      .addToggle((toggle) =>
+        toggle.setValue(settings.tree).onChange(async (value) => {
+          settings.tree = value;
+          await this.plugin.saveAndApplySettings();
+          feature?.refresh();
+        }),
+      );
+
+    new Setting(containerEl)
+      .setName(t("自动刷新仓库状态"))
+      .setDesc(t("文件变化与定时刷新只使缓存失效；无人查看 Git 工作区时停止周期扫描。"))
+      .addToggle((toggle) =>
+        toggle.setValue(settings.autoRefresh).onChange(async (value) => {
+          settings.autoRefresh = value;
+          await this.plugin.saveAndApplySettings();
+        }),
+      );
+
+    new Setting(containerEl)
+      .setName(t("状态栏显示 Git 状态"))
+      .setDesc(t("在状态栏显示分支、领先／落后数量与进行中的操作；点击打开 Git 工作区。"))
+      .addToggle((toggle) =>
+        toggle.setValue(settings.statusBar).onChange(async (value) => {
+          settings.statusBar = value;
+          await this.plugin.saveAndApplySettings();
+        }),
+      );
+
+    new Setting(containerEl)
+      .setName(t("操作结果通知"))
+      .setDesc(t("Git 写操作成功后在右上角弹出气泡；失败通知始终弹出。关闭工作区面板时也能看到操作结果。"))
+      .addToggle((toggle) =>
+        toggle.setValue(settings.notices).onChange(async (value) => {
+          settings.notices = value;
+          await this.plugin.saveAndApplySettings();
+        }),
+      );
+
+    new Setting(containerEl)
+      .setName(t("编辑器修改标记"))
+      .setDesc(t("默认关闭。开启后在编辑器行号槽显示相对 Git HEAD 的添加／修改／删除标记。查询与差异块命令始终可用。"))
+      .addToggle((toggle) =>
+        toggle.setValue(settings.editMarkers).onChange(async (value) => {
+          settings.editMarkers = value;
+          await this.plugin.saveAndApplySettings();
+        }),
+      );
+
+    new Setting(containerEl)
+      .setName(t("当前行归属提示"))
+      .setDesc(t("默认关闭。开启后在当前行尾显示该行最近一次提交的摘要。"))
+      .addToggle((toggle) =>
+        toggle.setValue(settings.lineBlame).onChange(async (value) => {
+          settings.lineBlame = value;
+          await this.plugin.saveAndApplySettings();
+        }),
+      );
+
+    new Setting(containerEl)
+      .setName(t("拉取策略"))
+      .setDesc(t("默认遵循仓库配置；仓库未配置时仅快进。可显式选择 merge 或 rebase。"))
+      .addDropdown((dropdown) =>
+        dropdown
+          .addOption("config", t("遵循仓库配置"))
+          .addOption("ff-only", t("仅快进"))
+          .addOption("merge", t("合并（merge）"))
+          .addOption("rebase", t("变基（rebase）"))
+          .setValue(settings.pull)
+          .onChange(async (value) => {
+            settings.pull = value as typeof settings.pull;
+            await this.plugin.saveAndApplySettings();
+          }),
+      );
+
+    new Setting(containerEl)
+      .setName(t("提交消息模板"))
+      .setDesc(t("可选纯文本，作为新提交消息的初始内容；不执行任何脚本。"))
+      .addTextArea((text) =>
+        text
+          .setValue(settings.messageTemplate)
+          .onChange(async (value) => {
+            settings.messageTemplate = value;
+            await this.plugin.saveAndApplySettings();
+          }),
+      );
+  }
+
 
   private renderIdeMaintenanceSettings(containerEl: HTMLElement): void {
     addHeading(containerEl, t("维护"));

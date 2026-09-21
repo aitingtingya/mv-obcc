@@ -1,11 +1,13 @@
 import type { ChildProcess } from "node:child_process";
+import path from "node:path";
 import {
   createDefaultDshProcessDiscoveryAdapter,
   discoverDshProcesses,
+  isDshRuntimeProcess,
   type DshProcessDiscoveryAdapter,
   type DshProcessInfo,
 } from "./process-discovery";
-import { runProcess, spawnProcess } from "../../../process-runner";
+import { spawnProcess } from "../../../process-runner";
 import {
   classifyDshWebProbe,
   dshWebIdentityUrl,
@@ -15,10 +17,12 @@ import {
 } from "../../../../mv-dsh-compat/lib/obsidian.js";
 import {
   dshRuntimeIdentityKey,
+  listDshRuntimeOwners,
   readMatchingDshRuntimeOwner,
   removeDshRuntimeOwner,
   writeDshRuntimeOwner,
 } from "./runtime-owner";
+import { resolveWebNoOpenCapability } from "./web-launch-capabilities";
 import { resolveDshHomeDirectory } from "../paths";
 import {
   DshWebProxy,
@@ -31,6 +35,14 @@ import type { DshWebAuthStore } from "./web-auth-store";
 const DSH_WEB_MARKER = "__DSH_BOOT__";
 
 export const DSH_PACKAGE = "@deepseek-ai/dsh";
+
+/**
+ * How long a stopped instance gets to release its port. Must exceed the
+ * 2s netstat snapshot cache in process-discovery, or a stale table would
+ * report a released port as still listening.
+ */
+const PORT_RELEASE_TIMEOUT_MS = 6_000;
+const PORT_RELEASE_POLL_MS = 250;
 
 /**
  * Canonical root URL for a dsh web endpoint. Browser iframe URLs always gain
@@ -123,20 +135,64 @@ function portablePath(value: string): string {
   return process.platform === "win32" ? portable.toLowerCase() : portable;
 }
 
+/** npm's Windows shims are shell wrappers, not the process that runs the CLI. */
+const WINDOWS_SHIM_EXECUTABLE = /\.(?:cmd|bat)$/iu;
+
+/**
+ * Path fragments whose presence in a live command line proves that process
+ * runs the expected DSH command.
+ *
+ * The command is normally `node <cli entry>` (the vault runtime, or the npm
+ * package entry), and that entry appears verbatim in the listener's command
+ * line. A Windows npm `.cmd` shim is the exception: the shim is executed by
+ * PowerShell through cmd.exe, while the process that actually listens is
+ * `node.exe <prefix>\node_modules\@deepseek-ai\dsh\lib\bin.js` — the shim path
+ * never appears there. The shim's sibling package directory proves the same
+ * installation, which is what adoption and stop need to recognize an instance
+ * this plugin launched.
+ */
+export function dshCommandIdentityEntries(expected: DshCommand): string[] {
+  const entries: string[] = [];
+  for (const argument of expected.argsPrefix) {
+    if (argument.length > 0) entries.push(portablePath(argument));
+  }
+  entries.push(portablePath(expected.executable));
+  if (WINDOWS_SHIM_EXECUTABLE.test(expected.executable)) {
+    const prefix = path.win32.dirname(expected.executable);
+    const packageDirectory = path.win32.join(
+      prefix,
+      "node_modules",
+      ...DSH_PACKAGE.split("/"),
+    );
+    entries.push(portablePath(`${packageDirectory}${path.win32.sep}`));
+  }
+  return entries;
+}
+
 /** Prove that one native process invokes the selected DSH entry. */
 export function dshProcessMatchesCommand(
   info: Pick<DshProcessInfo, "command" | "executable">,
   expected: DshCommand,
 ): boolean {
   const commandLine = portablePath(info.command);
-  const identityEntry = expected.argsPrefix.find((argument) => argument.length > 0)
-    ?? expected.executable;
-  const expectedEntry = portablePath(identityEntry);
-  if (commandLine.includes(expectedEntry)) return true;
+  if (dshCommandIdentityEntries(expected).some((entry) => commandLine.includes(entry))) {
+    return true;
+  }
   const nativeExecutable = info.executable ? portablePath(info.executable) : "";
   return expected.argsPrefix.length === 0
     && nativeExecutable.length > 0
     && nativeExecutable === portablePath(expected.executable);
+}
+
+/**
+ * A command line decoded through the wrong console codepage carries U+FFFD
+ * replacement characters and can never equal a real on-disk path — matching
+ * it against a runtime identity would reject the very instance mv-AIDE
+ * launched. Such rows count as "no command line available", the same
+ * semantics as a name-only ancestry-tree row.
+ */
+export function dshCommandLineMojibake(info: Pick<DshProcessInfo, "command">): boolean {
+  return info.command.includes("�");
 }
 
 export interface DshWebProbe {
@@ -269,6 +325,9 @@ export function describeDshBootError(output: string): string | null {
   if (/failed to parse overlay\s+\S*cordis\.patch\.yml/iu.test(output)) {
     return "dsh 的 cordis.patch.yml 配置损坏，请重新点击“注入 mv-agent 插件”自动修复。";
   }
+  if (/unknown option ['"]--no-open['"]/iu.test(output)) {
+    return "当前 DSH 版本不支持 --no-open（该选项自 0.1.0-rc.8 起提供）；请在 mv-agent 设置中升级 DSH。";
+  }
   return null;
 }
 
@@ -288,6 +347,13 @@ export class DshProcessManager {
   private launchUrl: string | null = null;
   /** Endpoint capability: this DSH requires the authenticated loopback proxy. */
   private authGatedEndpoint: string | null = null;
+  /**
+   * Endpoint positively classified as serving its SPA without authentication.
+   * Only such an endpoint may be handed to the iframe directly: dsh leaves the
+   * document and static assets open and gates /api, so a raw endpoint inside
+   * the cross-site Obsidian frame renders a page whose every API call 401s.
+   */
+  private noAuthEndpoint: string | null = null;
   /** Transient failure: the auth-gated endpoint currently lacks valid authority. */
   private authorizationRequiredEndpoint: string | null = null;
   private launchedPort: number | null = null;
@@ -313,6 +379,10 @@ export class DshProcessManager {
       (upstream, deps) => new DshWebProxy(upstream, deps),
     private readonly authStore?: DshWebAuthStore,
     private readonly authPersistenceWarning: (message: string) => void = () => {},
+    private readonly webNoOpenCapability: (
+      vaultRoot: string,
+      command: DshCommand,
+    ) => Promise<boolean> = resolveWebNoOpenCapability,
   ) {}
 
   isRunning(): boolean {
@@ -331,7 +401,16 @@ export class DshProcessManager {
   async webViewUrl(): Promise<string | null> {
     const proxy = await this.ensureWebProxy();
     if (proxy?.url) return proxy.url;
-    return normalizeDshWebUrl(this.announcedUrl ?? "");
+    const identity = normalizeDshWebUrl(this.announcedUrl ?? "");
+    if (identity === null) return null;
+    const knownNoAuth = this.noAuthEndpoint !== null && sameDshWebUrl(this.noAuthEndpoint, identity);
+    if (!knownNoAuth) {
+      // Refusing here is the fix for the read-only page: dsh serves the SPA and
+      // its assets without authentication and gates /api, so a raw endpoint in
+      // the cross-site iframe renders but cannot talk to the backend.
+      throw new DshAuthorizationRequiredError(identity);
+    }
+    return identity;
   }
 
   /**
@@ -374,6 +453,7 @@ export class DshProcessManager {
     else if (!sameEndpoint) {
       this.launchUrl = null;
       this.authGatedEndpoint = null;
+      this.noAuthEndpoint = null;
       this.stopWebProxy();
     }
     if (this.launchUrl && sameDshWebUrl(this.launchUrl, normalized)) {
@@ -393,8 +473,9 @@ export class DshProcessManager {
     this.launchUrl = null;
     this.authGatedEndpoint = null;
     this.authorizationRequiredEndpoint = null;
+    this.noAuthEndpoint = normalizeDshWebUrl(normalized) ?? normalized;
     this.stopWebProxy();
-    return normalizeDshWebUrl(normalized) ?? normalized;
+    return this.noAuthEndpoint;
   }
 
   private clearUnmanagedEndpoint(): void {
@@ -402,6 +483,7 @@ export class DshProcessManager {
     this.announcedUrl = null;
     this.launchUrl = null;
     this.authGatedEndpoint = null;
+    this.noAuthEndpoint = null;
     this.authorizationRequiredEndpoint = null;
     this.launchedPort = null;
     this.stopWebProxy();
@@ -416,10 +498,12 @@ export class DshProcessManager {
   }
 
   /**
-   * Obtain the loopback proxy for the current endpoint when its launch URL
-   * carries Alpha token authority. No-auth endpoints (preview) return null
-   * and keep direct iframe URLs. Concurrent callers share one setup; token
-   * rotation on the same endpoint re-exchanges in place.
+   * Obtain the loopback proxy for the current endpoint unless that endpoint
+   * was positively classified as serving without authentication. A token-gated
+   * endpoint exchanges its launch authority; an unclassified one restores the
+   * stored session or asks for authorization — never a direct iframe URL.
+   * Concurrent callers share one setup; token rotation on the same endpoint
+   * re-exchanges in place.
    */
   private async ensureWebProxy(): Promise<DshWebProxyLike | null> {
     const identity = normalizeDshWebUrl(this.announcedUrl ?? "");
@@ -430,8 +514,14 @@ export class DshProcessManager {
     }
     const authRequired = this.authGatedEndpoint !== null
       && sameDshWebUrl(this.authGatedEndpoint, identity);
-    // Preview serves its root directly and never enters the auth path.
-    if ((!launch || launch === identity) && !authRequired) {
+    const knownNoAuth = this.noAuthEndpoint !== null
+      && sameDshWebUrl(this.noAuthEndpoint, identity);
+    const hasLaunchAuthority = launch !== null && launch !== identity;
+    // Serve the endpoint directly only when it was positively classified as
+    // unauthenticated. An unclassified endpoint goes through the proxy — with
+    // the stored credential, the live launch token, or an explicit
+    // authorization request — because a raw endpoint renders read-only.
+    if (!hasLaunchAuthority && !authRequired && knownNoAuth) {
       this.stopWebProxy();
       return null;
     }
@@ -535,17 +625,25 @@ export class DshProcessManager {
     if (owned) {
       // The ownership record is authoritative evidence that mv-AIDE launched
       // this listener. Cross-check the command line when the OS can still
-      // report it (defense against pid reuse); a name-only ancestry-tree row
-      // or no row at all — e.g. a badly degraded WMI service where every CIM
-      // query times out, or a listener whose command line is hidden from this
-      // user — counts as unavailable, and then the record plus the live dsh
-      // probe suffice, or every open would needlessly spawn another instance
-      // on such machines.
-      const reliable = info && info.nameOnly !== true ? info : null;
+      // report it (defense against pid reuse); a name-only ancestry-tree row,
+      // a mojibake row (wrong console codepage — it can never match a real
+      // path), or no row at all — e.g. a badly degraded WMI service where
+      // every CIM query times out, or a listener whose command line is hidden
+      // from this user — counts as unavailable, and then the record plus the
+      // live dsh probe suffice, or every open would needlessly spawn another
+      // instance on such machines.
+      const mojibake = info !== null && dshCommandLineMojibake(info);
+      if (mojibake) {
+        console.warn(
+          `[mv-aide] DSH process ${pid} command line contains U+FFFD mojibake; `
+          + "trusting the mv-AIDE owner record instead (check console codepage handling).",
+        );
+      }
+      const reliable = info && info.nameOnly !== true && !mojibake ? info : null;
       return reliable ? dshProcessMatchesCommand(reliable, expected) : true;
     }
     if (expected.requireRuntimeOwner) return false;
-    return info ? dshProcessMatchesCommand(info, expected) : false;
+    return info && !dshCommandLineMojibake(info) ? dshProcessMatchesCommand(info, expected) : false;
   }
 
   /** The port the managed/adopted instance actually runs on, or null. */
@@ -561,8 +659,34 @@ export class DshProcessManager {
     return this.launchedPort;
   }
 
-  /** Confirm one exact endpoint and adopt it as the shared current state. */
-  async confirmDshUrl(url: string, timeoutMs = 1500): Promise<string | null> {
+  /**
+   * Whether one endpoint (default: the current one) still serves DSH. Used by
+   * the view keeper to decide between "nothing to repair" and "reconnect the
+   * views to a live instance".
+   */
+  async isEndpointLive(url?: string | null): Promise<boolean> {
+    const target = normalizeDshWebUrl(url ?? this.announcedUrl ?? "");
+    if (!target) return false;
+    const probe = await this.probe(target, 1500);
+    return probe.reachable && probe.isDsh;
+  }
+
+  /**
+   * Confirm one exact endpoint and adopt it as the shared current state.
+   * @param url - endpoint (or one-shot launch URL) to adopt.
+   * @param timeoutMs - probe budget.
+   * @param options - `trustOwnEndpoint` accepts a live dsh endpoint taken from
+   *   this vault's own state (the restored view URL, or the endpoint it already
+   *   adopted), even when no ownership record proves it. That is the reload
+   *   path: the instance is the one this vault was using, and refusing it would
+   *   start a second instance that cannot take the session write lease. Manual
+   *   authorization URLs keep the strict ownership gate.
+   */
+  async confirmDshUrl(
+    url: string,
+    timeoutMs = 1500,
+    options: { trustOwnEndpoint?: boolean } = {},
+  ): Promise<string | null> {
     const generation = this.startGeneration;
     const normalized = normalizeDshWebUrl(url);
     if (!normalized) return null;
@@ -571,17 +695,24 @@ export class DshProcessManager {
       this.selectedCommand(),
     ]);
     if (generation !== this.startGeneration) return null;
-    if (probe.reachable && probe.isDsh && await this.endpointMatchesCommand(normalized, expected)) {
+    const live = probe.reachable && probe.isDsh;
+    const owned = live ? await this.endpointMatchesCommand(normalized, expected) : false;
+    if (live && (owned || options.trustOwnEndpoint === true)) {
+      if (!owned) {
+        console.warn(
+          `[mv-aide] adopting ${normalized} from this vault's own state without an ownership record.`,
+        );
+      }
       const suppliedLaunch = normalizeDshLaunchUrl(url);
       const hasLaunchAuthority = suppliedLaunch !== null && suppliedLaunch !== normalized;
       const rememberedAuthority = this.launchUrl !== null && sameDshWebUrl(this.launchUrl, normalized);
       this.rememberEndpoint(hasLaunchAuthority && suppliedLaunch ? suppliedLaunch : normalized);
-      if (probe.authenticationRequired) {
+      if (probe.authenticationRequired === true) {
         this.authGatedEndpoint = normalized;
         this.authorizationRequiredEndpoint = normalized;
         if (!hasLaunchAuthority && !rememberedAuthority) this.launchUrl = null;
         await this.ensureWebProxy();
-      } else {
+      } else if (probe.authenticationRequired === false) {
         this.rememberUnauthenticatedEndpoint(normalized);
       }
       return normalized;
@@ -617,7 +748,7 @@ export class DshProcessManager {
     const generation = this.startGeneration;
     if (this.announcedUrl) {
       if (this.isRunning()) return this.navigationUrl() ?? this.announcedUrl;
-      const adopted = await this.confirmDshUrl(this.announcedUrl, 2000);
+      const adopted = await this.confirmDshUrl(this.announcedUrl, 2000, { trustOwnEndpoint: true });
       this.assertStartActive(generation);
       if (adopted) return adopted;
     }
@@ -696,10 +827,19 @@ export class DshProcessManager {
       const probe = await this.probe(url, 1500);
       this.assertStartActive(generation);
       if (probe.reachable) {
+        // Only an occupied port needs the stored-endpoint lookup: it reads the
+        // credential store, and the common path (free port) must stay probe-first.
+        const trusted = await this.trustedEndpointSet();
+        this.assertStartActive(generation);
         const expected = allowAdopt && probe.isDsh ? await resolveCommand() : null;
-        if (allowAdopt && probe.isDsh && await this.endpointMatchesCommand(url, expected)) {
+        const own = allowAdopt && probe.isDsh && this.isOwnEndpoint(url, trusted);
+        if (allowAdopt && probe.isDsh && (own || await this.endpointMatchesCommand(url, expected))) {
+          if (own && !await this.endpointMatchesCommand(url, expected)) {
+            console.warn(`[mv-aide] reconnecting to ${url} from this vault's own DSH endpoints.`);
+          }
           if (!probe.authenticationRequired) return this.rememberUnauthenticatedEndpoint(url, candidate);
           this.rememberEndpoint(url, candidate);
+          this.noAuthEndpoint = null;
           this.authGatedEndpoint = url;
           this.authorizationRequiredEndpoint = url;
           await this.ensureWebProxy();
@@ -734,8 +874,19 @@ export class DshProcessManager {
       }
       throw new Error("DSH 尚未安装，请先在 mv-agent 设置中点击“安装”。");
     }
+    // `--no-open` first shipped in dsh v0.1.0-rc.8; earlier web profiles never
+    // open a browser, so omitting the flag there is semantically identical.
+    // The probe is persisted per binary, so a steady-state launch spawns nothing extra.
+    const supportsNoOpen = await this.webNoOpenCapability(this.vaultRoot(), command);
+    this.assertStartActive(generation);
     return new Promise((resolve, reject) => {
-      const rawArgs = [...command.argsPrefix, "web", "--no-open", "--port", String(port)];
+      const rawArgs = [
+        ...command.argsPrefix,
+        "web",
+        ...(supportsNoOpen ? ["--no-open"] : []),
+        "--port",
+        String(port),
+      ];
       let executable = command.executable;
       let args = rawArgs;
       if (process.platform !== "win32") {
@@ -845,7 +996,15 @@ export class DshProcessManager {
             /* listener-pid hint is best-effort */
           }
           const url = this.rememberEndpoint(target, port);
-          if (probe.authenticationRequired) this.authGatedEndpoint = normalizeDshWebUrl(target);
+          if (probe.authenticationRequired === true) {
+            this.noAuthEndpoint = null;
+            this.authGatedEndpoint = normalizeDshWebUrl(target);
+          } else if (probe.authenticationRequired === false) {
+            // The probe answered "no authentication": this endpoint may be
+            // framed directly. Without that positive answer webViewUrl() builds
+            // the proxy instead of handing out a read-only raw URL.
+            this.noAuthEndpoint = normalizeDshWebUrl(target);
+          }
           // Alpha token endpoints need the loopback proxy before any iframe
           // can load: exchange the token for a session cookie now, while the
           // launch authority is still fresh. A proxy failure is a boot
@@ -898,8 +1057,9 @@ export class DshProcessManager {
 
       child.once("error", (error) => {
         const owned = this.child === child;
-        if (child.pid) {
-          void ownerReady.then(() => removeDshRuntimeOwner(command, port, child.pid));
+        const childPid = child.pid;
+        if (childPid) {
+          void ownerReady.then(() => this.forgetOwnerWhenPortFree(command, port, childPid));
         }
         if (owned) {
           this.child = null;
@@ -913,8 +1073,9 @@ export class DshProcessManager {
       });
       child.once("exit", (code) => {
         const owned = this.child === child;
-        if (child.pid) {
-          void ownerReady.then(() => removeDshRuntimeOwner(command, port, child.pid));
+        const childPid = child.pid;
+        if (childPid) {
+          void ownerReady.then(() => this.forgetOwnerWhenPortFree(command, port, childPid));
         }
         if (owned) {
           this.child = null;
@@ -975,8 +1136,12 @@ export class DshProcessManager {
       candidates.set(normalized, { url: normalized, port, isObsidianChild, connected });
     };
 
-    if (this.announcedUrl) addUrl(this.announcedUrl, false, false);
+    if (this.announcedUrl) addUrl(this.announcedUrl, false, true);
     for (const url of connectedUrls) addUrl(url, false, true);
+    // Endpoints this vault opened before (stored web sessions) are ours too:
+    // they are what makes a reload reconnect instead of starting a new instance
+    // on the next port.
+    for (const url of await this.rememberedEndpoints()) addUrl(url, false, true);
     for (const candidate of [
       this.port(),
       ...nextPortCandidates(this.port(), 20),
@@ -1001,8 +1166,20 @@ export class DshProcessManager {
         Array.from(candidates.values()).map(async (candidate) => {
           const probe = await this.probe(candidate.url, 1500);
           if (!probe.reachable || !probe.isDsh) return null;
-          if (!await this.endpointMatchesCommand(candidate.url, expectedCommand)) return null;
-          candidate.authenticationRequired = probe.authenticationRequired === true;
+          const owned = await this.endpointMatchesCommand(candidate.url, expectedCommand);
+          // An endpoint one of this vault's own mv-agent views is showing is
+          // ours even without an ownership record: refusing it would start a
+          // second instance on the next port, and the two would fight over the
+          // session write lease (the reload case).
+          if (!owned && !candidate.connected) return null;
+          if (!owned) {
+            console.warn(
+              `[mv-aide] adopting connected mv-agent endpoint ${candidate.url} without an ownership record.`,
+            );
+          }
+          // Keep the probe's answer verbatim: `undefined` means the probe did
+          // not classify the endpoint, which must not be treated as "no auth".
+          candidate.authenticationRequired = probe.authenticationRequired;
           return candidate;
         }),
       )
@@ -1023,12 +1200,13 @@ export class DshProcessManager {
       return left.port - right.port;
     });
     const selected = ranked[0] ?? null;
-    if (selected?.authenticationRequired) {
+    if (selected?.authenticationRequired === true) {
       this.rememberEndpoint(selected.url, selected.port);
+      this.noAuthEndpoint = null;
       this.authGatedEndpoint = selected.url;
       this.authorizationRequiredEndpoint = selected.url;
       await this.ensureWebProxy();
-    } else if (selected) {
+    } else if (selected && selected.authenticationRequired === false) {
       this.rememberUnauthenticatedEndpoint(selected.url, selected.port);
     }
     return selected;
@@ -1047,7 +1225,16 @@ export class DshProcessManager {
     const managedCommand = this.managedCommand;
     const managedPort = this.launchedPort;
     const ownerReady = this.managedOwnerReady;
+    const port = managedPort ?? this.currentPort();
     if (!child || child.exitCode !== null) {
+      // The spawned child is gone, but a Windows shim launch can leave the
+      // real listener holding the port: terminate the listener this vault's
+      // ownership record names (never an unproven one), then verify before
+      // clearing state or dropping that record.
+      const listener = port === null ? null : await this.ownedListenerPid(port, managedCommand);
+      if (listener !== null) await this.terminateDshTarget({ pid: listener, port }, null, managedCommand);
+      const released = port === null
+        || (await this.waitForPortsReleased([port], PORT_RELEASE_TIMEOUT_MS)).has(port);
       this.child = null;
       this.managedCommand = null;
       this.managedOwnerReady = null;
@@ -1057,26 +1244,24 @@ export class DshProcessManager {
       this.stopWebProxy();
       this.authorizationRequiredEndpoint = null;
       this.launchedPort = null;
-      if (managedCommand && managedPort && child?.pid) {
+      if (managedCommand && port !== null && child?.pid && released) {
         await ownerReady;
-        await removeDshRuntimeOwner(managedCommand, managedPort, child.pid);
+        await removeDshRuntimeOwner(managedCommand, port, child.pid);
       }
       return;
     }
-    let signalled = false;
-    try {
-      if (process.platform === "win32" && child.pid) {
-        const result = await runProcess("taskkill", ["/pid", String(child.pid), "/T", "/F"], {
-          timeoutMs: 15_000,
-        });
-        signalled = result.code === 0;
-      } else {
-        signalled = child.kill("SIGTERM");
-      }
-    } catch {
-      signalled = false;
+    if (child.pid) {
+      await this.terminateDshTarget({ pid: child.pid, port }, child, managedCommand);
+    } else if (port !== null) {
+      const listener = await this.ownedListenerPid(port, managedCommand);
+      if (listener !== null) await this.terminateDshTarget({ pid: listener, port }, null, managedCommand);
     }
-    if (!signalled) return;
+    const released = port === null
+      || (await this.waitForPortsReleased([port], PORT_RELEASE_TIMEOUT_MS)).has(port);
+    // A listener that survived the kill keeps its state and record so a later
+    // stop or 「打开」 can still recognize it; reporting success here would be
+    // the false success that stranded instances before.
+    if (!released) return;
     this.child = null;
     this.managedCommand = null;
     this.managedOwnerReady = null;
@@ -1085,9 +1270,9 @@ export class DshProcessManager {
     this.authGatedEndpoint = null;
     this.authorizationRequiredEndpoint = null;
     this.launchedPort = null;
-    if (managedCommand && managedPort && child.pid) {
+    if (managedCommand && port !== null && child.pid) {
       await ownerReady;
-      await removeDshRuntimeOwner(managedCommand, managedPort, child.pid);
+      await removeDshRuntimeOwner(managedCommand, port, child.pid);
     }
   }
 
@@ -1213,6 +1398,7 @@ export class DshProcessManager {
   /** Stop only processes proven to implement this Vault's selected runtime. */
   async stopAllTargetDshInstances(
     connectedUrls: readonly string[] = [],
+    options: { portReleaseTimeoutMs?: number } = {},
   ): Promise<DshStopSummary> {
     this.invalidatePendingStart();
     const targets = new Map<number, { pid: number; port: number | null }>();
@@ -1243,17 +1429,19 @@ export class DshProcessManager {
       const port = Number(new URL(normalized).port);
       if (!Number.isInteger(port) || port <= 0) continue;
       if (expected) {
-        if (!await this.endpointMatchesCommand(normalized, expected)) continue;
+        if (!await this.endpointMatchesCommand(normalized, expected)) {
+          // A live DSH listener started from this vault is ours to stop even
+          // when its runtime form no longer matches the currently selected
+          // command (a vault runtime replaced by the global one, or a launch
+          // through the npm shim whose listener command line names the package
+          // entry). Leaving it alive keeps the session write lease taken.
+          if (!await this.listenerRunsFromVault(port)) continue;
+        }
       } else {
         const probe = await this.probe(normalized, 2000);
         if (!probe.reachable || !probe.isDsh) continue;
       }
-      let pid: number | null = null;
-      try {
-        pid = await this.discovery.listenerPid(port);
-      } catch {
-        pid = null;
-      }
+      const pid = await this.listenerPidOf(port);
       if (pid !== null) {
         targets.set(pid, { pid, port });
       }
@@ -1270,25 +1458,40 @@ export class DshProcessManager {
       });
     }
 
-    for (const target of targets.values()) {
-      let killed = false;
-      try {
-        killed = await this.discovery.killProcessTree(target.pid);
-      } catch {
-        killed = false;
-      }
-      if (!killed && child?.pid === target.pid) {
-        try {
-          child.kill("SIGKILL");
-          killed = true;
-        } catch {
-          killed = false;
+    // Ownership records cover instances this plugin launched that discovery
+    // missed and no open view points at any more. A record whose port is now
+    // held by a different process is stale (crashed launch, reused port) and
+    // is dropped rather than acting on the wrong process.
+    if (expected) {
+      for (const owner of await listDshRuntimeOwners(expected)) {
+        const recorded = owner.listenerPid ?? owner.pid;
+        if (targets.has(recorded)) continue;
+        const listener = await this.listenerPidOf(owner.port);
+        if (listener !== null && listener === recorded) {
+          targets.set(listener, { pid: listener, port: owner.port });
+        } else {
+          await removeDshRuntimeOwner(expected, owner.port);
         }
       }
-      (killed ? stoppedPids : failedPids).push(target.pid);
-      if (killed && target.port !== null) {
+    }
+
+    // Kill every target first, then verify release once for the whole set:
+    // the netstat table is cached, and a killed Windows shim chain can leave
+    // the real listener behind, so "taskkill exited 0" is not evidence that
+    // the port came back.
+    for (const target of targets.values()) {
+      await this.terminateDshTarget(target, child, expected);
+    }
+    const releasedPorts = await this.waitForPortsReleased(
+      [...targets.values()].flatMap((target) => target.port === null ? [] : [target.port]),
+      options.portReleaseTimeoutMs ?? PORT_RELEASE_TIMEOUT_MS,
+    );
+    for (const target of targets.values()) {
+      const released = target.port === null || releasedPorts.has(target.port);
+      (released ? stoppedPids : failedPids).push(target.pid);
+      if (released && target.port !== null) {
         stoppedPorts.push(target.port);
-        if (expected) await removeDshRuntimeOwner(expected, target.port, target.pid);
+        if (expected) await removeDshRuntimeOwner(expected, target.port);
       }
     }
 
@@ -1320,11 +1523,178 @@ export class DshProcessManager {
     };
   }
 
+  /** The listener pid of one port, or null when nothing listens there. */
+  private async listenerPidOf(port: number): Promise<number | null> {
+    try {
+      return await this.discovery.listenerPid(port);
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Drop an ownership record only once its port is really free.
+   *
+   * A Windows shim launch runs the npm `.cmd` through PowerShell, so the
+   * spawned child can exit while the node listener keeps serving. Deleting the
+   * record at that moment strands a live instance that no later session can
+   * recognize: 「打开」 would start a second instance on the next port and the
+   * two would fight over the session write lease. Keeping the record leaves
+   * the instance adoptable and stoppable.
+   */
+  private async forgetOwnerWhenPortFree(
+    command: DshCommand,
+    port: number,
+    pid: number,
+  ): Promise<void> {
+    if (await this.listenerPidOf(port) !== null) return;
+    await removeDshRuntimeOwner(command, port, pid);
+  }
+
+  /**
+   * Whether the listener on one port is a live DSH runtime whose command line
+   * names this vault. Stop uses it to recognize instances this vault launched
+   * under a runtime form that no longer matches the selected command; a row
+   * that is name-only or mojibake cannot prove that and is not claimed.
+   */
+  private async listenerRunsFromVault(port: number): Promise<boolean> {
+    const pid = await this.listenerPidOf(port);
+    if (pid === null) return false;
+    let info: DshProcessInfo | null = null;
+    try {
+      info = await this.discovery.processInfo(pid);
+    } catch {
+      info = null;
+    }
+    if (!info || info.nameOnly === true || dshCommandLineMojibake(info)) return false;
+    if (!isDshRuntimeProcess(info)) return false;
+    const vaultRoot = portablePath(this.vaultRoot().replace(/[\\/]+$/u, ""));
+    return portablePath(info.command).includes(`${vaultRoot}/`);
+  }
+
+  /**
+   * Terminate one stop target. A managed Windows launch can run through the
+   * npm `.cmd` shim, so the spawned child is the PowerShell wrapper while the
+   * port belongs to its node grandchild: every pid that could own the port is
+   * signalled, and the caller verifies the release afterwards instead of
+   * trusting a kill exit code.
+   */
+  private async terminateDshTarget(
+    target: { pid: number; port: number | null },
+    child: ChildProcess | null,
+    ownerCommand: DshCommand | null,
+  ): Promise<void> {
+    const pids = new Set<number>();
+    if (Number.isInteger(target.pid) && target.pid > 0) pids.add(target.pid);
+    if (target.port !== null) {
+      // The port's listener is added only when this vault's own ownership
+      // record names it. A port can be reused by an unrelated process — for
+      // example a DSH another session or vault runs — and killing that one
+      // would take down somebody else's runtime.
+      const listener = await this.ownedListenerPid(target.port, ownerCommand);
+      if (listener !== null) pids.add(listener);
+    }
+    for (const pid of pids) {
+      try {
+        await this.discovery.killProcessTree(pid);
+      } catch {
+        /* verified by the port-release wait */
+      }
+    }
+    if (child?.pid && pids.has(child.pid)) {
+      try {
+        child.kill("SIGKILL");
+      } catch {
+        /* verified by the port-release wait */
+      }
+    }
+  }
+
+  /**
+   * Endpoints this vault already holds a browser session for: the instances it
+   * opened, including ones started before an Obsidian reload. A live DSH there
+   * is ours to reconnect to — refusing it is what used to spawn a second
+   * instance on the next port and lose the session write lease.
+   */
+  private async rememberedEndpoints(): Promise<string[]> {
+    const store = this.authStore;
+    if (!store) return [];
+    try {
+      return await store.endpoints();
+    } catch {
+      return [];
+    }
+  }
+
+  /** Normalized set of the endpoints this vault can call its own. */
+  private async trustedEndpointSet(): Promise<Set<string>> {
+    const set = new Set<string>();
+    for (const raw of await this.rememberedEndpoints()) {
+      const normalized = normalizeDshWebUrl(raw);
+      if (normalized !== null) set.add(normalized);
+    }
+    const announced = normalizeDshWebUrl(this.announcedUrl ?? "");
+    if (announced !== null) set.add(announced);
+    return set;
+  }
+
+  /** Whether one normalized endpoint belongs to this vault's own instances. */
+  private isOwnEndpoint(url: string, trusted: ReadonlySet<string>): boolean {
+    const normalized = normalizeDshWebUrl(url);
+    if (normalized === null) return false;
+    if (trusted.has(normalized)) return true;
+    const announced = normalizeDshWebUrl(this.announcedUrl ?? "");
+    return announced !== null && announced === normalized;
+  }
+
+  /**
+   * The listener of one port when the ownership record for that port proves
+   * this vault launched it, otherwise null.
+   */
+  private async ownedListenerPid(
+    port: number,
+    ownerCommand: DshCommand | null,
+  ): Promise<number | null> {
+    if (!ownerCommand) return null;
+    const listener = await this.listenerPidOf(port);
+    if (listener === null) return null;
+    const owner = await readMatchingDshRuntimeOwner(ownerCommand, port);
+    if (!owner) return null;
+    return owner.pid === listener || owner.listenerPid === listener ? listener : null;
+  }
+
+  /**
+   * Wait until every given port stops listening, then report the released set.
+   * A port that is still held when the deadline passes stays out of the set so
+   * the caller reports a failure instead of a false success.
+   */
+  private async waitForPortsReleased(
+    ports: readonly number[],
+    timeoutMs: number,
+  ): Promise<Set<number>> {
+    const unique = [...new Set(ports)];
+    const released = new Set<number>();
+    if (unique.length === 0) return released;
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      let pending = 0;
+      for (const port of unique) {
+        if (released.has(port)) continue;
+        if (await this.listenerPidOf(port) === null) released.add(port);
+        else pending += 1;
+      }
+      if (pending === 0) return released;
+      if (Date.now() >= deadline) return released;
+      await new Promise((resolve) => setTimeout(resolve, PORT_RELEASE_POLL_MS));
+    }
+  }
+
   /** Stop the target set, then always spawn one fresh DSH process. */
   async restartForObsidian(
     connectedUrls: readonly string[] = [],
+    options: { portReleaseTimeoutMs?: number } = {},
   ): Promise<string> {
-    const stopped = await this.stopAllTargetDshInstances(connectedUrls);
+    const stopped = await this.stopAllTargetDshInstances(connectedUrls, options);
     if (stopped.failedPids.length > 0) {
       throw new Error(`DSH 进程无法停止，已取消重启。PID：${stopped.failedPids.join(", ")}`);
     }
@@ -1406,6 +1776,10 @@ export class DshProcessManager {
   dispose(): void {
     this.disposed = true;
     this.stopWebProxy();
-    void this.stop();
+    // The managed DSH instance deliberately outlives this plugin session:
+    // 「打开 mv-agent」 reconnects to it through its ownership record and the
+    // stored web credential, and only 「停止 mv-agent」 terminates instances.
+    // Killing here also risked stranding a listener whose Windows shim wrapper
+    // exited first — alive, but no longer matching any ownership record.
   }
 }

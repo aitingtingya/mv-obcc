@@ -15,7 +15,13 @@ import {
   type ResolvedTerminalTheme,
 } from "./terminal-themes";
 import { resolveTerminalKeyAction } from "./terminal-clipboard";
-import { encodeTerminalKey } from "./terminal-keys";
+import {
+  encodeTerminalKey,
+  hasOpenObsidianModal,
+  ObsidianOverlayTracker,
+  overlayConsumedKey,
+  shouldDeliverXtermInput,
+} from "./terminal-keys";
 import { TERMINAL_PTY_PY_BASE64, TERMINAL_WIN_PY_BASE64 } from "./terminal-scripts";
 import { loginShellPath, resolvePythonCommand } from "./terminal-process";
 import {
@@ -65,6 +71,8 @@ export class TerminalView extends ItemView {
   private outputRevision = 0;
   private currentShellKind: TerminalShellKind = process.platform === "win32" ? "cmd" : "posix";
   private readonly sessionListeners = new Set<(event: TerminalSessionEvent) => void>();
+  /** 记录 Obsidian 覆盖层（命令面板/模态）本次按键内关闭，用于让行。 */
+  private readonly overlayTracker = new ObsidianOverlayTracker();
 
   sessionGeneration(): number { return this.shellStartGeneration; }
 
@@ -192,10 +200,11 @@ export class TerminalView extends ItemView {
 
     this.themeObserver = new MutationObserver(() => this.updateTheme());
     this.themeObserver.observe(document.body, { attributes: true, attributeFilter: ["class"] });
-
+    this.overlayTracker.attach(this.containerEl.ownerDocument);
   }
 
   async onClose(): Promise<void> {
+    this.overlayTracker.detach();
     this.resizeObserver?.disconnect();
     this.themeObserver?.disconnect();
     if (this.debounceFitTimer) {
@@ -374,6 +383,7 @@ export class TerminalView extends ItemView {
     });
 
     this.term.onData((data) => {
+      if (!shouldDeliverXtermInput(this.containerEl.ownerDocument)) return;
       this.writeTerminalFrame(TERMINAL_FRAME_INPUT, data);
     });
 
@@ -421,6 +431,17 @@ export class TerminalView extends ItemView {
     // Only when the terminal itself has focus; everywhere else Obsidian
     // hotkeys and editor behavior stay untouched.
     if (!term || term.textarea !== activeDocument.activeElement) return;
+    // An open Obsidian modal (command palette, settings, confirmations) owns
+    // the keyboard. The focus check alone is not enough: if focus stays on
+    // the terminal while the palette is open, Enter would be encoded into
+    // the PTY and stopImmediatePropagation would kill the palette's own
+    // handling — the command never executes.
+    if (hasOpenObsidianModal(activeDocument)) return;
+    // Obsidian's keymap runs before this listener on the same window-capture
+    // phase, so a key its scope consumed arrives here already prevented — and
+    // the modal it belonged to is closed by then (the palette's Enter). Yield
+    // that keystroke: it has an owner.
+    if (overlayConsumedKey(event, this.overlayTracker.overlayClosedThisTick)) return;
 
     const action = resolveTerminalKeyAction(event, {
       isMac: Platform.isMacOS,

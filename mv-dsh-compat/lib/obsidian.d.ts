@@ -13,5 +13,7 @@ export interface DshWebProbeClassification {
 export function dshWebIdentityUrl(raw: string): string | null;
 export function dshWebLaunchUrl(raw: string): string | null;
 export function parseDshWebAnnouncement(output: string): DshWebEndpoint | null;
+export function dshUrlHasSecretQuery(raw: string): boolean;
 export function redactDshWebSecrets<T>(value: T): T;
 export function classifyDshWebProbe(status: number, text: string | null): DshWebProbeClassification;
+export function dshWebSupportsNoOpen(helpOutput: string | null | undefined): boolean;

@@ -1,7 +1,7 @@
 {
   "name": "mv-obcc",
-  "version": "0.9.19",
-  "description": "mv-AIDE: an AI IDE bridge connecting Claude Code, Codex CLI and universal MCP agents to local vaults.",
+  "version": "0.9.20",
+  "description": "mv-AIDE: an AI IDE connecting various harnesses with deep DeepSeek Harness (DSH) integration, featuring in-editor AI, an integrated terminal, a Vim engine, non-Markdown source enhancements, a system file opener, and browser extensions.",
   "main": "main.js",
   "type": "module",
   "scripts": {

@@ -24,7 +24,7 @@ Claude Code、Codex CLI 和任意 MCP Agent 可以读取当前标签、选区、
 
 同一插件内可以编辑 TeX 等源码、运行终端、使用独立 Vim 引擎、浏览电脑文件，并让库外文件由指定 Obsidian 仓库打开。每个模块都能单独关闭。
 
-## 八个设置分区
+## 九个设置分区
 
 以下顺序与 **设置 → mv-AIDE** 一致。具体默认值、平台边界和排障见[完整功能手册](docs/features.md)。
 
@@ -37,6 +37,9 @@ Claude Code、Codex CLI 和任意 MCP Agent 可以读取当前标签、选区、
 [查看 IDE 桥接边界](docs/features.md#ide-bridge)
 
 ### 2. mv-agent
+
+> [!NOTE] 维护说明
+> 最近科研上事情比较多，DSH 频繁的破坏性更新无法保证 mv-agent 可以适配所有版本。如果遇到问题可以提交 issue，并开启「IDE 桥接」后使用 DSH 的官方 UI 感知 Obsidian。
 
 mv-agent 把 DSH Web 界面直接放进 Obsidian。视图底部状态栏显示真实桥接状态、当前页面或文件、选区、端口和可展开的现场详情；命令面板提供「打开 / 停止 / 重启 mv-agent」。
 
@@ -131,6 +134,12 @@ mv-AIDE 完整注入会管理 mv-agent、mv-dsh-manager 和独立的 mv-dsh-subw
 
 [查看文件路由规则](docs/features.md#filesystem-browser)
 
+### 9. Git
+
+调用本机安装的 Git 管理当前 Vault 所属仓库，不内置 Git 引擎，不自动提交、同步或联网。工作区面板（暂存区／工作区／未跟踪／冲突分组、提交拓扑图、分支／标签／stash 引用区）与命令面板共用同一套动作注册表，逐项双端可达；diff 视图支持并排／行内布局、行／差异块级暂存与可编辑的工作区一侧；三方冲突编辑器按真实来源标注（rebase 时 ours/theirs 语义正确互换）。也可以把当前 Vault 原地初始化为仓库，再配置远程并完成首次推送。
+
+[查看 Git 能力表与边界](docs/features.md#git)
+
 ## 安装
 
 ### 社区插件市场
@@ -185,6 +194,8 @@ npm run deploy:local
 ## 致谢
 
 行内补全的 CodeMirror 架构参考了 [obsidian-github-copilot](https://github.com/Pierrad/obsidian-github-copilot) 的公开思路；终端进程桥接参考了 [obsidian-claude-sidebar](https://github.com/derek-larson14/obsidian-claude-sidebar) 的公开设计。Source Assist 的 Code Suite 内核基于 [obsidian-latex-suite](https://github.com/artisticat1/obsidian-latex-suite) `1.11.5`，保留 MIT 声明。Vim 的兼容目标与配置体验参考了 [obsidian-vimrc-support](https://github.com/esm7/obsidian-vimrc-support) 和 [Vim Motions](https://github.com/saberzero1/motions) 的公开文档与用户可见思路，核心引擎依据 Vim/Neovim 行为和 CodeMirror 6 API 独立实现。
+
+Git 集成的命令设计与测试思路参考了 [Obsidian Git](https://github.com/Vinzent03/obsidian-git)（MIT），提交节点／分支／标签／stash 的菜单组织参考了 [VS Code 内置 Git 扩展](https://github.com/microsoft/vscode/blob/main/extensions/git/package.json)（MIT）的公开菜单定义；两者的功能缺口均不继承。Git 前端为独立实现，未复制两者源码，底层始终调用本机 Git。
 
 DSH 兼容层的 adapter/capability 边界参考了 [dsh-std](https://github.com/Yan-Zero/dsh-std) 的公开思路，版本矩阵与 conformance 门禁参考了 [dsh-ecosystem-spec](https://github.com/T-Auto/dsh-ecosystem-spec) 的公开思路。mv-AIDE 的适配层为独立实现，未复制两者源码、不引入其运行时依赖，也不声明通过任何第三方规范认证。
 

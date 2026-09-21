@@ -1,9 +1,9 @@
 {
   "id": "mv-obcc",
   "name": "mv-AIDE",
-  "version": "0.9.19",
+  "version": "0.9.20",
   "minAppVersion": "1.7.2",
-  "description": "AI IDE for your vault: bridges Claude Code, Codex CLI and universal MCP agents, with integrated terminal, inline completion, selection assistant, source authoring aids and a system default file opener.",
+  "description": "AI IDE for your vault: connects various harnesses with deep DeepSeek Harness (DSH) integration, featuring in-editor AI, an integrated terminal, a Vim engine, non-Markdown source enhancements, a system file opener, and browser extensions.",
   "author": "MV",
   "isDesktopOnly": true
 }

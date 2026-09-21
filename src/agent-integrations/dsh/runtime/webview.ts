@@ -16,10 +16,12 @@ import { t } from "../../../i18n";
 import type { DshAutoOpenRegion } from "../settings";
 import type { SelectionState } from "../../../types";
 import {
+  DshAuthorizationRequiredError,
   normalizeDshLaunchUrl,
   normalizeDshWebUrl,
   sameDshWebUrl,
 } from "./process";
+import { resolveFrameUrlForNavigation } from "./webview-frame-url";
 import { DshFileDropHost } from "./file-drop-host";
 import { DshClipboardHost } from "./clipboard-host";
 import { shouldProbeBridgeStatus } from "../ide/bridge-status";
@@ -38,6 +40,9 @@ export const DSH_WEB_VIEW_TYPE = "mv-aide-dsh";
 
 /** iframe 加载看门狗：只标记本次导航超时，不主动重载页面。 */
 const FRAME_LOAD_TIMEOUT_MS = 10_000;
+/** 页面地址解析失败的自愈重试：每 0.5s 一次，总窗口 10s。 */
+const NAVIGATE_RETRY_INTERVAL_MS = 500;
+const NAVIGATE_RETRY_WINDOW_MS = 10_000;
 /** 「打开：」内容的截断长度。 */
 const OPEN_MAX_CHARS = 20;
 type DshBridgeViewState = "checking" | "connected" | "disconnected";
@@ -245,6 +250,9 @@ export class DshWebView extends ItemView {
   private detailFailureEl: HTMLDivElement | null = null;
   private expanded = false;
   private loadFailed = false;
+  private loadFailureReason: string | null = null;
+  private navigateRetry: OwnedWindowTimer | null = null;
+  private navigateRetryDeadline = 0;
   private loadWatchdog: OwnedWindowTimer | null = null;
   private loadWatchdogDeadline = 0;
   private loadWatchdogGeneration = 0;
@@ -286,6 +294,29 @@ export class DshWebView extends ItemView {
   /** The DSH endpoint this view is currently connected to (semantic URL). */
   currentViewUrl(): string | null {
     return normalizeDshWebUrl(this.currentUrl || this.frameEl?.src || "");
+  }
+
+  /** Whether the last navigation failed or timed out (view keeper input). */
+  isLoadFailed(): boolean {
+    return this.loadFailed;
+  }
+
+  /** The URL the iframe is actually loading (proxy URL or raw endpoint). */
+  frameSourceUrl(): string {
+    return this.frameEl?.src ?? "";
+  }
+
+  /**
+   * Whether the iframe is loading the raw endpoint instead of the loopback
+   * proxy. DSH serves that document without authentication while gating /api,
+   * so such a frame renders and then cannot talk to the backend — the
+   * read-only state the view keeper repairs.
+   */
+  private frameLoadsRawEndpoint(): boolean {
+    const source = this.frameEl?.src ?? "";
+    const semantic = this.currentViewUrl();
+    if (!source || !semantic) return false;
+    return sameDshWebUrl(source, semantic);
   }
 
   /**
@@ -371,7 +402,17 @@ export class DshWebView extends ItemView {
         url = confirmed && requestedLaunch && sameDshWebUrl(confirmed, requestedLaunch)
           ? requestedLaunch
           : confirmed ?? "";
-      } catch {
+      } catch (error) {
+        if (error instanceof DshAuthorizationRequiredError) {
+          // The endpoint is ours and still running; only its stored session is
+          // unusable. Surface the authorization state — never fall through to
+          // resolveDshViewUrl(), which would start a second instance on the
+          // next port and fight this one over the session write lease.
+          this.loadFailed = true;
+          this.loadFailureReason = t("需要重新授权：请使用「使用 DSH 授权 URL 重新连接」命令。");
+          this.renderStatus();
+          return;
+        }
         url = "";
       }
     }
@@ -404,6 +445,7 @@ export class DshWebView extends ItemView {
     this.navigationGeneration += 1;
     this.stateGeneration += 1;
     this.clearLoadWatchdog();
+    this.clearNavigateRetry();
     this.clearStatusRefreshTimer();
     this.fileDropHost?.dispose();
     this.fileDropHost = null;
@@ -487,6 +529,13 @@ export class DshWebView extends ItemView {
    * SameSite=Strict session cookie across the cross-site frame boundary.
    */
   async navigate(url: string): Promise<void> {
+    // Every external navigation starts a fresh retry window; the automatic
+    // retry below re-enters through navigateInternal to keep its deadline.
+    this.clearNavigateRetry();
+    await this.navigateInternal(url);
+  }
+
+  private async navigateInternal(url: string): Promise<void> {
     const launch = normalizeDshLaunchUrl(url);
     const identity = normalizeDshWebUrl(url);
     if (!launch || !identity) {
@@ -496,15 +545,31 @@ export class DshWebView extends ItemView {
     }
     const frame = this.frameEl;
     if (!frame) return;
-    const feature = this.plugin.dshFeature;
-    let frameUrl = launch;
-    try {
-      frameUrl = (await feature?.frameUrlFor?.(launch)) ?? launch;
-    } catch {
-      frameUrl = launch;
-    }
-    if (this.closed || frame !== this.frameEl) return;
     this.currentUrl = launch;
+    const feature = this.plugin.dshFeature;
+    let frameUrl: string;
+    try {
+      // The frame URL must come from the feature: the loopback proxy for
+      // auth-gated endpoints, the endpoint itself for no-auth ones. Never
+      // fall back to the raw launch URL — a direct token navigation renders
+      // the SPA while every /api request 401s (SameSite=Strict cookie never
+      // crosses the site boundary), which looks alive but is dead.
+      frameUrl = await resolveFrameUrlForNavigation(
+        feature ? (target) => feature.frameUrlFor(target) : undefined,
+        launch,
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error("[mv-aide] dsh 页面地址解析失败（已拒绝直连带 token 的地址）:", error);
+      if (this.closed || frame !== this.frameEl) return;
+      this.loadFailed = true;
+      this.loadFailureReason = message;
+      this.renderStatus();
+      this.scheduleNavigateRetry(launch);
+      return;
+    }
+    this.clearNavigateRetry();
+    if (this.closed || frame !== this.frameEl) return;
     const currentFrameTarget = this.semanticFrameUrl();
     if (currentFrameTarget && sameDshWebUrl(currentFrameTarget, identity)
       && sameDshWebUrl(frame.src, frameUrl) && launch === identity) return;
@@ -513,11 +578,55 @@ export class DshWebView extends ItemView {
     });
   }
 
+  private clearNavigateRetry(): void {
+    if (this.navigateRetry) {
+      this.navigateRetry.owner.clearTimeout(this.navigateRetry.id);
+      this.navigateRetry = null;
+    }
+    this.navigateRetryDeadline = 0;
+  }
+
+  /**
+   * Bounded self-heal for frame-URL resolution failures: the dsh feature may
+   * still be activating on early view restore, and a transient token
+   * exchange failure may clear on its own. Retries for up to 10s (attempts
+   * are serialized — a retry is only scheduled after the previous attempt
+   * rejected), then stays in the loud failed state; the tab's 刷新界面 menu
+   * item re-runs navigate() manually with a fresh window.
+   */
+  private scheduleNavigateRetry(launch: string): void {
+    const now = Date.now();
+    if (this.navigateRetryDeadline === 0) {
+      this.navigateRetryDeadline = now + NAVIGATE_RETRY_WINDOW_MS;
+    } else if (now >= this.navigateRetryDeadline) {
+      this.clearNavigateRetry();
+      return;
+    }
+    if (this.navigateRetry) {
+      this.navigateRetry.owner.clearTimeout(this.navigateRetry.id);
+      this.navigateRetry = null;
+    }
+    const owner = this.viewWindow();
+    const id = owner.setTimeout(() => {
+      this.navigateRetry = null;
+      if (this.closed || !this.loadFailed || this.currentUrl !== launch) return;
+      void this.navigateInternal(launch);
+    }, NAVIGATE_RETRY_INTERVAL_MS);
+    this.navigateRetry = { owner, id };
+  }
+
   reload(): void {
     const frame = this.frameEl;
     if (!frame) return;
     const target = normalizeDshWebUrl(this.currentUrl || frame.src);
     if (!target) return;
+    // In the failed state the frame may hold no usable document at all;
+    // reloading it changes nothing. Re-run the full navigation instead so
+    // the frame URL is resolved (proxy + token exchange) from scratch.
+    if (this.loadFailed && this.currentUrl) {
+      void this.navigate(this.currentUrl);
+      return;
+    }
     // The iframe keeps loading its current (possibly proxy) URL; only the
     // semantic target recorded in beginNavigation changes.
     this.beginNavigation(target, frame.src, () => {
@@ -541,6 +650,7 @@ export class DshWebView extends ItemView {
     const generation = this.navigationGeneration;
     this.clearLoadWatchdog();
     this.loadFailed = false;
+    this.loadFailureReason = null;
     this.renderStatus();
     apply();
     this.armLoadWatchdog(generation);
@@ -765,8 +875,22 @@ export class DshWebView extends ItemView {
     const id = owner.setInterval(() => {
       this.renderStatus();
       void this.refreshDshBridgeStatus();
+      this.notifyViewKeeperWhenUnhealthy();
     }, 1000);
     this.statusRefreshTimer = { owner, id };
+  }
+
+  /**
+   * Tell the feature that this view needs reconnecting: it loaded nothing, its
+   * navigation failed, or its endpoint stopped answering. The feature probes
+   * the endpoint before acting, so a false positive costs one probe.
+   */
+  private notifyViewKeeperWhenUnhealthy(): void {
+    if (this.closed) return;
+    const feature = this.plugin.dshFeature;
+    if (!feature?.notifyMvAgentViewUnhealthy) return;
+    if (!this.loadFailed && this.currentViewUrl() !== null && !this.frameLoadsRawEndpoint()) return;
+    feature.notifyMvAgentViewUnhealthy();
   }
 
   private clearStatusRefreshTimer(): void {
@@ -1059,9 +1183,12 @@ export class DshWebView extends ItemView {
     }
     if (this.detailFailureEl) {
       if (this.loadFailed) {
+        const reason = this.loadFailureReason;
         setTextIfChanged(
           this.detailFailureEl,
-          t("加载失败（右键标签 → 刷新界面）"),
+          reason
+            ? t("加载失败：{reason}（右键标签 → 刷新界面）", { reason })
+            : t("加载失败（右键标签 → 刷新界面）"),
         );
         this.detailFailureEl.show();
       } else {

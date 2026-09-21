@@ -1,4 +1,4 @@
-import { MarkdownView, Notice } from "obsidian";
+import { MarkdownView, Notice, type Modal } from "obsidian";
 import type MvAideIdePlugin from "../../main";
 import type { TerminalRegistry } from "../terminal-control/terminal-registry";
 import { mvRunPrefixesFor } from "../terminal/mv-run-types";
@@ -7,12 +7,16 @@ import { terminalHost } from "./terminal-port";
 import { bindEditor, boundText, flushEditorTurn, persistBoundSnapshot } from "./editor-snapshot";
 import { parseTasks } from "./parser";
 import { defaultPlan, specifiedPlan, taskSignature } from "./planner";
-import { MvRunModal } from "./modal";
+import { RunOrderModal } from "./modal";
 import { message, errorMessage } from "./messages";
+import type { RunTask } from "./model";
+
+interface Confirmation { tasks?: RunTask[]; run?: () => void; notice?: string }
 
 export class MvRunFeature {
   private readonly executor: RunExecutor;
-  private readonly modals = new Set<MvRunModal>();
+  private readonly modals = new Set<Modal>();
+  private readonly lifetime = new AbortController();
   private disposed = false;
   constructor(private readonly plugin: MvAideIdePlugin, private readonly registry: TerminalRegistry) {
     this.executor = new RunExecutor(terminalHost(registry));
@@ -30,7 +34,7 @@ export class MvRunFeature {
       if (!prefixes.length) throw new Error(message("noPrefix"));
       const tasks = parseTasks(boundText(bound), prefixes);
       if (!tasks.length) throw new Error(message("noTasks"));
-      const modal = new MvRunModal(this.plugin.app, tasks, async (input, signature, signal) => {
+      const confirm = async (input: string | null, signature: string, signal: AbortSignal): Promise<Confirmation> => {
         if (this.disposed) throw new Error(message("fileChanged"));
         const text = await flushEditorTurn(bound, signal);
         const currentPrefixes = mvRunPrefixesFor(this.plugin.settings.mvRun, bound.file.extension);
@@ -53,14 +57,30 @@ export class MvRunFeature {
             new Notice(`${message("failed")} · ${bound.path}${detail}\n${errorMessage(error)}`, 8000);
           });
         } };
-      }, () => this.modals.delete(modal));
-      this.modals.add(modal);
-      modal.open();
+      };
+      const openPalette = (current: RunTask[], initial = "", cursor = 0): void => {
+        const modal = new RunOrderModal(this.plugin.app, current, initial, cursor, {
+          submit: input => { void (async () => {
+            // Headless after the palette closes; disposal aborts mid-save via the feature lifetime.
+            try {
+              const result = await confirm(input, taskSignature(current), this.lifetime.signal);
+              if (result.tasks) { new Notice(result.notice ?? message("changed")); openPalette(result.tasks, input ?? "", (input ?? "").length); return; }
+              result.run?.();
+            } catch (error) { new Notice(`mv-run: ${errorMessage(error)}`, 8000); }
+          })(); },
+          reopen: (next, text, cursor) => openPalette(next, text, cursor),
+          closed: () => this.modals.delete(modal),
+        });
+        this.modals.add(modal);
+        modal.open();
+      };
+      openPalette(tasks);
     } catch (error) { new Notice(`mv-run: ${errorMessage(error)}`, 8000); }
   }
 
   dispose(): void {
     this.disposed = true;
+    this.lifetime.abort();
     for (const modal of this.modals) modal.close();
     this.modals.clear();
     this.executor.dispose();

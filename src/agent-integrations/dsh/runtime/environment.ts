@@ -1164,6 +1164,12 @@ async function preflightPackageInstall(
   if (!layout) {
     return installFailure(t("无法确定当前 npm 的安装目录；为避免写入未知位置，本次安装未执行。"));
   }
+  // The vault runtime directory is exclusively plugin-managed: foreign-owned
+  // shims have no legitimate way in, and npm rewrites its own shims in place
+  // without touching their targets. Occupancy arbitration only protects the
+  // shared global bin directories (Corepack, Volta, other tools), so the scan
+  // runs for global installs only.
+  if (target === "vault") return null;
   const initial = await inspectPackageInstallTargets(layout, packages, true);
   if (initial.blockers.length > 0) return installFailure(occupancyDetail(initial.blockers[0]!));
   for (const issue of initial.repairs) {

@@ -75,6 +75,8 @@ import { migrateLlm } from "./src/llm-migrate";
 import { migrateInlineCompletion } from "./src/inline-completion/inline-completion-migrate";
 import { LintFeature } from "./src/lint/lint-feature";
 import { normalizeLintSettings } from "./src/lint/lint-types";
+import { GitFeature } from "./src/git/feature";
+import { normalizeGitSettings } from "./src/git/model";
 import { normalizeRegexReplaceSettings } from "./src/regex-replace/regex-replace-types";
 import { RegexReplaceFeature } from "./src/regex-replace/regex-replace-feature";
 import { BrowserHistoryButtonFeature } from "./src/browser-history-button";
@@ -480,6 +482,7 @@ export default class MvAideIdePlugin extends Plugin {
   private sourceAssist: SourceAssistFeature | null = null;
   private vimFeature: VimFeatureHandle | null = null;
   private lintFeature: LintFeature | null = null;
+  gitFeature: GitFeature | null = null;
   private lintPushSignature: string | null = null;
   private regexReplace: RegexReplaceFeature | null = null;
   private texOutline: TexOutlineFeature | null = null;
@@ -637,6 +640,7 @@ export default class MvAideIdePlugin extends Plugin {
         },
       },
       dsh: normalizeDshSettings(loaded.dsh),
+      git: normalizeGitSettings(loaded.git),
       customWebPages: normalizeCustomWebPages(loaded.customWebPages),
     });
     setLanguage(this.settings.language ?? "zh");
@@ -821,6 +825,8 @@ export default class MvAideIdePlugin extends Plugin {
     this.lintFeature.registerCommand();
     this.lintFeature.registerHooks();
     this.register(() => this.lintFeature?.dispose());
+    this.gitFeature = new GitFeature(this);
+    this.register(() => this.gitFeature?.dispose());
     this.regexReplace = new RegexReplaceFeature(this);
     this.registerEditorExtension(this.regexReplace.extensions);
     this.regexReplace.registerCommands();
@@ -939,6 +945,8 @@ export default class MvAideIdePlugin extends Plugin {
     this.selectionHighlighter = null;
     this.llmFeature?.dispose();
     this.llmFeature = null;
+    this.gitFeature?.dispose();
+    this.gitFeature = null;
     this.inlineCompletion?.dispose();
     this.inlineCompletion = null;
     this.vimFeature?.disable();
@@ -1008,6 +1016,7 @@ export default class MvAideIdePlugin extends Plugin {
 
   async saveAndApplySettings(): Promise<void> {
     await this.saveData(this.settings);
+    this.gitFeature?.syncPresentation();
     this.fileTypeIconView?.syncFromSettings();
     this.syncCustomMarkdownExtensions();
     await this.sourceAssist?.settingsChanged();

@@ -713,15 +713,17 @@ interface LoadedPluginInspection {
 }
 
 /**
- * `dsh --profile web --dump-config` is a full dsh CLI boot and runs three
- * times per healthy open/restart (inspect → ensure → verify). The dump only
- * changes when the command or the profile composition inputs change, so the
- * result is memoized on the command identity plus the mtimes/sizes of every
- * file mv-AIDE itself writes (patch, profile manifest, bundle markers) — any
- * injection write invalidates the entry — with a short TTL bounding external
- * edits. Concurrent callers share the in-flight dump.
+ * `dsh --profile web --dump-config` is a full dsh CLI boot and used to run
+ * three times per healthy open/restart (inspect → ensure → verify). The dump
+ * only changes when the command or the profile composition inputs change, so
+ * the result is memoized on the command identity plus the mtimes/sizes of
+ * every file mv-AIDE itself writes (patch, profile manifest, bundle markers)
+ * and of the dsh entry itself — any injection write or package upgrade
+ * invalidates the entry. The TTL only bounds edits made outside mv-AIDE; on
+ * slow Windows machines a single dump can outlast a short TTL and force all
+ * three phases to re-dump, so it is sized well above one boot.
  */
-const LOADED_PLUGINS_CACHE_TTL_MS = 5000;
+const LOADED_PLUGINS_CACHE_TTL_MS = 30_000;
 let loadedPluginsCache: {
   readonly key: string;
   readonly at: number;

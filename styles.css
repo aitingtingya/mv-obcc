@@ -1853,6 +1853,73 @@ body.mv-aide-hide-obsidian-native-status-bar .status-bar {
   width: 100%;
 }
 
+/* ==== Git 集成：工作区、diff、对话框、状态栏 ==== */
+.mv-git-workspace { display: flex; flex-direction: column; height: 100%; padding: 8px; gap: 8px; }
+.mv-git-actions { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+.mv-git-actions button { padding: 2px 8px; font-size: var(--font-ui-smaller); }
+.mv-git-status { font-size: var(--font-ui-smaller); color: var(--text-muted); white-space: pre-wrap; overflow-wrap: anywhere; }
+.mv-git-commit-form { display: flex; flex-direction: column; gap: 4px; }
+.mv-git-commit-form textarea { width: 100%; min-height: 48px; resize: vertical; font-family: var(--font-monospace); font-size: var(--font-ui-smaller); }
+.mv-git-body { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; }
+.mv-git-section { border: 1px solid var(--background-modifier-border); border-radius: 6px; padding: 4px 6px; }
+.mv-git-section > summary { cursor: pointer; font-weight: 600; font-size: var(--font-ui-smaller); }
+.mv-git-file-row { display: flex; align-items: center; gap: 4px; padding: 1px 0; }
+.mv-git-file-row:focus-within, .mv-git-file-row.is-focused { background: var(--background-modifier-hover); border-radius: 4px; }
+.mv-git-file-row input[type="checkbox"] { margin: 0; }
+.mv-git-file-name { flex: 1; text-align: left; white-space: normal; overflow-wrap: anywhere; background: none; border: none; padding: 1px 4px; font-size: var(--font-ui-smaller); color: var(--text-normal); cursor: pointer; height: auto; }
+.mv-git-file-name:hover { background: var(--background-modifier-hover); }
+.mv-git-ref { display: block; width: 100%; text-align: left; background: none; border: none; padding: 2px 4px; font-size: var(--font-ui-smaller); color: var(--text-normal); cursor: pointer; height: auto; }
+.mv-git-ref:hover { background: var(--background-modifier-hover); }
+.mv-git-ref.is-current { font-weight: 700; color: var(--text-accent); }
+.mv-git-graph { display: flex; flex-direction: column; }
+.mv-git-commit-row { display: flex; align-items: center; gap: 4px; min-height: 30px; }
+.mv-git-commit-row.is-focused { background: var(--background-modifier-hover); border-radius: 4px; }
+.mv-git-graph-edge { stroke: var(--text-muted); stroke-width: 1.5; fill: none; }
+.mv-git-graph-node { fill: var(--text-accent); }
+.mv-git-history-label { flex: 1; display: flex; align-items: center; gap: 4px; min-width: 0; text-align: left; white-space: nowrap; overflow: hidden; background: none; border: none; padding: 1px 4px; font-size: var(--font-ui-smaller); color: var(--text-normal); cursor: pointer; height: auto; }
+.mv-git-history-label:hover { background: var(--background-modifier-hover); }
+.mv-git-commit-title { overflow: hidden; text-overflow: ellipsis; }
+.mv-git-ref-badge { flex: none; padding: 0 6px; border-radius: 8px; font-size: var(--font-ui-smaller); line-height: 1.6; color: var(--text-on-accent); background: var(--interactive-accent); }
+.mv-git-ref-badge.is-tag { background: var(--background-modifier-border); color: var(--text-normal); }
+.mv-git-ref-badge.is-head { background: var(--color-green); color: var(--text-on-accent); }
+.mv-git-commit-time { margin-left: auto; flex: none; color: var(--text-faint); font-size: var(--font-ui-smaller); }
+.mv-git-batch-toggle.is-active { background: var(--interactive-accent); color: var(--text-on-accent); }
+.mv-git-history-resize { height: 6px; cursor: row-resize; background: var(--background-modifier-border); border-radius: 3px; margin-top: 4px; }
+.mv-git-history-resize:hover, .mv-git-history-resize.is-dragging { background: var(--text-accent); }
+
+/* diff 视图 */
+.mv-git-diff { display: flex; flex-direction: column; height: 100%; padding: 8px; gap: 6px; }
+.mv-git-diff-labels { font-size: var(--font-ui-smaller); color: var(--text-muted); overflow-wrap: anywhere; }
+.mv-git-merge-host { flex: 1; min-height: 200px; overflow: auto; border: 1px solid var(--background-modifier-border); border-radius: 6px; }
+.mv-git-merge-host .cm-mergeView { height: 100%; }
+.mv-git-patch { max-height: 40%; overflow-y: auto; border-top: 1px solid var(--background-modifier-border); padding-top: 4px; font-size: var(--font-ui-smaller); }
+.mv-git-patch-hunk { display: flex; align-items: center; gap: 6px; font-weight: 600; color: var(--text-muted); margin-top: 4px; cursor: pointer; }
+.mv-git-patch-line { display: flex; align-items: center; gap: 6px; font-family: var(--font-monospace); white-space: pre-wrap; overflow-wrap: anywhere; cursor: pointer; }
+.mv-git-patch-line.is-addition { background: var(--background-modifier-success); }
+.mv-git-patch-line.is-deletion { background: var(--background-modifier-error); }
+
+/* 对话框与选择器（Modal/FuzzySuggestModal 原生容器，仅定制内容区） */
+.mv-git-input { width: 100%; font-family: var(--font-monospace); }
+textarea.mv-git-input { min-height: 96px; resize: vertical; }
+.mv-git-confirm-detail { max-height: 40vh; overflow-y: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: var(--font-ui-smaller); background: var(--background-secondary); padding: 8px; border-radius: 6px; }
+.mv-git-picker-note { color: var(--text-muted); margin-left: 8px; }
+
+/* 状态栏项 */
+.mv-git-statusbar { cursor: pointer; }
+.mv-git-statusbar:hover { background: var(--background-modifier-hover); }
+.mv-git-statusbar.is-busy { opacity: 0.7; }
+
+/* 编辑器修改标记与行归属 */
+.mv-git-gutter-marker { width: 4px; }
+.mv-git-gutter-marker.is-added { background: var(--color-green); }
+.mv-git-gutter-marker.is-modified { background: var(--color-blue); }
+.mv-git-gutter-marker.is-deleted { border-top: 2px solid var(--color-red); }
+.mv-git-line-blame { color: var(--text-faint); font-size: var(--font-ui-smaller); padding-left: 12px; font-style: italic; }
+
+/* 冲突三方视图 */
+.mv-git-conflict-labels { display: flex; gap: 8px; font-size: var(--font-ui-smaller); color: var(--text-muted); }
+.mv-git-conflict-labels span { flex: 1; text-align: center; font-weight: 600; }
+
 /* ══ 沉浸式 chrome 自动收起（src/chrome-autohide.ts 统一触发） ══
    sensor 唤出命中的标签组；展开后由 Electron 系统指针坐标维护
    .mv-aide-chrome-expanded。CSS 只按三个武装 body class 决定展开哪几层，
@@ -1942,23 +2009,7 @@ body.mv-aide-chrome-autohide-web
   padding: 0;
   pointer-events: auto;
 }
-/* mv-run owns its chooser, completion list and execution preview. */
-.mv-run-dialog .mv-run-mode,
-.mv-run-dialog .mv-run-completion {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  height: auto;
-  width: 100%;
-  text-align: left;
-  white-space: normal;
-}
-.mv-run-dialog .mv-run-mode { padding: 10px 12px; margin-bottom: 6px; }
-/* Completion rows stay dense so more candidates fit before scrolling. */
-.mv-run-dialog .mv-run-completion { padding: 3px 10px; margin-bottom: 1px; line-height: 1.2; }
-.mv-run-dialog .is-selected { background: var(--background-modifier-hover); }
-.mv-run-dialog button span { color: var(--text-muted); font-size: var(--font-ui-small); overflow-wrap: anywhere; }
-.mv-run-order { display: block; width: 100%; margin-top: 8px; }
-.mv-run-completions { max-height: min(320px, 45vh); overflow-y: auto; }
-.mv-run-preview { max-height: 280px; overflow-y: auto; overflow-wrap: anywhere; }
-.mv-run-feedback { color: var(--text-warning); margin: 8px 0; }
+/* mv-run 全流程在命令面板式 SuggestModal 中完成，仅定制建议行。 */
+.mv-run-picker-note { color: var(--text-muted); margin-left: 8px; }
+.mv-run-picker-info { color: var(--text-muted); font-size: var(--font-ui-small); }
+.mv-run-picker-error { color: var(--text-error); }

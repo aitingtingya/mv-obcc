@@ -1,4 +1,4 @@
-import { runProcess } from "../../../process-runner";
+import { runProcess, windowsPowerShellEncodingLines } from "../../../process-runner";
 import { t } from "../../../i18n";
 
 /** One DSH-looking process plus its platform-level identity. */
@@ -256,7 +256,11 @@ async function unixKillProcessTree(pid: number, run = runProcess): Promise<boole
 async function windowsPowerShell(run: typeof runProcess, script: string): Promise<string | null> {
   const result = await run(
     "powershell",
-    ["-NoProfile", "-NonInteractive", "-Command", script],
+    // Force UTF-8 output before anything else: without it WinPS writes through
+    // the OEM codepage and non-ASCII command lines (e.g. a Chinese vault path)
+    // arrive as mojibake under the runner's UTF-8 decoding. Default
+    // Continue preference keeps a failed encoding switch non-fatal.
+    ["-NoProfile", "-NonInteractive", "-Command", [...windowsPowerShellEncodingLines(), script].join("; ")],
     { timeoutMs: 8000 },
   );
   return result.code === 0 ? result.stdout : null;
@@ -281,6 +285,11 @@ const WINDOWS_TCP_TABLE_TTL_MS = 2000;
  * PowerShell spawn per parent level.
  */
 const WINDOWS_PROCESS_SNAPSHOT_SCRIPT = [
+  // UTF-8 first, before `$ErrorActionPreference = 'Stop'`: a failed encoding
+  // switch must stay a non-terminating error, and every CommandLine with
+  // non-ASCII path segments must survive the runner's UTF-8 decoding. The
+  // array is joined with spaces, so each line carries its own semicolon.
+  ...windowsPowerShellEncodingLines().map((line) => `${line};`),
   "$ErrorActionPreference = 'Stop';",
   "Get-CimInstance Win32_Process | ForEach-Object {",
   "$commandLine = $_.CommandLine;",

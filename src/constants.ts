@@ -1,5 +1,6 @@
 import { EXTERNAL_FILE_MIRROR_FOLDER } from "./storage/vault-paths";
 import { DEFAULT_DSH_SETTINGS } from "./agent-integrations/dsh/settings";
+import { DEFAULT_GIT_SETTINGS } from "./git/model";
 
 export const DIFF_VIEW_TYPE = "mv-aide-ide-diff";
 export const TERMINAL_VIEW_TYPE = "mv-aide-terminal-view";
@@ -221,6 +222,7 @@ export const DEFAULT_SETTINGS = {
     fileTypeIcons: true,
   },
   dsh: DEFAULT_DSH_SETTINGS,
+  git: DEFAULT_GIT_SETTINGS,
   hideObsidianStatusBar: false,
   mcpEnabled: true,
   mcpAuthToken: "",
