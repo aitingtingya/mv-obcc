@@ -27,11 +27,13 @@ export type RunOrderRow =
 const PREVIEW_LIMIT = 8;
 
 export class RunOrderModal extends SuggestModal<RunOrderRow> {
+  private lastRows: RunOrderRow[] = [];
   constructor(app: App, private readonly tasks: RunTask[], private readonly initial: string, private readonly initialCursor: number, private readonly hooks: RunOrderHooks) {
     super(app);
     this.setPlaceholder(message("title"));
     this.setInstructions([
       { command: "Enter", purpose: message("instEnter") },
+      { command: "Tab", purpose: message("instTab") },
       { command: "Esc", purpose: message("instEsc") },
     ]);
   }
@@ -43,6 +45,22 @@ export class RunOrderModal extends SuggestModal<RunOrderRow> {
     }
     // The chooser only refreshes on input events; dispatch once so the rows render immediately on open.
     this.inputEl.dispatchEvent(new Event("input"));
+    // Capture phase runs before the chooser's bubble handlers: Enter always executes the run row,
+    // Tab accepts the highlighted completion — the original modal semantics (Tab completes, Enter runs).
+    this.inputEl.addEventListener("keydown", event => {
+      if (event.key === "Enter") {
+        if (event.isComposing) return;
+        event.preventDefault(); event.stopPropagation();
+        const run = this.lastRows.find(row => row.kind === "run");
+        if (run) { this.onChooseSuggestion(run); this.close(); }
+        return;
+      }
+      if (event.key === "Tab") {
+        event.preventDefault(); event.stopPropagation();
+        const row = this.lastRows[this.activeRowIndex()];
+        if (row?.kind === "completion") { this.onChooseSuggestion(row); this.close(); }
+      }
+    }, true);
     // SuggestModal only re-queries on input events; cursor moves change completion targets.
     for (const event of ["click", "keyup"] as const) {
       this.inputEl.addEventListener(event, e => {
@@ -50,6 +68,12 @@ export class RunOrderModal extends SuggestModal<RunOrderRow> {
         this.inputEl.dispatchEvent(new Event("input"));
       });
     }
+  }
+
+  /** Index of the chooser-highlighted suggestion row (-1 when unknown). */
+  protected activeRowIndex(): number {
+    const items = Array.from(this.modalEl.querySelectorAll(".suggestion-item"));
+    return items.findIndex(item => item.classList.contains("is-selected"));
   }
 
   getSuggestions(query: string): RunOrderRow[] {
@@ -60,23 +84,26 @@ export class RunOrderModal extends SuggestModal<RunOrderRow> {
       rows.push({ kind: "run", input: null, steps: this.tasks.filter(task => !task.protected).length });
       for (const candidate of completeReferences(this.tasks, query, cursor)) rows.push({ kind: "completion", ...candidate });
       rows.push({ kind: "info", text: message("help") });
+      this.lastRows = rows;
       return rows;
     }
     try {
       const plan = specifiedPlan(this.tasks, query);
       if (plan.steps.length) rows.push({ kind: "run", input: query, steps: plan.steps.length });
       for (const candidate of completeReferences(this.tasks, query, cursor)) rows.push({ kind: "completion", ...candidate });
-      if (!plan.steps.length) { rows.push({ kind: "info", text: message("empty") }); return rows; }
-      plan.steps.slice(0, PREVIEW_LIMIT).forEach((task, index) => rows.push({
-        kind: "info",
-        text: `${index + 1}. ${task.name ?? message("unnamed")}${task.protected ? " 🔒" : ""}${task.newTerminal ? " [-n]" : ""} — ${task.command}`,
-      }));
-      if (plan.steps.length > PREVIEW_LIMIT) rows.push({ kind: "info", text: `… +${plan.steps.length - PREVIEW_LIMIT}` });
-      for (const task of plan.filtered) rows.push({ kind: "info", text: `${message("filtered")}: ${task.name ?? message("unnamed")} — ${task.command}` });
+      if (plan.steps.length) {
+        plan.steps.slice(0, PREVIEW_LIMIT).forEach((task, index) => rows.push({
+          kind: "info",
+          text: `${index + 1}. ${task.name ?? message("unnamed")}${task.protected ? " 🔒" : ""}${task.newTerminal ? " [-n]" : ""} — ${task.command}`,
+        }));
+        if (plan.steps.length > PREVIEW_LIMIT) rows.push({ kind: "info", text: `… +${plan.steps.length - PREVIEW_LIMIT}` });
+        for (const task of plan.filtered) rows.push({ kind: "info", text: `${message("filtered")}: ${task.name ?? message("unnamed")} — ${task.command}` });
+      } else rows.push({ kind: "info", text: message("empty") });
     } catch (error) {
       for (const candidate of completeReferences(this.tasks, query, cursor)) rows.push({ kind: "completion", ...candidate });
       rows.push({ kind: "error", text: errorMessage(error) });
     }
+    this.lastRows = rows;
     return rows;
   }
 

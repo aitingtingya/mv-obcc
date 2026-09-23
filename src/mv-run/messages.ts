@@ -22,7 +22,8 @@ const messages = {
   failed: ["mv-run 已停止", "mv-run stopped"],
   running: ["mv-run 正在执行", "mv-run is running"],
   waiting: ["正在保存并确认…", "Saving and confirming…"],
-  instEnter: ["执行或选择", "Run or select"],
+  instEnter: ["执行", "Run"],
+  instTab: ["接受补全", "Accept completion"],
   instEsc: ["取消", "Cancel"],
 } as const;
 

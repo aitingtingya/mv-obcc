@@ -1,7 +1,7 @@
 {
   "id": "mv-obcc",
   "name": "mv-AIDE",
-  "version": "0.9.20",
+  "version": "0.9.21",
   "minAppVersion": "1.7.2",
   "description": "AI IDE for your vault: connects various harnesses with deep DeepSeek Harness (DSH) integration, featuring in-editor AI, an integrated terminal, a Vim engine, non-Markdown source enhancements, a system file opener, and browser extensions.",
   "author": "MV",
