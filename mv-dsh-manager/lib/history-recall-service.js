@@ -1,7 +1,7 @@
 // Complete, non-live session history for browser-side ArrowUp recall.
 // Reading through sessionQuery never expands the visible chat pagination.
 
-import { resolveSessionInspector, resolveSessionLogReader } from '../../mv-dsh-compat/lib/host.js';
+import { resolveSessionLogReader } from '../../mv-dsh-compat/lib/host.js';
 
 export class HistoryRecallError extends Error {
   constructor(message, status = 400, code = 'invalid-history-recall') {
@@ -67,21 +67,18 @@ export function createHistoryRecallService(ctx) {
   return Object.freeze({
     async read(payload) {
       const sessionId = sessionIdOf(payload);
-      // Fast path: borrow the session's immutable view (zero-copy for live
-      // sessions). Falls back to the replay-validated readSession when the
-      // persistence service is absent; both are 503-free structural seams.
-      const inspector = resolveSessionInspector(ctx);
-      const reader = inspector ? null : resolveSessionLogReader(ctx);
-      if (!inspector && !reader) {
+      // Replay-validated complete log read. The borrowed-log shortcut some
+      // builds exposed (`sessionPersistence.inspect`) exists in no released
+      // DSH, so the structural reader is the only seam to try.
+      const reader = resolveSessionLogReader(ctx);
+      if (!reader) {
         throw new HistoryRecallError(
           'This DSH runtime does not expose complete session history.',
           503,
           'session-history-unavailable',
         );
       }
-      const snapshot = inspector
-        ? await inspector.inspect(sessionId)
-        : await reader.readSession(sessionId);
+      const snapshot = await reader.readSession(sessionId);
       return { ok: true, messages: extractHistoryMessages(snapshot) };
     },
   });

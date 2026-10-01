@@ -256,21 +256,63 @@ window.__ModuleLoader__.load({
       return prepared;
     }
 
+    /**
+     * The draft-attachment verbs of the installed conversation service.
+     *
+     * 0.1.2–0.1.3-alpha.1 exposed the image-only names (`createDraftImages`,
+     * `draftImages`, `releaseDraftImages`, `input.addImages/removeImage`,
+     * `state.imageIds`); every later release renamed them to drafts/attachments
+     * (`createDrafts(sessionId, files)`, `resolveDraftAttachments`,
+     * `releaseDraftAttachments`, `input.addAttachments/removeAttachment`,
+     * `state.attachmentIds`). Both faces are resolved structurally here, so the
+     * drop flow works on either without a version string.
+     */
+    function attachmentApi(target) {
+      const conversation = target?.conversation;
+      const input = target?.input;
+      const create = typeof conversation?.createDrafts === 'function'
+        ? (files) => conversation.createDrafts(target.sessionId, files)
+        : typeof conversation?.createDraftImages === 'function'
+          ? (files) => conversation.createDraftImages(files)
+          : null;
+      const release = typeof conversation?.releaseDraftAttachments === 'function'
+        ? (attachments) => conversation.releaseDraftAttachments(attachments)
+        : typeof conversation?.releaseDraftImages === 'function'
+          ? (attachments) => conversation.releaseDraftImages(attachments)
+          : null;
+      const describe = typeof conversation?.resolveDraftAttachments === 'function'
+        ? (ids) => conversation.resolveDraftAttachments(ids)
+        : typeof conversation?.draftImages === 'function'
+          ? (ids) => conversation.draftImages(ids)
+          : null;
+      const add = typeof input?.addAttachments === 'function'
+        ? (ids) => input.addAttachments(ids)
+        : typeof input?.addImages === 'function'
+          ? (ids) => input.addImages(ids)
+          : null;
+      const remove = typeof input?.removeAttachment === 'function'
+        ? (id) => input.removeAttachment(id)
+        : typeof input?.removeImage === 'function'
+          ? (id) => input.removeImage(id)
+          : null;
+      const idsOf = (state) => (Array.isArray(state?.attachmentIds)
+        ? state.attachmentIds
+        : Array.isArray(state?.imageIds) ? state.imageIds : []);
+      return { create, release, describe, add, remove, idsOf };
+    }
+
     function validateImageLimits(files, target) {
       const images = files.filter(file => file.kind === 'image');
       if (images.length === 0) return;
       const text = copy();
-      if (typeof target.conversation?.createDraftImages !== 'function'
-          || typeof target.conversation?.releaseDraftImages !== 'function'
-          || typeof target.input?.addImages !== 'function'
-          || typeof target.input?.removeImage !== 'function') {
+      const api = attachmentApi(target);
+      if (typeof api.create !== 'function' || typeof api.release !== 'function'
+          || typeof api.add !== 'function' || typeof api.remove !== 'function') {
         throw new Error(text.imageUnavailable);
       }
       const state = inputState(target);
-      const existingIds = Array.isArray(state?.imageIds) ? state.imageIds : [];
-      const existing = typeof target.conversation.draftImages === 'function'
-        ? target.conversation.draftImages(existingIds)
-        : [];
+      const existingIds = api.idsOf(state);
+      const existing = typeof api.describe === 'function' ? api.describe(existingIds) : [];
       if (existing.length !== existingIds.length) throw new Error(text.imageUnavailable);
       const limits = imageLimits(target);
       if (!limits) throw new Error(text.imageUnavailable);
@@ -549,11 +591,12 @@ window.__ModuleLoader__.load({
       const originalDraft = original.draft;
       const files = createFiles(imagePayloads, prepared, autoFitImageSize);
       validateImageLimits(prepared, target);
+      const api = attachmentApi(target);
       let attachments = [];
       try {
         if (files.length > 0) {
-          attachments = [...target.conversation.createDraftImages(files)];
-          if (!target.input.addImages(attachments.map(attachment => attachment.id))) {
+          attachments = [...api.create(files)];
+          if (!api.add(attachments.map(attachment => attachment.id))) {
             throw new Error(copy().rejected);
           }
         }
@@ -561,8 +604,8 @@ window.__ModuleLoader__.load({
       } catch (error) {
         try {
           target.input.setDraft(originalDraft);
-          for (const attachment of attachments) target.input.removeImage?.(attachment.id);
-          target.conversation.releaseDraftImages?.(attachments);
+          for (const attachment of attachments) api.remove?.(attachment.id);
+          api.release?.(attachments);
         } catch {
           // Preserve the primary admission error; DSH owns any final teardown.
         }

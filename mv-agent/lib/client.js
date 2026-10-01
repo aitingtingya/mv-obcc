@@ -33,10 +33,16 @@ window.__ModuleLoader__.load({
       return `${protocol}//${window.location.host}${CONTROL_PATH}`;
     }
 
-    function activeReport(sessions) {
-      const snapshot = sessions.list.getSnapshot();
-      const sessionId = typeof snapshot.current === 'string' ? snapshot.current : null;
-      const cwd = sessionId === null ? undefined : snapshot.byId?.[sessionId]?.cwd;
+    // The staged conversation is resolved by the compat adapter: ≥0.1.7 moved
+    // it from `SessionListState.current` to the main view's retention count,
+    // so a direct `snapshot.current` read reports null forever on 0.1.7 and
+    // silently keeps every session out of the host's staged set.
+    function activeReport(ctx) {
+      const current = compat.currentSessionState(ctx);
+      const sessionId = typeof current?.sessionId === 'string' && current.sessionId.length > 0
+        ? current.sessionId
+        : null;
+      const cwd = sessionId === null ? undefined : current?.cwd;
       return {
         type: 'active-session',
         sessionId,
@@ -59,8 +65,7 @@ window.__ModuleLoader__.load({
         if (!profileEnabled || sourcePolicy?.autoFitImageSize === false) {
           return current.call(this, file);
         }
-        const sessions = compat.resolveSessions(ctx)?.sessions;
-        const sessionId = sessions ? activeReport(sessions).sessionId : null;
+        const sessionId = activeReport(ctx).sessionId;
         if (sessionId === null || typeof window.fetch !== 'function') {
           return current.call(this, file);
         }
@@ -142,7 +147,7 @@ window.__ModuleLoader__.load({
         };
 
         const reportCurrent = (force = false) => {
-          const next = activeReport(sessions);
+          const next = activeReport(ctx);
           if (socket?.readyState !== WebSocket.OPEN) return;
           if (reportedSessionId !== null && reportedSessionId !== next.sessionId) {
             // Revoke first. The host processes WebSocket frames in order, so a

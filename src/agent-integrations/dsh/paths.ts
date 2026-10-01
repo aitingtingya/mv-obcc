@@ -64,6 +64,16 @@ export function dshCompatPackageDirectory(homeDirectory = dshHome()): string {
   return path.join(dshWebProfileDirectory(homeDirectory), "node_modules", "@mv-aide", "mv-dsh-compat");
 }
 
+/**
+ * The plugin-owned settings store, shared by the same three plugins and
+ * materialized as a sibling of the compatibility library so the relative
+ * imports between them resolve identically here and inside the profile.
+ * Not a plugin row either.
+ */
+export function dshSettingsPackageDirectory(homeDirectory = dshHome()): string {
+  return path.join(dshWebProfileDirectory(homeDirectory), "node_modules", "@mv-aide", "mv-dsh-settings");
+}
+
 export function dshVaultDirectory(vaultRoot: string): string {
   return path.join(mvAideVaultRoot(vaultRoot), "dsh");
 }

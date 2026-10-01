@@ -2,20 +2,23 @@
 //
 // DSH 0.1.1 has no nested client slot inside a model row. This isolated
 // module therefore augments that one native surface through its stable
-// accessibility contract (section/field aria labels and button text). It does
-// not inspect hashed CSS module names and it owns every node/listener it adds.
+// structural contract: the per-row disclosure and the editor's action row,
+// both read through mv-dsh-compat rather than through localized captions, so a
+// reworded label in the host cannot break it. It does not inspect hashed CSS
+// module names itself and it owns every node/listener it adds.
 
 window.__ModuleLoader__.load({
   id: '@mv-aide/mv-dsh-manager/model-capabilities-client',
-  factory: () => {
+  factory: (require) => {
     var module = { exports: {} };
     var exports = module.exports;
     Object.defineProperty(exports, Symbol.toStringTag, { value: 'Module' });
 
+    const compat = require('@mv-aide/mv-dsh-compat/client/manager');
+    const { modelRowDisclosure, editorActionRow, editorActionButton, editorSaveButton } = compat;
+
     const INSTALL_KEY = '__MV_AIDE_MODEL_CAPABILITIES_CLIENT__';
     const API_PATH = '/api/mv-aide/model-capabilities';
-    const SAVE_LABELS = new Set(['保存', 'Apply', '创建提供方', 'Create provider', '保存并继续', 'Save and continue']);
-    const CANCEL_LABELS = new Set(['取消', 'Cancel', '稍后配置', 'Configure later']);
     const MODELS_LABELS = new Set(['模型目录', 'Models']);
     const MODEL_ID_PREFIXES = ['模型 ID ', 'Model ID '];
     const COMPAT_GROUPS = [
@@ -181,10 +184,6 @@ window.__ModuleLoader__.load({
       }
     }
 
-    function buttonText(target) {
-      return target instanceof Element ? String(target.closest('button')?.textContent || '').trim() : '';
-    }
-
     function modelSections() {
       return [...document.querySelectorAll('section[aria-label]')]
         .filter((node) => MODELS_LABELS.has(node.getAttribute('aria-label')));
@@ -206,8 +205,7 @@ window.__ModuleLoader__.load({
       let node = section.parentElement;
       while (node && node !== document.body) {
         const hasKey = node.querySelector('input[aria-label="API key"], input[aria-label="API 密钥"]');
-        const hasSave = [...node.querySelectorAll('button')].some((button) => SAVE_LABELS.has(button.textContent.trim()));
-        if (hasKey && hasSave) return node;
+        if (hasKey && editorSaveButton(node)) return node;
         node = node.parentElement;
       }
       return null;
@@ -798,6 +796,37 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * Whether every model the server already knows is still on the card.
+     *
+     * The card legitimately holds a superset while a row the host just added is
+     * still being typed: `添加模型` appends `{ id: '' }`, and the id only reaches
+     * the settings wire once the user has committed it. Requiring the two lists
+     * to be the same length therefore read a pending edit as a stale binding and
+     * threw the provider away. Only a server id that has *left* the card means
+     * the binding really went stale — that is what a native save re-registering
+     * the rows produces, and it still drops the pin.
+     */
+    function cardCoversServerIds(domIds, serverIds) {
+      if (serverIds.length === 0) return false;
+      const dom = new Set(domIds);
+      return serverIds.every((id) => dom.has(id));
+    }
+
+    /**
+     * Drop the cached directory and provider views.
+     *
+     * The host's own model-list writes (add, rename, remove, and the native
+     * commit) go through the settings wire and never touch these fetches, so a
+     * cache filled before such a write describes the card as it was. Failures
+     * are deliberately kept: they are the backoff that stops a broken server
+     * from being re-asked on every scan.
+     */
+    function invalidateProviderView(state, provider) {
+      if (typeof provider === 'string' && provider.length > 0) state.providers.delete(provider);
+      state.directory = null;
+    }
+
+    /**
      * The card's provider, resolved without ever guessing from on-screen text.
      * Priority: an explicit binding recorded by a pick, the card's own Provider
      * ID field, then the one directory entry whose model id set is exactly the
@@ -809,14 +838,14 @@ window.__ModuleLoader__.load({
       if (pinned && ids.length > 0) {
         // A pinned binding is only reused while the server still describes this
         // card's model rows; otherwise the native save re-registered them and
-        // the binding must be re-derived instead of trusted.
+        // the binding must be re-derived instead of trusted. A row whose id the
+        // wire has not confirmed yet is a pending edit, not a stale binding.
         const pinnedEntry = await entryFor(state, pinned);
-        if (pinnedEntry && sameIdSet(ids, entryModelIds(pinnedEntry))) {
+        if (pinnedEntry && cardCoversServerIds(ids, entryModelIds(pinnedEntry))) {
           bindEditor(editor, pinned, pinnedEntry);
           return pinned;
         }
         editor.removeAttribute('data-mv-aide-model-provider');
-        state.staleBinding = true;
       }
       const draftRoute = editor.querySelector('input[aria-label="Provider ID"]')?.value.trim();
       if (draftRoute && /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/u.test(draftRoute)) {
@@ -845,18 +874,19 @@ window.__ModuleLoader__.load({
     }
 
     function customEntries(section) {
-      const buttons = [...section.querySelectorAll('button[aria-expanded]')].filter((button) => {
-        const label = button.getAttribute('aria-label') || '';
-        return /^(?:容量|Capacities)\s+\d+$/u.test(label);
-      });
+      // The host rewrites the disclosure's caption between releases (it was
+      // `容量 <n>`, now `模型选项 <n>`), so the control is recognized by what
+      // it does — it is the row's single expansion toggle — not by its label.
+      const buttons = [...section.querySelectorAll('button[aria-expanded]')];
       return buttons.map((button) => {
         const row = button.parentElement;
         const entry = row?.parentElement;
-        const input = entry ? modelIdInput(entry) : null;
+        if (!entry || modelRowDisclosure(entry) !== button) return null;
+        const input = modelIdInput(entry);
         const advanced = button.getAttribute('aria-expanded') === 'true'
           ? [...(entry?.children || [])].find((child) => child !== row) : null;
         return { button, entry, input, advanced };
-      }).filter((entry) => entry.entry && entry.input);
+      }).filter((entry) => entry?.entry && entry.input);
     }
 
     function customDraftKey(provider, input) {
@@ -954,17 +984,11 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * Inject once per (section, bound provider). The panel itself is a DOM
-     * write that re-enters the observer, so re-rendering an already-correct
-     * panel would keep the scan loop alive forever. Dirtiness is not part of
-     * the decision — a keystroke must never tear the panel out from under the
-     * user — so a click that changes it asks for a rebuild explicitly.
+     * Section identity. The per-row and per-block checks inside the injection
+     * are what make a re-scan idempotent, so this only has to tell one live
+     * section from another: a card replaced by a re-render is a new section,
+     * and the chooser a section falls back to is remembered on it.
      */
-    function stateKey(family, provider) {
-      return `${family}|${provider}`;
-    }
-
-    /** Section identity, so a card replaced by a re-render is never skipped. */
     let sectionSeq = 0;
     function sectionId(section) {
       let id = section.getAttribute('data-mv-aide-section');
@@ -976,20 +1000,47 @@ window.__ModuleLoader__.load({
       return id;
     }
 
-    async function injectSection(state, section, force = false) {
+    /**
+     * Open a model row the host has just created.
+     *
+     * `添加模型` appends `{ id: '' }` and DSH renders a row's advanced pane only
+     * while that row is expanded, so a brand-new row has nowhere for the panel
+     * to mount — the user would have to find the row's own chevron before the
+     * editor exists at all. A row with no model id yet is that new row and
+     * nothing else: once the user has typed an id the row is theirs to fold.
+     * Each element is opened at most once, so folding it afterwards is kept.
+     */
+    function openPendingRows(state, section) {
+      for (const button of section.querySelectorAll('button[aria-expanded]')) {
+        if (button.getAttribute('aria-expanded') === 'true') continue;
+        const row = button.parentElement;
+        const entry = row?.parentElement;
+        if (!entry || modelRowDisclosure(entry) !== button) continue;
+        const input = modelIdInput(entry);
+        if (!input || input.value.trim() !== '') continue;
+        if (state.openedRows.has(entry)) continue;
+        state.openedRows.add(entry);
+        button.click();
+      }
+    }
+
+    async function injectSection(state, section) {
       const id = sectionId(section);
-      const sectionState = state.sections.get(id) ?? { key: null, provider: null };
+      const sectionState = state.sections.get(id) ?? { picker: false, provider: null };
       state.sections.set(id, sectionState);
       const editor = editorRoot(section);
       if (!editor) return;
-      state.staleBinding = false;
+      // The host's own model-list writes never reach our fetches, so a change in
+      // what the card shows is the signal that the cached views are pre-change.
+      const observedIds = editorModelIds(editor).join('\u0000');
+      if (sectionState.observedIds !== undefined && sectionState.observedIds !== observedIds) {
+        invalidateProviderView(state, sectionState.provider);
+      }
+      sectionState.observedIds = observedIds;
       const provider = await providerFor(state, editor);
-      // A binding that had to be re-derived means the card's rows changed, so
-      // the cached injection decision no longer describes this section.
-      if (state.staleBinding) sectionState.key = null;
       if (!provider) {
-        if (sectionState.key !== 'picker') {
-          sectionState.key = 'picker';
+        if (!sectionState.picker) {
+          sectionState.picker = true;
           renderProviderPicker(state, section, editor);
         }
         return;
@@ -1012,9 +1063,6 @@ window.__ModuleLoader__.load({
       const providerData = response.providers[0];
       if (!providerData) return;
       const family = familyOf(providerData, response, editor);
-      const key = stateKey(family, provider);
-      if (!force && sectionState.key === key) return;
-      sectionState.key = key;
       sectionState.provider = provider;
       bindEditor(editor, provider, providerData);
       section.querySelector('[data-mv-aide-provider-picker]')?.remove();
@@ -1024,6 +1072,18 @@ window.__ModuleLoader__.load({
           className: 'mv-aide-cap-warning', text: copy().unsupported, 'data-mv-aide-capability-unsupported': 'true',
         }));
       }
+      // Every scan re-enters here, and that is what makes a row the user expands
+      // *after* this card was first injected pick up its panel: the per-row
+      // check inside is the idempotence, not a section-level one. The observer
+      // watches childList only, and every write on this path is existence-
+      // guarded, so a scan that finds nothing to do writes nothing and the loop
+      // still settles. A section-level "inject once" guard would be stable and
+      // still wrong — it would freeze the panel set at the rows that happened to
+      // be expanded during the first read.
+      // A row the host just created is opened first, so this same scan has a
+      // pane to mount the new row's panel into. Opening it also reveals the
+      // capacities and input types a brand-new model has to be given anyway.
+      openPendingRows(state, section);
       injectCustomPanels(state, section, editor, providerData, response);
       if (family === 'pi-ai' && !section.querySelector(':scope > [data-mv-aide-builtin-catalog]')) {
         injectBuiltinCatalog(state, section, editor, providerData, response);
@@ -1238,8 +1298,8 @@ window.__ModuleLoader__.load({
         return;
       }
       const elapsed = Date.now() - pending.started;
-      const idleSave = [...pending.editor.querySelectorAll('button')]
-        .find((button) => SAVE_LABELS.has(button.textContent.trim()) && !button.disabled);
+      const save = editorSaveButton(pending.editor);
+      const idleSave = save && !save.disabled;
       // The native commit is done once its own save control is idle again (or
       // the wait ran out): either way the staged capability write must run.
       if ((elapsed > 800 && idleSave) || elapsed > 30000) {
@@ -1283,7 +1343,6 @@ window.__ModuleLoader__.load({
     function onClick(state, event) {
       const button = event.target instanceof Element ? event.target.closest('button') : null;
       if (!button) return;
-      const text = buttonText(button);
       const aria = button.getAttribute('aria-label') || '';
       const editor = [...modelSections()].map(editorRoot).find((root) => root?.contains(button));
       if (/^(?:编辑|Edit)\s/u.test(aria) && editor) {
@@ -1293,11 +1352,19 @@ window.__ModuleLoader__.load({
           bindEditor(editor, hinted, entry);
         }
       }
-      if (!SAVE_LABELS.has(text) && !CANCEL_LABELS.has(text)) return;
       if (!editor) return;
+      // Save and cancel are identified by the editor's own action row rather
+      // than by their captions: the commit caption is chosen by the host per
+      // editor (save / create provider / save and continue) and was reworded
+      // between releases, while the card's row-level `编辑` and `删除` controls
+      // sit outside that row and must keep falling through untouched.
+      const actionRow = editorActionRow(editor);
+      if (!actionRow || !actionRow.contains(button)) return;
+      const cancel = editorActionButton(actionRow, 'secondary');
+      if (cancel !== button && editorActionButton(actionRow, 'primary') !== button) return;
       const draftRoute = editor.querySelector('input[aria-label="Provider ID"]')?.value.trim();
       const provider = draftRoute || editor.getAttribute('data-mv-aide-model-provider');
-      if (CANCEL_LABELS.has(text)) {
+      if (cancel === button) {
         if (state.pending?.editor === editor) state.pending = null;
         clearProviderDrafts(state, editor);
         return;
@@ -1317,7 +1384,7 @@ window.__ModuleLoader__.load({
       const state = {
         disposed: false, scanQueued: false, directory: null, providers: new Map(), drafts: new Map(),
         expandedBuiltins: new Set(), pending: null, partial: null, partialTimer: null, scanStamp: 0,
-        sections: new Map(), scanTimer: null,
+        sections: new Map(), scanTimer: null, openedRows: new WeakSet(),
         directoryFailure: null, providerFailures: new Map(),
       };
       const observer = new MutationObserver(() => {

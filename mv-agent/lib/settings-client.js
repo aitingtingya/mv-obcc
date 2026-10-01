@@ -246,6 +246,18 @@ window.__ModuleLoader__.load({
 
     function install(ctx) {
       const policy = createPolicy();
+      // Plugin-owned settings first: they exist on every released DSH, while the
+      // DSH settings plane below only exists up to 0.1.6. The store read is a
+      // fetch and the DSH scope is layered underneath it, so a late store answer
+      // must not overwrite what that scope published — the write side already
+      // refuses to touch a namespace DSH owns, and the read side has to agree.
+      let dshOwnsEditing = false;
+      const unwatchStore = compat.watchMvAideSettings(NS, (values, entry) => {
+        if (entry?.manage === 'dsh') { dshOwnsEditing = true; return; }
+        if (dshOwnsEditing) return;
+        policy.publish(values);
+      });
+      ctx?.effect?.(() => unwatchStore, 'mv-agent: plugin-owned feature settings');
       if (typeof ctx?.inject !== 'function') return policy;
       ctx.inject(['slots', 'settingsScope'], (settingsCtx) => {
         const host = compat.resolveSettingsCardHost(settingsCtx);

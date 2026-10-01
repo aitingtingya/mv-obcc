@@ -5,8 +5,11 @@
 // error whose text explicitly says to stop and wait for the user's message.
 // Without an execution gate the agent immediately starts another step, spends
 // one extra model call, and usually replies that it will wait. This module makes
-// the existing instruction real: suppress only that automatic follow-up step,
-// then release the session when a genuine user message is accepted.
+// the existing instruction real: suppress only that automatic follow-up step.
+// The suppression is scoped to the turn that carried the dismissal — the agent
+// loop ends that turn on the rejection — so every later turn runs untouched. A
+// goal round, a scheduled follow-up, and a queued plugin prompt each open their
+// own turn, and none of them may be swallowed while the session waits.
 
 export const PLAN_EXIT_TOOL = 'exit_plan_mode';
 export const PLAN_REVIEW_DISMISS_MARKER = 'dismissed the plan review to speak instead';
@@ -34,7 +37,11 @@ function hasRealUserMessage(messages) {
 }
 
 /**
- * Install the plan-review idle gate into a DSH host context.
+ * Install the plan-review exit gate into a DSH host context.
+ *
+ * The gate defers one session for the turn in which the plan review was
+ * dismissed, and the installed `session/event` listener ends that deferral on
+ * the turn's `turn/end`.
  *
  * The returned disposer is idempotent as far as Cordis listeners are concerned:
  * every listener disposer is called once when the owning plugin unloads.
@@ -56,6 +63,14 @@ export function installPlanReviewControl(ctx, options = {}) {
       deferredSessions.set(exec.agent.session, policyGeneration);
     }
     return result;
+  });
+
+  // The rejected step ends the agent-loop turn that produced the dismissal, and
+  // the loop appends `turn/end` on every exit including abort and disposal. A
+  // new turn is a new human-facing boundary, so the deferral ends with the turn
+  // it was armed in.
+  const disposeSessionEvent = ctx.on('session/event', (session, event) => {
+    if (event?.type === 'turn/end') deferredSessions.delete(session);
   });
 
   const disposePreStep = ctx.on(
@@ -82,6 +97,7 @@ export function installPlanReviewControl(ctx, options = {}) {
 
   return () => {
     if (typeof disposePreStep === 'function') disposePreStep();
+    if (typeof disposeSessionEvent === 'function') disposeSessionEvent();
     if (typeof disposeExecute === 'function') disposeExecute();
     unsubscribe?.();
   };

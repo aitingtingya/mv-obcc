@@ -173,6 +173,193 @@ window.__ModuleLoader__.load({
         return row;
       }
 
+      /**
+       * Primary workspaces DSH knows about, plus the one the open session uses.
+       *
+       * Mirrors the settings card's selection order (current session's workspace,
+       * then the most recent one) so both surfaces mark the same row as current.
+       */
+      function listWorkspaces() {
+        const snapshot = workspaces?.list?.getSnapshot?.();
+        const raw = snapshot && Array.isArray(snapshot.items) ? snapshot.items : [];
+        const currentSessionId = compat.currentSessionId(ctx);
+        const byCurrent = currentSessionId == null ? undefined
+          : raw.find((item) => Array.isArray(item?.sessionIds) && item.sessionIds.includes(currentSessionId));
+        const byRecent = snapshot?.recentWorkspaceId
+          ? raw.find((item) => item?.workspaceId === snapshot.recentWorkspaceId)
+          : undefined;
+        const chosen = byCurrent ?? byRecent;
+        return {
+          items: raw
+            .filter((item) => typeof item?.path === 'string' && item.path.length > 0)
+            .map((item) => ({
+              path: item.path,
+              title: typeof item.title === 'string' && item.title.length > 0 ? item.title : null,
+            })),
+          currentPath: typeof chosen?.path === 'string' ? chosen.path : null,
+        };
+      }
+
+      /**
+       * Project workspace rows for a configured-roots map.
+       *
+       * The projection itself lives in the settings card module (one
+       * implementation for both surfaces); without it this returns null and the
+       * caller falls back to listing stored rows only.
+       */
+      function displayRows(configured) {
+        const projection = settingsClient?.displayRows;
+        if (!projection?.buildDisplayRows) return null;
+        const listed = listWorkspaces();
+        return projection.buildDisplayRows(listed.items, configured, listed.currentPath);
+      }
+
+      /**
+       * Render one primary's associated-directory manager into any container.
+       *
+       * Shared by the workspace-row popover below and by the mv-aide settings
+       * page through the page-scoped bridge at the end of this module, so both
+       * surfaces list the same directories, run the same add/remove flows and
+       * report the same failures. The container token makes pending responses
+       * stale: a slower fetch must never write into a container that a later
+       * render replaced, or that already left the document.
+       */
+      function renderChildrenManager(container, primary, options) {
+        const settings = options || {};
+        const enabled = settings.enabled !== false;
+        const writable = settings.writable !== false;
+        const disabled = !enabled || !writable;
+        const notify = typeof settings.onChange === 'function' ? settings.onChange : function() {};
+        const provided = Array.isArray(settings.children) ? settings.children : null;
+        // Own wrapper: the container may also carry chrome (the popover's title
+        // and enable switch, the settings panel's row chrome), and repainting
+        // this manager must never remove it.
+        const host = document.createElement('div');
+        host.className = 'mv-dsh-subworkspace-children';
+        container.appendChild(host);
+        const token = String((Number(container.dataset.mvaRender) || 0) + 1);
+        container.dataset.mvaRender = token;
+        const active = () => container.dataset.mvaRender === token && host.isConnected;
+        const fail = (error) => {
+          if (active()) host.appendChild(errorRow(error instanceof Error ? error.message : String(error)));
+        };
+
+        const paint = (children) => {
+          if (!active()) return;
+          host.replaceChildren();
+          if (children.length === 0) {
+            const empty = document.createElement('div');
+            empty.className = 'mv-dsh-subworkspace-empty';
+            empty.textContent = '尚未添加关联目录';
+            host.appendChild(empty);
+          }
+          for (const root of children) {
+            const row = document.createElement('div');
+            row.className = 'mv-dsh-subworkspace-root';
+            const main = document.createElement('div');
+            main.className = 'mv-dsh-subworkspace-root-main';
+            const name = document.createElement('div');
+            name.className = 'mv-dsh-subworkspace-root-name';
+            name.textContent = `${root.label}${root.valid ? '' : ' · 不可用'}`;
+            const location = document.createElement('div');
+            location.className = 'mv-dsh-subworkspace-root-path';
+            location.textContent = root.error || root.path;
+            main.append(name, location);
+            const remove = document.createElement('button');
+            remove.type = 'button';
+            remove.className = 'mv-dsh-subworkspace-remove';
+            remove.setAttribute('aria-label', `移除 ${root.label}`);
+            remove.textContent = '×';
+            if (disabled) remove.disabled = true;
+            remove.addEventListener('click', async (event) => {
+              event.stopPropagation();
+              if (disabled) return;
+              remove.disabled = true;
+              try {
+                await request('/roots', {
+                  method: 'DELETE',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ primary, workspaceId: root.id }),
+                });
+                await reload();
+                notify();
+              } catch (error) {
+                remove.disabled = false;
+                fail(error);
+              }
+            });
+            row.append(main, remove);
+            if (disabled) {
+              row.dataset.disabled = 'true';
+              row.setAttribute('aria-disabled', 'true');
+            }
+            host.appendChild(row);
+          }
+          const actions = document.createElement('div');
+          actions.className = 'mv-dsh-subworkspace-actions';
+          const add = document.createElement('button');
+          add.type = 'button';
+          add.className = 'mv-dsh-subworkspace-action';
+          add.textContent = '添加目录';
+          if (disabled) {
+            add.disabled = true;
+            add.title = '关闭关联工作区时不可添加目录';
+          }
+          add.addEventListener('click', async (event) => {
+            event.stopPropagation();
+            if (disabled) return;
+            add.disabled = true;
+            try {
+              // Resolve the picker at click time, not at apply time: on Alpha the
+              // `uiWorkspace` service (which provides pickDirectory) is created by
+              // the ui-workspace plugin's apply, whose longer inject chain routinely
+              // settles AFTER this plugin's apply — a captured adapter from then
+              // stays pickDirectory-less forever. By the time the user can click,
+              // boot's assertEntriesActive guarantees every fiber (including
+              // ui-workspace) is active, so a fresh resolve sees the service.
+              // Preview (rc.2) resolves through the same call and is unaffected.
+              const picker = compat.resolveWorkspaceClient(ctx)?.pickDirectory;
+              if (typeof picker !== 'function') {
+                throw new Error('当前 DSH 环境没有提供可用的目录选择器');
+              }
+              const selected = await picker();
+              if (selected) {
+                await request('/roots', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ primary, path: selected }),
+                });
+                await reload();
+                notify();
+              }
+            } catch (error) {
+              fail(error);
+            } finally {
+              add.disabled = false;
+            }
+          });
+          actions.appendChild(add);
+          host.appendChild(actions);
+        };
+
+        async function reload() {
+          try {
+            const data = await request(`/roots?primary=${encodeURIComponent(primary)}`);
+            if (!active()) return;
+            paint((Array.isArray(data.roots) ? data.roots : []).filter((root) => root && root.primary !== true));
+          } catch (error) {
+            fail(error);
+          }
+        }
+
+        if (provided) paint(provided);
+        else void reload();
+        return () => {
+          host.remove();
+          if (container.dataset.mvaRender === token) container.dataset.mvaRender = '';
+        };
+      }
+
       async function renderPopover(primary, panel = popover) {
         if (!panel || panel !== popover) return;
         panel.replaceChildren();
@@ -203,7 +390,6 @@ window.__ModuleLoader__.load({
         // children rows and 添加目录 button remain visible so the user sees
         // what was configured, but are rendered inert. This is purely a UI
         // affordance; it does not change the persistence model.
-        const disabled = !enabled;
         const enableRow = document.createElement('label');
         enableRow.className = 'mv-dsh-subworkspace-enable';
         const enableText = document.createElement('span');
@@ -239,98 +425,12 @@ window.__ModuleLoader__.load({
         enableRow.append(enableText, toggle);
         panel.appendChild(enableRow);
 
-        const children = data.roots.filter((root) => root.primary !== true);
-        if (children.length === 0) {
-          const empty = document.createElement('div');
-          empty.className = 'mv-dsh-subworkspace-empty';
-          empty.textContent = '尚未添加关联目录';
-          panel.appendChild(empty);
-        }
-        for (const root of children) {
-          const row = document.createElement('div');
-          row.className = 'mv-dsh-subworkspace-root';
-          const main = document.createElement('div');
-          main.className = 'mv-dsh-subworkspace-root-main';
-          const name = document.createElement('div');
-          name.className = 'mv-dsh-subworkspace-root-name';
-          name.textContent = `${root.label}${root.valid ? '' : ' · 不可用'}`;
-          const location = document.createElement('div');
-          location.className = 'mv-dsh-subworkspace-root-path';
-          location.textContent = root.error || root.path;
-          main.append(name, location);
-          const remove = document.createElement('button');
-          remove.type = 'button';
-          remove.className = 'mv-dsh-subworkspace-remove';
-          remove.setAttribute('aria-label', `移除 ${root.label}`);
-          remove.textContent = '×';
-          if (disabled) remove.disabled = true;
-          remove.addEventListener('click', async (event) => {
-            event.stopPropagation();
-            if (disabled) return;
-            remove.disabled = true;
-            try {
-              await request('/roots', {
-                method: 'DELETE',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ primary, workspaceId: root.id }),
-              });
-              await renderPopover(primary, panel);
-            } catch (error) {
-              remove.disabled = false;
-              if (panel === popover) panel.appendChild(errorRow(error instanceof Error ? error.message : String(error)));
-            }
-          });
-          row.append(main, remove);
-          if (disabled) {
-            row.dataset.disabled = 'true';
-            row.setAttribute('aria-disabled', 'true');
-          }
-          panel.appendChild(row);
-        }
-        const actions = document.createElement('div');
-        actions.className = 'mv-dsh-subworkspace-actions';
-        const add = document.createElement('button');
-        add.type = 'button';
-        add.className = 'mv-dsh-subworkspace-action';
-        add.textContent = '添加目录';
-        if (disabled) {
-          add.disabled = true;
-          add.title = '关闭关联工作区时不可添加目录';
-        }
-        add.addEventListener('click', async (event) => {
-          event.stopPropagation();
-          if (disabled) return;
-          add.disabled = true;
-          try {
-            // Resolve the picker at click time, not at apply time: on Alpha the
-            // `uiWorkspace` service (which provides pickDirectory) is created by
-            // the ui-workspace plugin's apply, whose longer inject chain routinely
-            // settles AFTER this plugin's apply — a captured adapter from then
-            // stays pickDirectory-less forever. By the time the user can click,
-            // boot's assertEntriesActive guarantees every fiber (including
-            // ui-workspace) is active, so a fresh resolve sees the service.
-            // Preview (rc.2) resolves through the same call and is unaffected.
-            const picker = compat.resolveWorkspaceClient(ctx)?.pickDirectory;
-            if (typeof picker !== 'function') {
-              throw new Error('当前 DSH 环境没有提供可用的目录选择器');
-            }
-            const selected = await picker();
-            if (selected) {
-              await request('/roots', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ primary, path: selected }),
-              });
-              await renderPopover(primary, panel);
-            }
-          } catch (error) {
-            if (panel === popover) panel.appendChild(errorRow(error instanceof Error ? error.message : String(error)));
-          } finally {
-            add.disabled = false;
-          }
+        renderChildrenManager(panel, primary, {
+          enabled,
+          writable: true,
+          children: data.roots.filter((root) => root.primary !== true),
+          onChange: () => { keepPopoverInViewport(); },
         });
-        actions.appendChild(add);
-        panel.appendChild(actions);
         if (panel === popover) {
           // Open-time position is final; content changes only clamp the box
           // back into the viewport if it would otherwise overflow, so the
@@ -426,8 +526,26 @@ window.__ModuleLoader__.load({
       window.addEventListener('scroll', keepPopoverInViewport, { capture: true, passive: true });
       scheduleMount();
 
+      // Page-scoped bridge for the mv-aide settings panel: ≥0.1.7 gives this
+      // browser half no settings-card host, so the manager's injected panel
+      // renders this domain's rows and directory manager through here. It is
+      // versioned, same-page only, and removed together with the fiber.
+      const bridge = {
+        version: 1,
+        listWorkspaces,
+        displayRows,
+        renderChildren: (container, primary, options) => renderChildrenManager(container, primary, options),
+      };
+      window.__MV_AIDE_SUBWORKSPACE__ = bridge;
+      try {
+        window.dispatchEvent(new CustomEvent('mv-aide:subworkspace-available', { detail: { version: 1 } }));
+      } catch {
+        // Older embedded browsers lack CustomEvent; the panel re-checks on render.
+      }
+
       ctx.effect?.(() => () => {
         disposed = true;
+        if (window.__MV_AIDE_SUBWORKSPACE__ === bridge) delete window.__MV_AIDE_SUBWORKSPACE__;
         unsubscribe?.();
         observer?.disconnect();
         document.removeEventListener('pointerdown', outsidePointer, true);

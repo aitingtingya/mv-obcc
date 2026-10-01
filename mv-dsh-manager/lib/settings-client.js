@@ -228,6 +228,10 @@ window.__ModuleLoader__.load({
 
     function install(ctx) {
       const policy = createPolicy();
+      // Plugin-owned settings first (see mv-dsh-settings/lib/store.js); the
+      // released DSH settings plane below is layered on top when it exists.
+      const unwatchStore = compat.watchMvAideSettings(NS, (values) => policy.publish(values));
+      ctx?.effect?.(() => unwatchStore, 'mv-dsh-manager: plugin-owned feature settings');
       if (typeof ctx?.inject !== 'function') return policy;
       ctx.inject(['slots', 'settingsScope'], (settingsCtx) => {
         const host = compat.resolveSettingsCardHost(settingsCtx);

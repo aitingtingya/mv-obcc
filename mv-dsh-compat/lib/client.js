@@ -31,16 +31,186 @@ export function resolveSessions(ctx) {
   return Object.freeze({ adapter: 'preview', sessions });
 }
 
+// --- Models settings: host controls this plugin augments ------------------
+//
+// `@deepseek-ai/dsh-client-ui-settings-models` renders every model row and
+// every editor action row from one CSS module, so each control keeps a stable
+// *local* class name behind a per-build hash (`<hash>_modelRow`). The rows and
+// footers are structurally identical across the preview baselines, which makes
+// those names the durable handle; the surrounding labels are not, because they
+// are localized copy the host is free to reword (the per-row disclosure went
+// from `容量 <n>` to `模型选项 <n>`, and the add-provider commit from
+// `创建提供方` to `创建提供商`). These three readers therefore match a hashed
+// class token by its local suffix and answer null whenever the shape is
+// anything other than the one they were verified against — never a guess.
+
+/** True when `element` carries a class token whose local name is `local`. */
+function hasLocalClass(element, local) {
+  if (!element || typeof element.getAttribute !== 'function') return false;
+  const className = element.getAttribute('class');
+  if (typeof className !== 'string' || className.length === 0) return false;
+  return className.split(/\s+/u).some((token) => token === local || token.endsWith(`_${local}`));
+}
+
+/**
+ * The disclosure control of one model entry — the button that expands the
+ * entry's native capacity and input-type fields.
+ *
+ * It is the entry's only `button[aria-expanded]`: the row's other control is
+ * the remove button, which carries no expansion state. An entry with none, or
+ * with more than one, is a shape this reader does not recognise and yields
+ * null rather than picking one.
+ * @param {Element | null | undefined} entry - one model entry element.
+ * @returns {Element | null} the disclosure button.
+ */
+export function modelRowDisclosure(entry) {
+  if (!entry?.querySelectorAll) return null;
+  const found = [...entry.querySelectorAll('button[aria-expanded]')];
+  return found.length === 1 ? found[0] : null;
+}
+
+/**
+ * The action row that closes one provider editor: the `div` holding its cancel
+ * and commit controls. Every editor renders exactly one, and the card's own
+ * row-level actions (`编辑` / `删除`, and the setup and add cards) live outside
+ * it, which is what keeps a structural read from mistaking one for another.
+ * @param {Element | null | undefined} root - an ancestor of the action row.
+ * @returns {Element | null} the action row element.
+ */
+export function editorActionRow(root) {
+  if (!root?.querySelectorAll) return null;
+  const found = [...root.querySelectorAll('div')].filter((node) => hasLocalClass(node, 'editorActions'));
+  return found.length === 1 ? found[0] : null;
+}
+
+const EDITOR_ACTION_KINDS = Object.freeze({ primary: 'primaryButton', secondary: 'secondaryButton' });
+
+/**
+ * One control of an editor's action row, addressed by role rather than by its
+ * localized caption: `primary` is the commit control (its caption varies with
+ * what the editor commits — a provider save, a new provider, a save-and-
+ * continue) and `secondary` is the cancel control.
+ * @param {Element | null | undefined} actionRow - the row from `editorActionRow`.
+ * @param {'primary' | 'secondary'} kind - which control of that row to read.
+ * @returns {Element | null} the button, or null when the row is absent or ambiguous.
+ */
+export function editorActionButton(actionRow, kind) {
+  const local = EDITOR_ACTION_KINDS[kind];
+  if (!actionRow?.querySelectorAll || !local) return null;
+  const found = [...actionRow.querySelectorAll('button')].filter((button) => hasLocalClass(button, local));
+  return found.length === 1 ? found[0] : null;
+}
+
+/**
+ * The commit control of the editor that contains `root`, or null.
+ * @param {Element | null | undefined} root - an ancestor of the action row.
+ * @returns {Element | null} the commit button.
+ */
+export function editorSaveButton(root) {
+  return editorActionButton(editorActionRow(root), 'primary');
+}
+
+/**
+ * The cancel control of the editor that contains `root`, or null.
+ * @param {Element | null | undefined} root - an ancestor of the action row.
+ * @returns {Element | null} the cancel button.
+ */
+export function editorCancelButton(root) {
+  return editorActionButton(editorActionRow(root), 'secondary');
+}
+
 export function resolveConversationImageEncoder(ctx) {
   const conversation = safeClientGet(ctx, 'conversation');
   if (!conversation || typeof conversation.encodeImage !== 'function') return null;
   return Object.freeze({ adapter: 'preview', conversation });
 }
 
+/**
+ * The conversation the main view currently shows, plus its `cwd`.
+ *
+ * Two released shapes carry that fact:
+ *   - ≤0.1.6: `SessionListState.current` on the list snapshot (a staging cell
+ *     the client controller owns).
+ *   - ≥0.1.7: `current` was removed. Navigation retains the on-screen session
+ *     as `{ source: 'mainView' }`, and the controller republishes each row's
+ *     live `retainedBy` counts, so the row with a positive `mainView` count is
+ *     the current one. DSH's own layout/session code reads exactly this way
+ *     (`Object.values(byId).find(row => (row.retainedBy.mainView ?? 0) > 0)`).
+ *
+ * Nothing else (route, localStorage, DOM) can answer this question, so a
+ * missing answer must stay `null` rather than guessed.
+ * @param ctx - client context exposing the `sessions` service.
+ * @returns `{ sessionId, cwd }`; `sessionId` is null when no session is staged.
+ */
+export function currentSessionState(ctx) {
+  const state = resolveSessions(ctx)?.sessions?.list?.getSnapshot?.();
+  const staged = state?.current;
+  if (typeof staged === 'string' && staged.length > 0) {
+    return { sessionId: staged, cwd: rowCwd(state, staged) };
+  }
+  const byId = state?.byId;
+  if (byId && typeof byId === 'object') {
+    for (const row of Object.values(byId)) {
+      if (!row || (row.retainedBy?.mainView ?? 0) <= 0) continue;
+      const id = typeof row.id === 'string' && row.id.length > 0 ? row.id : null;
+      if (id !== null) {
+        return { sessionId: id, cwd: typeof row.cwd === 'string' && row.cwd.length > 0 ? row.cwd : undefined };
+      }
+    }
+  }
+  return { sessionId: null, cwd: undefined };
+}
+
+/** Per-session `cwd` from a list snapshot, when the row carries one. */
+function rowCwd(state, sessionId) {
+  const cwd = state?.byId?.[sessionId]?.cwd;
+  return typeof cwd === 'string' && cwd.length > 0 ? cwd : undefined;
+}
+
 export function currentSessionId(ctx) {
-  const sessions = resolveSessions(ctx)?.sessions;
-  const current = sessions?.list?.getSnapshot?.()?.current;
-  return typeof current === 'string' && current.length > 0 ? current : null;
+  const sessionId = currentSessionState(ctx).sessionId;
+  return typeof sessionId === 'string' && sessionId.length > 0 ? sessionId : null;
+}
+
+/** Page event carrying one settings snapshot after a panel save. */
+export const MV_AIDE_SETTINGS_EVENT = 'mv-aide:settings-changed';
+
+/**
+ * Feed one mv-AIDE namespace's effective values into a browser policy.
+ *
+ * The values live in the plugin-owned document behind `/api/mv-aide/settings`
+ * (see mv-dsh-settings/lib/store.js): ≥0.1.7 has no client settings
+ * scope to read, so the panel's route is the only live source. A released DSH
+ * scope, when one exists (≤0.1.6), is layered on top by the caller.
+ * @param namespace - document namespace owned by the calling plugin.
+ * @param apply - receives one effective value object, plus that namespace's
+ *   whole entry so the caller can see `manage`/`writable` and refuse to publish
+ *   over a scope that a released DSH card owns; must ignore junk.
+ * @returns disposer removing the page listener.
+ */
+export function watchMvAideSettings(namespace, apply) {
+  const accept = (snapshot) => {
+    const entry = snapshot?.namespaces?.[namespace];
+    const values = entry?.values;
+    if (values && typeof values === 'object') apply(values, entry);
+  };
+  const refresh = async () => {
+    if (typeof window?.fetch !== 'function') return;
+    try {
+      const response = await window.fetch('/api/mv-aide/settings', { headers: { Accept: 'application/json' } });
+      if (!response.ok) return;
+      accept(await response.json());
+    } catch {
+      // A missing route (mv-dsh-manager absent) keeps the built-in defaults.
+    }
+  };
+  const onChanged = (event) => {
+    if (event?.detail && typeof event.detail === 'object') accept(event.detail);
+    else void refresh();
+  };
+  window?.addEventListener?.(MV_AIDE_SETTINGS_EVENT, onChanged);
+  void refresh();
+  return () => window?.removeEventListener?.(MV_AIDE_SETTINGS_EVENT, onChanged);
 }
 
 export function resolveWorkspaceClient(ctx) {
@@ -240,54 +410,68 @@ export function resolveComposer(ctx, doc = typeof document === 'undefined' ? und
   return buildComposer(resolveConversation(ctx, sessionId), doc);
 }
 
-function previewPending(ctx, sessionId) {
-  const sessions = resolveSessions(ctx)?.sessions;
-  const pending = sessions?.binding?.(sessionId)?.session?.getSnapshot?.()?.pending;
-  if (!Array.isArray(pending)) return null;
-  const interaction = pending.find((value) => {
-    if (value?.kind !== 'question' || typeof value.respond !== 'function') return false;
-    const questions = value.payload?.questions;
-    return Array.isArray(questions) && questions.length === 1
-      && questions[0]?.intent?.kind === 'plan-review' && questions[0]?.detail !== undefined;
-  });
-  if (!interaction) return null;
-  return Object.freeze({
-    adapter: 'preview', key: interaction.key ?? interaction,
-    interaction,
-    async cancel(response) {
-      const receipt = await interaction.respond(response);
-      if (receipt?.accepted === false) throw new Error(`plan review cancellation rejected: ${receipt.reason ?? 'unknown reason'}`);
-    },
-  });
-}
-
-function alphaPending(ctx, sessionId) {
+/**
+ * The pending plan-review request of one session, if any.
+ *
+ * ≥0.1.7 projects pending interactions per Session inside the unified status
+ * snapshot (`uiSession.sessionStatus`, a `ReadonlyMap<SessionId, SessionStatus>`
+ * whose entry carries `pendingInteraction`), and the plan-review carrier is a
+ * `PendingQuestion` with `kind === 'plan-review'` and a public `cancel()`.
+ * The earlier `uiSession.pendingInteractions` map is still honored first so an
+ * in-between Alpha build keeps working.
+ */
+function pendingPlanReview(ctx, sessionId) {
   const uiSession = safeClientGet(ctx, 'uiSession');
-  const snapshot = uiSession?.pendingInteractions?.getSnapshot?.();
-  const interaction = snapshot instanceof Map ? snapshot.get(sessionId) : snapshot?.get?.(sessionId);
-  if (interaction?.kind !== 'plan-review' || typeof interaction.cancel !== 'function') return null;
+  const legacy = uiSession?.pendingInteractions?.getSnapshot?.();
+  const fromLegacy = legacy instanceof Map ? legacy.get(sessionId) : legacy?.get?.(sessionId);
+  const status = uiSession?.sessionStatus?.getSnapshot?.();
+  const entry = status?.get?.(sessionId);
+  const interaction = fromLegacy ?? entry?.pendingInteraction;
+  const isPlanReview = interaction?.kind === 'plan-review';
+  if (!isPlanReview || typeof interaction?.cancel !== 'function') return null;
   return Object.freeze({
-    adapter: 'alpha', key: interaction.key ?? interaction, interaction,
+    adapter: entry?.pendingInteraction === interaction ? 'alpha' : 'preview',
+    key: interaction.key ?? interaction,
+    interaction,
     cancel: () => interaction.cancel(),
   });
 }
 
 export function resolvePendingPlanReview(ctx, sessionId = currentSessionId(ctx)) {
   if (!sessionId) return null;
-  return previewPending(ctx, sessionId) ?? alphaPending(ctx, sessionId);
+  return pendingPlanReview(ctx, sessionId);
 }
 
+/**
+ * The Chat projection `{ order, nodes }` of one conversation.
+ *
+ * ≥0.1.7 removed `snapshot.chat` from the Session face and made both `binding`
+ * and `scope` *borrow-only*: they answer for a generation something already
+ * retains (DSH's own main view retains the on-screen conversation), and
+ * `uiConversation.binding` throws for anything else. Only the current
+ * conversation is ever asked for here, and a missing projection must stay null
+ * rather than surface as a throw inside a key handler.
+ */
 export function resolveChatProjection(ctx, sessionId = currentSessionId(ctx)) {
   if (!sessionId) return null;
   const sessions = resolveSessions(ctx)?.sessions;
-  const binding = sessions?.binding?.(sessionId);
-  const preview = binding?.session?.getSnapshot?.()?.chat;
-  if (preview !== undefined) return Object.freeze({ adapter: 'preview', chat: preview, binding });
-  const actx = typeof sessions?.scope === 'function' ? sessions.scope(sessionId) : undefined;
-  const uiConversation = actx ? safeClientGet(actx, 'uiConversation') : undefined;
-  const target = uiConversation?.binding?.(sessionId)?.target?.('chat');
-  const chat = target?.getSnapshot?.();
-  return chat === undefined ? null : Object.freeze({ adapter: 'alpha', chat, binding, target });
+  let binding;
+  try {
+    binding = sessions?.binding?.(sessionId);
+  } catch {
+    binding = undefined;
+  }
+  try {
+    const preview = binding?.session?.getSnapshot?.()?.chat;
+    if (preview !== undefined) return Object.freeze({ adapter: 'preview', chat: preview, binding });
+    const actx = typeof sessions?.scope === 'function' ? sessions.scope(sessionId) : undefined;
+    const uiConversation = actx ? safeClientGet(actx, 'uiConversation') : undefined;
+    const target = uiConversation?.binding?.(sessionId)?.target?.('chat');
+    const chat = target?.getSnapshot?.();
+    return chat === undefined ? null : Object.freeze({ adapter: 'alpha', chat, binding, target });
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -311,8 +495,16 @@ export const CLIENT_COMPAT_API = Object.freeze({
   safeClientGet,
   resolveSettingsCardHost,
   resolveSessions,
+  modelRowDisclosure,
+  editorActionRow,
+  editorActionButton,
+  editorSaveButton,
+  editorCancelButton,
   resolveConversationImageEncoder,
+  currentSessionState,
   currentSessionId,
+  MV_AIDE_SETTINGS_EVENT,
+  watchMvAideSettings,
   resolveWorkspaceClient,
   resolveConversation,
   resolveComposerInput,

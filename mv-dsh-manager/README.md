@@ -11,9 +11,9 @@ The manager augments DSH 0.1.1's native model rows with the model-level fields a
 - all currently declared model-level compatibility switches and typed `chatTemplateKwargs`;
 - name and capacity overrides for built-in catalog models.
 
-`lib/model-capabilities-service.js` is the host-side settings/LLM boundary. It exposes only the two local `/api/mv-aide/model-capabilities*` routes, validates a fixed model-field vocabulary, writes custom models without dropping unknown fields, and uses `modelOverrides` for built-in models. `lib/model-capabilities-client.js` owns the browser controls and attaches them to the native model disclosure through stable accessibility labels rather than CSS-module hashes.
+`lib/model-capabilities-service.js` is the host-side settings/LLM boundary. It exposes only the two local `/api/mv-aide/model-capabilities*` routes, validates a fixed model-field vocabulary, writes custom models without dropping unknown fields, and uses `modelOverrides` for built-in models. `lib/model-capabilities-client.js` owns the browser controls and mounts each one inside the model row the user expanded, in the pane DSH reveals when that row is opened. It reaches the host through two structural readers in `mv-dsh-compat` — the row's expansion toggle and the editor's action row — rather than through DSH's captions or CSS-module hashes, because the host rewords its copy between releases (the row disclosure went from `容量 <n>` to `模型选项 <n>`, the add-provider commit from `创建提供方` to `创建提供商`) while the shape it renders did not change.
 
-Capability changes are staged behind DSH's native Save action. Native provider/model/credential changes commit first; after the editor closes, the client reads a fresh revision and applies all capability changes in one settings mutation. A native failure or cancel writes nothing, while a failed second stage keeps a retryable draft and reports the partial save explicitly.
+Capability changes are staged behind DSH's native Save action. Native provider/model/credential changes commit first; after the editor closes, the client reads a fresh revision and applies all capability changes in one settings mutation. A native failure or cancel writes nothing, while a failed second stage keeps a retryable draft and reports the partial save explicitly. A card whose provider the client cannot identify from the host's own facts offers an explicit chooser and writes nothing until one is picked.
 
 ## Obsidian file-drop receiver
 
@@ -38,6 +38,14 @@ Trigger guards: the feature policy (`historyRecallEnabled`), IME composition, op
 ## Clipboard fallback
 
 `lib/clipboard-client.js` keeps the DSH page on `navigator.clipboard` directly. Only a denied write (`NotAllowedError`) is delegated over the per-view authenticated, generation-rotated `postMessage` channel to the Obsidian host (`src/agent-integrations/dsh/runtime/clipboard-host.ts`), which completes the plain-text write through Electron's `clipboard.writeText`. The channel rides a transferred MessagePort for its full request/reply lifecycle, so moving the iframe between Obsidian windows does not change its identity. Only plain text is delegated; the clipboard is never read, and failures return real errors.
+
+## Plan-review exit gate
+
+`lib/plan-review-control.js` is the Host half of the plan review, and `lib/plan-review-client.js` is its browser half: Escape on the visible plan review sends the same cancellation carrier as DSH's own `PendingQuestion.cancel()`. DSH turns a cancelled "Chat about it" into a failing `exit_plan_mode` result whose text tells the model to stop and wait, but the loop would otherwise start one more step and spend a model call saying so.
+
+The Host gate suppresses that one step. It defers a session in the `tools/execute` waterfall when that result appears, rejects the next `agent/pre-step` while no real user message (`source.kind === 'user'`) is among the claimed messages, and ends the deferral on the session's `turn/end` — the dismissal's own turn, which the rejection terminates. The scope is deliberately that turn and nothing else: a goal round, a scheduled follow-up, and a queued plugin prompt each open a fresh turn, and an earlier defect held the deferral until a real user message was accepted, which silently swallowed a `/goal` round and let the goal-round driver pause the goal on every attempt. A real user message still passes the gate inside the dismissed turn, and a downstream rejection of that message keeps the gate closed for the rest of the turn.
+
+`test/plan-review-control.dsh-acceptance.test.js` runs the sequence against the pinned preview DSH with the real agent loop, tool registry, command runtime, goal service, and goal-round driver, and only mocks the model provider.
 
 ## Feature settings
 

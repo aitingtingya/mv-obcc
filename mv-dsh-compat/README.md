@@ -5,13 +5,13 @@ Pure compatibility boundary shared by mv-AIDE's Obsidian host and its managed De
 ## Invariants
 
 - No Cordis entry, no patch row, no settings card, no independent runtime state, and no LLM context injection — it is a library, not a fourth DSH plugin. Its integrity is folded into the diagnostics of the plugins that depend on it.
-- No import side effects; every export is a pure resolver.
-- Owns no `DSH_HOME` path knowledge and never depends on Obsidian `src/**` modules. Bridge packages and the Obsidian host pass their own contexts in.
+- No import side effects; every export is a pure resolver. Process-wide state that several plugins must share belongs in a separate library; this one is deliberately stateless, and `@mv-aide/mv-dsh-settings` exists for that reason.
+- Owns no `DSH_HOME` path knowledge and never depends on Obsidian `src/**` modules. Bridge packages and the Obsidian host pass their own contexts in. Its one path authority is `lib/paths.js`, which owns the user-level `~/.mv-aide/dsh/settings.json` location; `@mv-aide/mv-dsh-settings` reads it from here rather than spelling it again (规范三).
 - Zero runtime dependencies; third-party adapters (`@dsh-std/*`, `tui.dsh/*`, `dsh-ecosystem-spec`) are forbidden as production or source dependencies.
 
 ## Preview-first resolution
 
-DSH `0.1.5-rc.2` (preview) is the first-priority compatibility baseline. Every resolver probes structure first — the preview face is checked before any Alpha-only face (for example `resolvePresetOpener` returns `previewPresetOpener(ctx) ?? alphaPresetOpener(ctx)`). Version numbers are never used to decide whether an API can be called; they are used only for diagnostics, source evidence, and the acceptance matrix. A missing or unknown interface resolves to `null`/`undefined` so the caller can fail closed by disabling only that enhancement.
+DSH `0.2.0-rc.2` (preview) is the first-priority compatibility baseline. Every resolver probes structure first and picks a released face in order, never by version number — for example `resolvePresetOpener` returns the ≤0.1.6 directory adapter when `settingsController.openAgentPresetDirectory` exists, otherwise the ≥0.1.7 document adapter built on `openTextFile`, and `null` when neither is present. Version numbers are used only for diagnostics, source evidence, and the acceptance matrix. A missing or unknown interface resolves to `null`/`undefined` so the caller can fail closed by disabling only that enhancement.
 
 ## Exports
 
@@ -22,4 +22,4 @@ DSH `0.1.5-rc.2` (preview) is the first-priority compatibility baseline. Every r
 
 ## Test matrix
 
-`tests/fixtures/dsh-compat-matrix.json` pins the dual acceptance matrix — preview `0.1.5-rc.2` and alpha `0.1.6-alpha.1` with exact source commits — enforced by `npm run test:dsh-alpha` from the repository root. Adding a DSH version means extending that matrix with precise source evidence, never guessing at unknown interfaces.
+`tests/fixtures/dsh-compat-matrix.json` pins the acceptance matrix — preview `0.2.0-rc.2` with its exact tag and source commit, plus the historical alpha `0.1.6-alpha.1` row kept as source evidence. `npm run test:dsh-preview` from the repository root is the release gate: it verifies the preview row against the repository manifest and the installed `@deepseek-ai/dsh`, then runs the package and end-to-end suites. Alpha compatibility is no longer extended or tested (`npm run test:dsh-alpha` is historical and is not part of the release flow). Adding a DSH version means extending that matrix with precise source evidence, never guessing at unknown interfaces.

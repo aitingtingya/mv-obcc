@@ -85,10 +85,10 @@ window.__ModuleLoader__.load({
     }
 
     // ── Session plumbing ─────────────────────────────────────────────────
+    // `state.current` is gone on ≥0.1.7; the adapter owns that lookup.
     function currentSession(ctx) {
       const sessions = compat.resolveSessions(ctx)?.sessions;
-      const state = sessions?.list?.getSnapshot?.();
-      const sessionId = typeof state?.current === 'string' ? state.current : undefined;
+      const sessionId = compat.currentSessionId(ctx) ?? undefined;
       if (!sessionId) return undefined;
       const binding = sessions?.binding?.(sessionId);
       if (!binding) return undefined;
@@ -736,7 +736,10 @@ window.__ModuleLoader__.load({
       const list = sessions?.list;
       if (list && typeof list.subscribe === 'function') {
         const unsub = list.subscribe(() => {
-          const current = list.getSnapshot?.()?.current;
+          // Retention-driven on ≥0.1.7: a conversation switch republishes the
+          // list snapshot, so the same subscription still clears stale recall
+          // state for every session that is no longer on screen.
+          const current = compat.currentSessionId(ctx);
           for (const key of recallStates.keys()) {
             if (key !== current) clearRecallState(key);
           }

@@ -43,6 +43,7 @@
   },
   "peerDependencies": {
     "@mv-aide/mv-dsh-compat": "*",
+    "@mv-aide/mv-dsh-settings": "*",
     "@deepseek-ai/schemastery": "*"
   }
 }

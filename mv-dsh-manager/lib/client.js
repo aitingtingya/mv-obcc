@@ -442,9 +442,35 @@ window.__ModuleLoader__.load({
       }
     }
 
+    /**
+     * Resolve the session-scoped context a picker flow lives on. ≥0.1.7 made
+     * `scope()` borrow-only, so an already-retained (on-screen) conversation
+     * answers directly; otherwise this plugin retains one reference for its own
+     * lifetime rather than silently skipping the patch.
+     */
+    function sessionScopeFor(sessionId, ctx, sessions) {
+      if (typeof sessions?.scope !== 'function') return undefined;
+      const borrowed = sessions.scope(sessionId);
+      if (borrowed) return borrowed;
+      if (typeof sessions?.retain !== 'function') return undefined;
+      try {
+        const reference = sessions.retain(sessionId, { source: 'mv-aide' });
+        ctx?.effect?.(() => () => {
+          try {
+            reference?.release?.();
+          } catch {
+            // Already released by the controller generation ending.
+          }
+        }, 'mv-dsh-manager: command picker session reference');
+        return sessions.scope(sessionId);
+      } catch {
+        return undefined;
+      }
+    }
+
     function prepareSession(sessionId, ctx, commandUi) {
       const sessions = ctx.get('sessions');
-      const actx = sessions && typeof sessions.scope === 'function' ? sessions.scope(sessionId) : undefined;
+      const actx = sessionScopeFor(sessionId, ctx, sessions);
       if (!actx) return;
       const controller = commandUi.popupFor(actx);
       if (!controller || patchedControllers.has(controller)) return;
@@ -503,7 +529,7 @@ window.__ModuleLoader__.load({
 
     function controllerFor(sessionId, ctx) {
       const sessions = ctx.get('sessions');
-      const actx = sessions && typeof sessions.scope === 'function' ? sessions.scope(sessionId) : undefined;
+      const actx = sessionScopeFor(sessionId, ctx, sessions);
       return actx ? ctx.commandUi.popupFor(actx) : undefined;
     }
 
@@ -775,19 +801,16 @@ window.__ModuleLoader__.load({
     // ── Automatic hint-driven decoration ─────────────────────────────────
     const hintDecorations = new Map();
 
+    // The current conversation is a compat concern: ≥0.1.7 no longer publishes
+    // `SessionListState.current`, and its replacement (the main view's
+    // `retainedBy.mainView` row) is resolved inside the adapter.
     function currentSessionId(ctx) {
-      const current = compat.currentSessionId(ctx);
-      if (current) return current;
       try {
-        const sessions = ctx.get('sessions');
-        const list = sessions && sessions.list;
-        const state = list && typeof list.getSnapshot === 'function' ? list.getSnapshot() : undefined;
-        if (state && typeof state.current === 'string') return state.current;
-        if (state && Array.isArray(state.items) && state.items.length > 0) return state.items[0].sessionId;
+        return compat.currentSessionId(ctx) ?? undefined;
       } catch {
         // Session list may not be ready yet; the sync retry will catch it.
+        return undefined;
       }
-      return undefined;
     }
 
     /**

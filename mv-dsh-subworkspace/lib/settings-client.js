@@ -216,8 +216,9 @@ window.__ModuleLoader__.load({
     // exposes the workspace service on the reflection slot 'workspaces'
     // (dsh-client-runtime ctx.reflect.provide('workspaces', this)). Its list
     // snapshot has { items: [{workspaceId, path, sessionIds, ...}],
-    // recentWorkspaceId }; the sessions service exposes a list snapshot with
-    // `current`. Current-path selection order: current session's workspace →
+    // recentWorkspaceId }; the current session identity comes from the compat
+    // adapter (≥0.1.7 no longer exposes `SessionListState.current`).
+    // Current-path selection order: current session's workspace →
     // recent workspace → null (nothing connected yet).
     const useWorkspaceList = (ctx) => {
       // getSnapshot must return a stable reference: useSyncExternalStore
@@ -229,10 +230,9 @@ window.__ModuleLoader__.load({
       const cached = { key: null, result: { items: [], currentPath: null } };
       const getSnapshot = () => {
         const workspaces = compat.resolveWorkspaceClient(ctx)?.workspaces;
-        const sessions = compat.resolveSessions(ctx)?.sessions;
         const snap = workspaces?.list?.getSnapshot?.();
         const items = snap && Array.isArray(snap.items) ? snap.items : [];
-        const currentSessionId = sessions?.list?.getSnapshot?.()?.current;
+        const currentSessionId = compat.currentSessionId(ctx);
         if (cached.key !== null && cached.key[0] === snap && cached.key[1] === currentSessionId) return cached.result;
         const byCurrent = currentSessionId == null ? undefined
           : items.find((w) => Array.isArray(w?.sessionIds) && w.sessionIds.includes(currentSessionId));
@@ -556,7 +556,14 @@ window.__ModuleLoader__.load({
       });
     }
 
-    module.exports = { install, __test: { normalizePath, buildDisplayRows, persistEnabledDrafts } };
+    // The row projection is also consumed outside this card: the browser half
+    // exposes it on the page-scoped bridge so the mv-aide settings page (≥0.1.7,
+    // where this card has no host slot) shows the very same rows.
+    module.exports = {
+      install,
+      displayRows: { normalizePath, buildDisplayRows },
+      __test: { normalizePath, buildDisplayRows, persistEnabledDrafts },
+    };
     return module.exports;
   },
 });

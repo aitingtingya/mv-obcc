@@ -10,11 +10,19 @@ export const inject = ['tools'];
 
 export function apply(ctx) {
   const store = new SubworkspaceStore();
-  installSubworkspaceSettings(ctx, store);
+  // Settings resolve asynchronously (plugin-owned document first, released DSH
+  // scope adopted when it exists); the store keeps its empty state until then.
+  const settingsReady = installSubworkspaceSettings(ctx, store).catch((error) => {
+    ctx.logger?.warn?.(`mv-dsh-subworkspace settings unavailable: ${error instanceof Error ? error.message : String(error)}`);
+    return () => {};
+  });
   installSubworkspaceServer(ctx, store);
   // The `workspace` tool and `_workspace` decoration are registered per agent
   // scope inside the dispatcher so a disabled primary resolves neither; no
   // global `workspace` registration exists to mask.
   const disposeDispatcher = installToolDispatcher(ctx, store);
   ctx.effect?.(() => disposeDispatcher, 'mv-dsh-subworkspace: tool dispatcher');
+  ctx.effect?.(() => () => {
+    void settingsReady.then((detach) => detach());
+  }, 'mv-dsh-subworkspace: settings store');
 }

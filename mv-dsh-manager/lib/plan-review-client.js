@@ -24,7 +24,10 @@ window.__ModuleLoader__.load({
     });
     const compat = require('@mv-aide/mv-dsh-compat/client/manager');
 
+    // The authoritative carrier selection lives in the compat adapter; this
+    // predicate only has to stay truthful for the two released shapes.
     function isPlanReviewInteraction(interaction) {
+      if (interaction?.kind === 'plan-review') return typeof interaction.cancel === 'function';
       if (interaction?.kind !== 'question' || typeof interaction.respond !== 'function') return false;
       const questions = interaction.payload?.questions;
       if (!Array.isArray(questions) || questions.length !== 1) return false;

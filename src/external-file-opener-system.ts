@@ -1357,7 +1357,35 @@ async function prepareMacOpener(owner: ExternalFileOpenerOwner): Promise<void> {
     macJxaWrapper(),
     "utf8",
   );
+  // osacompile signs the bundle, and the plist plus the icns resources written
+  // above land after that signature. Re-sign last so the bundle stays
+  // executable; amfid rejects a bundle whose recorded plist no longer matches.
+  await execFile("/usr/bin/codesign", [
+    "--force",
+    "--deep",
+    "--sign",
+    "-",
+    appPath,
+  ]);
   owner.appPath = appPath;
+}
+
+/**
+ * Render the Launch Services activation script for one extension set.
+ *
+ * Only the file roles are claimed. `kLSRolesAll` also takes the Shell role,
+ * which let the system offer this file opener as a default web browser; holding
+ * Viewer and Editor keeps every document open on this app while leaving that
+ * role to whoever actually provides "Open With".
+ */
+export function macActivationScript(extensions: readonly string[]): string {
+  return `ObjC.import("CoreServices");
+const bundle = $("${EXTERNAL_FILE_OPENER_BUNDLE_ID}");
+const extensions = ${JSON.stringify(extensions)};
+for (const ext of extensions) {
+  const uti = $.UTTypeCreatePreferredIdentifierForTag($.kUTTagClassFilenameExtension, $(ext), null);
+  if (uti) $.LSSetDefaultRoleHandlerForContentType(uti, $.kLSRolesViewer | $.kLSRolesEditor, bundle);
+}`;
 }
 
 async function activateMacOpener(owner: ExternalFileOpenerOwner): Promise<void> {
@@ -1365,14 +1393,12 @@ async function activateMacOpener(owner: ExternalFileOpenerOwner): Promise<void> 
   const lsregister =
     "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister";
   await execFile(lsregister, ["-f", appPath]);
-  const script = `ObjC.import("CoreServices");
-const bundle = $("${EXTERNAL_FILE_OPENER_BUNDLE_ID}");
-const extensions = ${JSON.stringify(owner.extensions)};
-for (const ext of extensions) {
-  const uti = $.UTTypeCreatePreferredIdentifierForTag($.kUTTagClassFilenameExtension, $(ext), null);
-  if (uti) $.LSSetDefaultRoleHandlerForContentType(uti, $.kLSRolesAll, bundle);
-}`;
-  await execFile("/usr/bin/osascript", ["-l", "JavaScript", "-e", script]);
+  await execFile("/usr/bin/osascript", [
+    "-l",
+    "JavaScript",
+    "-e",
+    macActivationScript(owner.extensions),
+  ]);
 }
 
 async function installMacOpener(owner: ExternalFileOpenerOwner): Promise<void> {
@@ -2261,7 +2287,8 @@ async function migrateLegacyMacFileOpener(
       throw new Error(t("macOS 旧打开器 app 缺失，且新入口未完成。"));
     }
   }
-  if (!ownerAppBundleIsUsable(migratedOwner)) {
+  const rebuiltApp = !ownerAppBundleIsUsable(migratedOwner);
+  if (rebuiltApp) {
     await (runtime.prepareMacOpener ?? prepareMacOpener)(migratedOwner);
   }
   if (!ownerAppBundleIsUsable(migratedOwner)) {
@@ -2270,7 +2297,11 @@ async function migrateLegacyMacFileOpener(
   copyValidLegacyRuntime();
   const canonicalOwnerCreated = writeCanonicalOwnerForMigration(migratedOwner);
   try {
-    await (runtime.activateMacOpener ?? activateMacOpener)(migratedOwner);
+    // A check must not re-register: an app already in place keeps the LaunchServices
+    // entry it was installed with. Only a bundle this migration rebuilt is re-registered.
+    if (rebuiltApp) {
+      await (runtime.activateMacOpener ?? activateMacOpener)(migratedOwner);
+    }
   } catch (error) {
     removeCanonicalOwnerForFailedMigration(
       migratedOwner,

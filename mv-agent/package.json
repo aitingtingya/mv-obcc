@@ -33,6 +33,7 @@
   },
   "peerDependencies": {
     "@mv-aide/mv-dsh-compat": "*",
+    "@mv-aide/mv-dsh-settings": "*",
     "@deepseek-ai/cordis": "*",
     "@deepseek-ai/dsh-commands": "*",
     "@deepseek-ai/dsh-llm": "*",

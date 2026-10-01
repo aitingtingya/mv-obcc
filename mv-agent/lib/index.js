@@ -52,6 +52,7 @@ import {
   terminalAwareToolDefinitions,
 } from './terminal-tools.js';
 import { createUserMessage } from '@deepseek-ai/dsh-llm/message';
+import { pluginMessageSource } from '../../mv-dsh-compat/lib/host.js';
 
 export const name = 'mv-agent';
 export const inject = ['commands', 'tools'];
@@ -287,7 +288,18 @@ export function apply(ctx, config = {}) {
     const persistence = ctx.get('sessionPersistence');
     if (persistence && typeof persistence.list === 'function') {
       const stored = await persistence.list().catch(() => []);
-      header = stored.find((candidate) => candidate?.id === sessionId);
+      // Every stored row is a detached snapshot whose identity and cwd ride
+      // the header (`{ header: { id, cwd, ... }, revision }`) in both the
+      // preview and ≥0.1.7 releases; the flat shape is tolerated defensively.
+      for (const candidate of Array.isArray(stored) ? stored : []) {
+        const candidateHeader = candidate?.header;
+        const candidateId = typeof candidateHeader?.id === 'string'
+          ? candidateHeader.id
+          : candidate?.id;
+        if (candidateId !== sessionId) continue;
+        header = candidateHeader ?? candidate;
+        break;
+      }
     }
     const cwd = fixedWorkspace ?? header?.cwd ?? report.cwd;
     if (typeof cwd !== 'string' || cwd.length === 0) return null;
@@ -598,7 +610,7 @@ export function apply(ctx, config = {}) {
     return `Obsidian @提及：${filePath || '（未知文件）'}${range}`;
   }
 
-  function buildSelectionMessage(params, includeBreadcrumb = true, includeLocation = true, includeText = true) {
+  function buildSelectionMessage(agent, params, includeBreadcrumb = true, includeLocation = true, includeText = true) {
     return createUserMessage({
       content: [
         {
@@ -606,7 +618,7 @@ export function apply(ctx, config = {}) {
           text: renderSelectionContext(params, includeBreadcrumb, includeLocation, includeText),
         },
       ],
-      source: { kind: 'plugin', plugin: PLUGIN_SOURCE },
+      source: pluginMessageSource(agent, PLUGIN_SOURCE),
     });
   }
 
@@ -665,6 +677,7 @@ export function apply(ctx, config = {}) {
     const includeLocation = supervisor.pushLocation !== false;
     const includeText = supervisor.pushSelection !== false;
     const message = buildSelectionMessage(
+      agent,
       snapshot.params,
       includeBreadcrumb,
       includeLocation,
@@ -811,7 +824,7 @@ export function apply(ctx, config = {}) {
           agent.steer(
             createUserMessage({
               content: [{ type: 'text', text: renderMentionContext(params) }],
-              source: { kind: 'plugin', plugin: PLUGIN_SOURCE },
+              source: pluginMessageSource(agent, PLUGIN_SOURCE),
             }),
           );
         },

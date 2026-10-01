@@ -21,6 +21,8 @@ import dshManagerPluginsService from "inline:../../../../mv-dsh-manager/lib/plug
 import dshManagerPluginToggleState from "inline:../../../../mv-dsh-manager/lib/plugin-toggle-state.js";
 import dshManagerSkillsService from "inline:../../../../mv-dsh-manager/lib/skills-service.js";
 import dshManagerPresetsService from "inline:../../../../mv-dsh-manager/lib/presets-service.js";
+import dshManagerPresetRows from "inline:../../../../mv-dsh-manager/lib/preset-rows.js";
+import dshManagerLegacyMigration from "inline:../../../../mv-dsh-manager/lib/legacy-migration.js";
 import dshManagerBridgeService from "inline:../../../../mv-dsh-manager/lib/bridge-service.js";
 import dshManagerPaths from "inline:../../../../mv-dsh-manager/lib/paths.js";
 import dshManagerClient from "inline:../../../../mv-dsh-manager/lib/client.js";
@@ -52,6 +54,13 @@ import compatObsidian from "inline:../../../../mv-dsh-compat/lib/obsidian.js";
 import compatObsidianTypes from "inline:../../../../mv-dsh-compat/lib/obsidian.d.ts?text";
 import compatHost from "inline:../../../../mv-dsh-compat/lib/host.js";
 import compatClient from "inline:../../../../mv-dsh-compat/lib/client.js";
+import compatPaths from "inline:../../../../mv-dsh-compat/lib/paths.js";
+import compatLock from "inline:../../../../mv-dsh-compat/lib/lock.js";
+import compatLockTypes from "inline:../../../../mv-dsh-compat/lib/lock.d.ts?text";
+
+import settingsPackageJson from "inline:../../../../mv-dsh-settings/package.json?text";
+import settingsStore from "inline:../../../../mv-dsh-settings/lib/store.js";
+import settingsStoreTypes from "inline:../../../../mv-dsh-settings/lib/store.d.ts?text";
 
 /** Plain shared library: no Cordis entry, client module, settings card, or patch row. */
 export const MV_DSH_COMPAT_FILES: Readonly<Record<string, string>> = {
@@ -62,6 +71,25 @@ export const MV_DSH_COMPAT_FILES: Readonly<Record<string, string>> = {
   "lib/obsidian.d.ts": compatObsidianTypes,
   "lib/host.js": compatHost,
   "lib/client.js": compatClient,
+  "lib/paths.js": compatPaths,
+  "lib/lock.js": compatLock,
+  "lib/lock.d.ts": compatLockTypes,
+};
+
+/**
+ * The plugin-owned settings document every managed plugin shares.
+ *
+ * It is a second shared library rather than a file inside the compatibility
+ * library because 规范十一.3 keeps `@mv-aide/mv-dsh-compat` free of independent
+ * state: the three plugins must agree on one document, one write queue and one
+ * namespace registry, and that state has to live in a module they all resolve
+ * to the same instance of. Like the compatibility library it is not a plugin —
+ * no Cordis entry, no patch row, no settings card.
+ */
+export const MV_DSH_SETTINGS_FILES: Readonly<Record<string, string>> = {
+  "package.json": settingsPackageJson,
+  "lib/store.js": settingsStore,
+  "lib/store.d.ts": settingsStoreTypes,
 };
 
 function bundledClientCompat(moduleId: string): string {
@@ -100,6 +128,8 @@ export const MV_DSH_MANAGER_PLUGIN_FILES: Readonly<Record<string, string>> = {
   "lib/plugin-toggle-state.js": dshManagerPluginToggleState,
   "lib/skills-service.js": dshManagerSkillsService,
   "lib/presets-service.js": dshManagerPresetsService,
+  "lib/preset-rows.js": dshManagerPresetRows,
+  "lib/legacy-migration.js": dshManagerLegacyMigration,
   "lib/bridge-service.js": dshManagerBridgeService,
   "lib/paths.js": dshManagerPaths,
   "lib/plan-review-control.js": dshManagerPlanReviewControl,

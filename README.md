@@ -52,9 +52,9 @@ mv-agent 把 DSH Web 界面直接放进 Obsidian。视图底部状态栏显示�
 - 上传前图片缩放，以及模型图片输入、思考等级和兼容参数设置；
 - 默认关闭、可按通道开放的库外工具与被动上下文。
 
-mv-AIDE 完整注入会管理 mv-agent、mv-dsh-manager 和独立的 mv-dsh-subworkspace 三个 DSH 插件。DSH 原生「插件配置」中显示三者的配置卡；子工作区还可从工作区行内管理，不依赖 IDE 桥接。文件拖入与 IDE 桥接也保持独立，桥接关闭时仍可向当前 DSH 草稿添加本机文件。
+mv-AIDE 完整注入会管理 mv-agent、mv-dsh-manager 和独立的 mv-dsh-subworkspace 三个 DSH 插件。DSH 原生「插件配置」中显示三者的配置卡；0.1.7 起该插槽不再存在，改由侧栏 ⚙️「mv-aide插件设置」页承载同一组开关与目录管理。子工作区还可从工作区行内管理，不依赖 IDE 桥接。文件拖入与 IDE 桥接也保持独立，桥接关闭时仍可向当前 DSH 草稿添加本机文件。
 
-三个 DSH 插件共用内部兼容库 `@mv-aide/mv-dsh-compat`，以同时保持 DSH 预览版的既有行为并适配 Alpha 接口。该库不是第四个 DSH 插件，不增加设置卡或独立运行状态；未识别的接口只会关闭对应增强，不影响 DSH 和其他功能。
+三个 DSH 插件共用两个内部库：`@mv-aide/mv-dsh-compat` 把版本专属的 Host/Client 接口集中到一处，`@mv-aide/mv-dsh-settings` 承载三者共享的设置文档与命名空间注册表。两者都不是第四个 DSH 插件，不增加设置卡；未识别的接口只会关闭对应增强，不影响 DSH 和其他功能。
 
 需要 Web 鉴权的 DSH 会把登录 Cookie 交给系统安全存储加密，仅用于重开 Obsidian 后接回同一个本机实例；启动 URL 中的 token 不落盘。系统安全存储不可用或登录态失效时，mv-agent 会要求重新授权，不会另起同数据目录的后台争抢会话。
 

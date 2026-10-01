@@ -72,7 +72,7 @@ mv-AIDE 是 Obsidian 桌面端 AI IDE 插件。八个主设置分区保持功能
 
 「文件内AI助手」内部顺序固定为「API提供商」、「划词助手」、「行内补全」。三个子区初始均折叠；展开状态只在当前设置页会话中记忆，不写入新配置字段。这一层级只重组设置入口：提供商、划词和行内补全仍使用原有设置、默认值、保存方式和运行链路。
 
-界面语言默认中文。持久化设置保存在当前 vault 的插件数据中，不跨 vault 自动同步。
+界面语言默认中文。本插件自身的设置持久化在当前 vault 的插件数据中，不跨 vault 自动同步；注入到 DSH 的三个 mv-AIDE 插件（mv-agent / mv-dsh-manager / mv-dsh-subworkspace）的设置是 DSH 侧配置，保存在用户级 `~/.mv-aide/dsh/settings.json`，跨 vault 与跨 DSH profile 共享（见「数据与网络边界」）。
 
 <a id="ide-bridge"></a>
 ## 1. IDE 桥接
@@ -251,11 +251,17 @@ DSH 模型通过 `workspace` 工具列出根 ID、切换当前会话的临时默
 
 ### DSH 原生插件配置
 
-DSH 的「设置 → 插件配置」使用官方 `settings.plugin.item` 插槽显示三张默认折叠卡。设置写入当前 DSH profile，点击「保存」后实时生效；「恢复继承」删除当前字段的用户层覆盖。无用户配置、设置服务未加载或旧 DSH 没有配置插槽时，三个插件按全部默认值运行，即与升级前一致。
+在仍提供官方卡槽的 DSH（≤0.1.6）上，「设置 → 插件配置」用 `settings.plugin.item` 插槽显示三张默认折叠卡。设置写入当前 DSH profile，点击「保存」后实时生效；「恢复继承」删除当前字段的用户层覆盖。无用户配置、设置服务未加载或 DSH 没有配置插槽时，三个插件按全部默认值运行，即与升级前一致。
+
+0.1.7 起 DSH 用配置表单（configuration forms）取代插件自建设置卡：`settings.register` 与 `settings.plugin.item` 卡槽都不再存在（`settings` 服务只剩 `configure`/`describe`/`update`），因此三张插件设置改由 ⚙️「mv-aide插件设置」页承载：每个命名空间是一张**默认折叠**的卡片（折叠状态在本页面生命周期内保持），卡片摘要显示已开启项数；mv-dsh-subworkspace 段与原生卡内容对齐（逐主工作区行、当前/已覆盖标记、可展开的目录管理与增删）。该页的开关与目录增删一律走插件端点，因此与工作区行内弹层共用同一份状态；子工作区开关按草稿保存，目录增删即时提交（见下文 mv-dsh-subworkspace）。
+
+该页与其它半边之间只有一个页内桥：子工作区的浏览器半边导出 `window.__MV_AIDE_SUBWORKSPACE__`，带 `version`（当前 `1`），只暴露该领域的 `displayRows` / `renderChildren` 渲染入口，不暴露 DSH 内部对象、服务实例或任何求值入口。⚙️ 页面校验 `version`，不匹配或桥缺失时按「未加载子工作区客户端模块」降级为只读呈现；工作区行内弹层与 ⚙️ 页面共用同一份状态，因为两者都走同一个插件端点。
+
+侧栏的三个入口彼此独立：✨「技能」只由「技能管理界面」决定，🤖「子智能体」只由「子智能体预设管理界面」决定，⚙️「mv-aide插件设置」不受这两个开关（以及「插件管理界面」）影响，始终可用。任一开关都不会移除另一个入口或工作台。
 
 - **mv-agent**：可配置 IDE 桥接、IDE 工具、七项终端增强、Obsidian Diff、`/mv-aide`、Vault 工作区自动进入、选区上下文、`@` 提及、选区上限（256–50000，默认 6000）、防抖（50–3000ms，默认 400ms）、悬浮侧栏和图片适配。桥接关闭只暂停依赖桥接的子项，不改写子项值；`/mv-aide`、悬浮侧栏和图片适配不以桥接连接为前提。
-- **mv-dsh-manager**：可分别开关插件、技能、子智能体预设管理界面，模型能力编辑器，Obsidian 文件拖入，递归命令选择器，计划审核增强，以及历史消息上键召回（默认开）；选择器叶子上限为 10–200（默认 50）。关闭管理界面不会停用已安装的插件、技能或预设，Host API、运行身份和注入完整性检查始终保留。
-- **mv-dsh-subworkspace**：按主工作区列出已关联目录并逐行提供「开启子工作区」开关；关闭后该主工作区的关联目录不再投影，子目录的增删仍由工作区行内弹层完成，保存经插件端点串行提交以免陈旧快照覆盖目录列表。
+- **mv-dsh-manager**：可分别开关插件、技能、子智能体预设管理界面，模型能力编辑器，Obsidian 文件拖入，递归命令选择器，计划审核增强，以及历史消息上键召回（默认开）；选择器叶子上限为 10–200（默认 50）。关闭管理界面不会停用已安装的插件、技能或预设，Host API、运行身份和注入完整性检查始终保留。三个管理界面开关互不联动，也都不影响 ⚙️ 设置页。
+- **mv-dsh-subworkspace**：按 DSH 主工作区逐行列出（含已不在工作区列表、仅存配置的行），每行有「开启子工作区」开关与可展开的目录管理：展开后列出已关联目录（标注不可用原因）、逐条移除、并可用 DSH 目录选择器「添加目录」；开关关闭时目录行与添加按钮保留但呈灰显停用。开关是**草稿**：改动后卡片标题出现「未保存」，由卡片底部「保存」逐行提交 `/enabled`（不整表覆盖，避免陈旧快照覆盖目录列表），「放弃修改」丢弃草稿；保存失败时保留草稿并在卡片内列出失败行。目录增删经 `/roots` 端点即时串行提交，不进入草稿。
 - **authority**：DSH profile 开关是 DSH 侧最终门控；对同时存在 Vault 设置的终端和图片能力，实际结果取两侧交集。不同 DSH profile 互不影响，该配置不按对话或 Vault 分别保存。
 
 ### 文件拖入
@@ -322,7 +328,7 @@ mv-agent 设置页和 DSH Web 页注入的 `/api/mv-aide/*` 管理面板现在�
 
 - **导入插件**：包名或本地路径统一交给 `dsh plugin --profile web add <spec>`；本地路径会转换为绝对 `file:<路径>` 规格。成功后必须能从 web profile 的 manifest 确认 package 依赖，这条链路不会额外追加 patch 行。`dsh plugin add` 不可用或返回失败时会直接报错，**不做 `file:` 热加载回退**。对 package 插件的卸载同样通过 `dsh plugin remove` 并校验 manifest。
 - **克隆预设**：复制源预设的完整目录（含 `agent.cordis.yml` 与本地插件文件），新预设可被 DSH 正常挂载；不再写 DSH 不认识的 `base:` 字段。
-- **预设启停**：用户预设通过目录改名（`<id>.disabled`）真实隐藏/恢复，不再写 DSH 不读取的 `disabled:` 字段；系统预设不支持停用。
+- **预设启停**：用户预设通过 profile 用户层 `$DSH_HOME/profiles/web/cordis.patch.yml` 中该预设投影行（`agent-preset-<id>`）的 `disabled` 布尔真实隐藏/恢复，启用时还会把旧的 `<id>.disabled` 目录移回规范根；不改写预设元数据里 DSH 不读取的 `disabled:` 字段。DSH 官方层提供的预设（`writable: false`）既不能停用也不能删除，工作台对这些行只显示「系统内置」标记与说明，不渲染任何操作按钮。
 - **新建技能**：写入 `$DSH_HOME/skills`（DSH 的真实用户技能根，热监听），并强制名称符合 DSH 的 kebab-case 规则，避免生成被静默忽略的技能。
 
 ### Diff 即权限
@@ -946,6 +952,7 @@ mv-agent 与 IDE 桥接共享同一条本地桥接服务、同一组公共工具
 | `<vault>/mv-aide/dsh/` | mv-agent 仓库级安装的 Node.js、DSH 和 pnpm 运行时 |
 | `$DSH_HOME/profiles/web/`（默认 `~/.dsh/profiles/web/`） | DSH web profile、patch 层以及三个独立受管插件：`@mv-aide/mv-agent` / `@mv-aide/mv-dsh-manager` / `@mv-aide/mv-dsh-subworkspace` |
 | `~/.mv-aide/ide/` | 统一 IDE 桥接发现注册表（mv-AIDE 权威 lock 文件） |
+| `~/.mv-aide/dsh/settings.json` | 注入到 DSH 的三个 mv-AIDE 插件的设置（按 `mv-agent` / `mv-dsh-manager` / `mv-dsh-subworkspace` 命名空间分区），用户级共享、不随 vault 或 DSH profile 变化；目录 `0700`、文件 `0600`，临时文件+rename 原子写入并保留一个 `settings.json.bak`；文件损坏时隔离为 `settings.json.corrupt-<时间戳>` 并按默认值继续运行。读写实现与命名空间注册表位于共享库 `@mv-aide/mv-dsh-settings`（与 `@mv-aide/mv-dsh-compat` 同级物化进 profile，两者都不是 DSH 插件），路径 authority 仍只位于 `mv-dsh-compat/lib/paths.js`；`$DSH_HOME/profiles/web` 的写入（含 `cordis.patch.yml` 预设投影）与插件注入共用同一把跨进程锁 |
 | `~/.mv-aide/dsh/bridge-selection.json` | dsh 各会话的桥接选择（持久化，会话键分区） |
 | `~/.mv-aide/dsh/web-auth/` | 经系统安全存储加密的 DSH Web 登录 Cookie，按精确 loopback origin（端点）隔离，旧版按运行身份区分的记录自动迁移；不含启动令牌、明文 Cookie 或聊天内容；安全存储不可用时不明文落盘 |
 | `~/.mv-aide/file-opener/` | 默认打开器当前 authority：owner、runtime、wrapper、helper 和图标；不包含 OS 系统关联数据库 |
@@ -978,7 +985,7 @@ API Key 明文存储在 `data.json`，可能随 vault 备份或同步传播。�
 - 状态栏显隐：`hideObsidianStatusBar`；
 - mv-agent 插件自动更新：`dsh.autoUpdatePlugins`、`dsh.autoRestartAfterPluginUpdate`。
 
-`@mv-aide/mv-dsh-subworkspace` 的关联根列表持久化在 DSH profile 的插件 runtime 存储中（与 `mv-agent`、`mv-dsh-manager` 同级）；当前会话的默认根**不写入磁盘**，DSH 重启后始终回到主根。
+`@mv-aide/mv-dsh-subworkspace` 的关联根、每个主工作区的启用开关和目录列表以插件自有存储 `~/.mv-aide/dsh/settings.json` 的 `mv-dsh-subworkspace` 命名空间为权威（与 `mv-agent`、`mv-dsh-manager` 同级）；在仍提供设置命名空间注册的 ≤0.1.6 上，DSH 侧命名空间继续作为编辑面，并在它确实持有权威数据时把有效文档镜像进该文件（空段不会覆盖插件自有数据），因此升级到 ≥0.1.7 不会丢失关联目录。当前会话的默认根**不写入磁盘**，DSH 重启后始终回到主根。
 
 <a id="troubleshooting"></a>
 ## 故障排查
