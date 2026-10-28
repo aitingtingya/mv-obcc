@@ -424,7 +424,15 @@ function validateChange(raw) {
   if (new Set(unset).size !== unset.length || new Set(compatUnset).size !== compatUnset.length) {
     throw new ModelCapabilitiesError('Unset field lists cannot contain duplicates.');
   }
-  return { kind, modelId, set: cleanSet, unset, compat, compatUnset };
+  const expected = isPlainObject(raw.expected) ? raw.expected : undefined;
+  const compatExpected = isPlainObject(raw.compatExpected) ? raw.compatExpected : undefined;
+  for (const field of Object.keys(expected || {})) {
+    if (!allowed.has(field)) throw new ModelCapabilitiesError(`Unsupported expected field: ${field}`);
+  }
+  for (const field of Object.keys(compatExpected || {})) {
+    if (!COMPAT_FIELDS.includes(field)) throw new ModelCapabilitiesError(`Unsupported expected compat field: ${field}`);
+  }
+  return { kind, modelId, set: cleanSet, unset, compat, compatUnset, expected, compatExpected };
 }
 
 function validateDeepseekModalities(value) {
@@ -495,7 +503,11 @@ function validateDeepseekChange(raw) {
   if (unset.some((field) => Object.prototype.hasOwnProperty.call(cleanSet, field))) {
     throw new ModelCapabilitiesError('A field cannot be set and unset in the same change.');
   }
-  return { kind, modelId, set: cleanSet, unset };
+  const expected = isPlainObject(raw.expected) ? raw.expected : undefined;
+  for (const field of Object.keys(expected || {})) {
+    if (!DEEPSEEK_MODEL_FIELD_SET.has(field)) throw new ModelCapabilitiesError(`Unsupported expected field: ${field}`);
+  }
+  return { kind, modelId, set: cleanSet, unset, expected };
 }
 
 /** Refuse a change that would add image limits to a model being made text-only. */
@@ -569,6 +581,11 @@ function transactionForDeepseek(descriptor, changes) {
     if (!isPlainObject(current)) {
       throw new ModelCapabilitiesError(`Model ${change.modelId} is not a plain object.`);
     }
+    for (const [field, value] of Object.entries(change.expected || {})) {
+      if (JSON.stringify(current[field] ?? null) !== JSON.stringify(value)) {
+        throw new ModelCapabilitiesError(`Model field ${field} changed while editing. Reopen the provider and retry.`, 409, 'model-field-conflict');
+      }
+    }
     assertDeepseekImageCoherence(current, change.set);
     models[index] = patchDeepseekModel(current, change);
   }
@@ -612,6 +629,21 @@ function isConflict(error) {
 
 function transactionFor(descriptor, provider, changes) {
   const userProfile = profileAt(descriptor, 'user', provider) ?? {};
+  for (const change of changes) {
+    const current = change.kind === 'custom'
+      ? userProfile.models?.find(model => model.id === change.modelId)
+      : userProfile.modelOverrides?.[change.modelId];
+    for (const [field, value] of Object.entries(change.expected || {})) {
+      if (JSON.stringify(current?.[field] ?? null) !== JSON.stringify(value)) {
+        throw new ModelCapabilitiesError(`Model field ${field} changed while editing. Reopen the provider and retry.`, 409, 'model-field-conflict');
+      }
+    }
+    for (const [field, value] of Object.entries(change.compatExpected || {})) {
+      if (JSON.stringify(current?.compat?.[field] ?? null) !== JSON.stringify(value)) {
+        throw new ModelCapabilitiesError(`Model compat field ${field} changed while editing. Reopen the provider and retry.`, 409, 'model-field-conflict');
+      }
+    }
+  }
   const customChanges = changes.filter((change) => change.kind === 'custom');
   const builtinChanges = changes.filter((change) => change.kind === 'builtin');
   if (customChanges.length > 0 && builtinChanges.length > 0) {

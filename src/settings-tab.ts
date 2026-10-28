@@ -38,6 +38,7 @@ import {
   externalFileExtensionUniverse,
 } from "./external-file-opener";
 import { t } from "./i18n";
+import { confirmAction } from "./ui/confirm-modal";
 import { renderLintSetting } from "./lint/lint-settings-ui";
 import { renderMvRunSetting } from "./terminal/mv-run-settings-ui";
 import { renderRegexScopeSetting } from "./regex-replace/regex-replace-settings-ui";
@@ -83,6 +84,8 @@ import {
   resolvePythonCommand,
 } from "./terminal/terminal-process";
 import { createRememberedSettingsSubsection } from "./settings-subsection";
+import { LazySettingsBody } from "./ui/lazy-settings-body";
+import { SettingsEditorDrafts } from "./ui/settings-editor-drafts";
 
 type MainSettingsSectionId =
   | "ide"
@@ -835,6 +838,9 @@ export class MvAideIdeSettingTab extends PluginSettingTab {
   private readonly openSourceAssistProfileIds = new Set<string>();
   private readonly openVimSourceProfileExtensions = new Set<string>();
   private readonly sourceAssistSnippetEditors: EditorView[] = [];
+  private readonly editorDrafts = new SettingsEditorDrafts();
+  private readonly lazyBodies = new Set<LazySettingsBody>();
+  private readonly sectionBodies = new Map<MainSettingsSectionId, LazySettingsBody>();
   private forceOpenSection: MainSettingsSectionId | null = null;
   private forceOpenSourceAssistProfileId: string | null = null;
   private defaultOpenerOperationPending = false;
@@ -846,6 +852,8 @@ export class MvAideIdeSettingTab extends PluginSettingTab {
   display(): void {
     const rootEl = this.containerEl;
     const previousScrollTop = this.captureSettingsUiState(rootEl);
+    this.disposeLazyBodies(rootEl);
+    this.sectionBodies.clear();
     this.destroySourceAssistSnippetEditors();
     rootEl.empty();
     addHeading(rootEl, this.plugin.manifest.name || "mv-AIDE");
@@ -864,35 +872,52 @@ export class MvAideIdeSettingTab extends PluginSettingTab {
           }),
       );
 
-    const ideEl = this.createSettingsSection(rootEl, "ide", t("IDE桥接"));
-    const mvAgentEl = this.createSettingsSection(rootEl, "mv-agent", t("mv-agent"));
-    this.plugin.dshFeature?.renderSection(mvAgentEl, () =>
-      this.rerenderSettings("mv-agent"),
-    );
-    const inDocumentAiEl = this.createSettingsSection(
+    this.createSettingsSection(rootEl, "ide", t("IDE桥接"));
+    this.createSettingsSection(rootEl, "mv-agent", t("mv-agent"));
+    this.createSettingsSection(
       rootEl,
       "in-document-ai",
       t("文件内AI助手"),
     );
-    const terminalEl = this.createSettingsSection(rootEl, "terminal", t("终端"));
-    const sourceAssistEl = this.createSettingsSection(
+    this.createSettingsSection(rootEl, "terminal", t("终端"));
+    this.createSettingsSection(
       rootEl,
       "source-assist",
       t("源码编写辅助"),
     );
-    const vimEl = this.createSettingsSection(rootEl, "vim", t("Vim 增强"));
-    const externalFileOpenerEl = this.createSettingsSection(
+    this.createSettingsSection(rootEl, "vim", t("Vim 增强"));
+    this.createSettingsSection(
       rootEl,
       "external-file-opener",
       t("默认文件打开器"),
     );
-    const filesystemBrowserEl = this.createSettingsSection(
+    this.createSettingsSection(
       rootEl,
       "filesystem-browser",
       t("文件系统与浏览器"),
     );
-    const gitEl = this.createSettingsSection(rootEl, "git", "Git");
-    let containerEl = ideEl;
+    this.createSettingsSection(rootEl, "git", "Git");
+    this.restoreSettingsScrollTop(rootEl, previousScrollTop);
+    this.forceOpenSection = null;
+  }
+
+  private renderSettingsSection(id: MainSettingsSectionId, body: HTMLElement): void {
+    switch (id) {
+      case "ide": this.renderIdeSection(body); break;
+      case "mv-agent":
+        this.plugin.dshFeature?.renderSection(body, () => this.rerenderSettings("mv-agent"));
+        break;
+      case "in-document-ai": this.renderInDocumentAiSection(body); break;
+      case "terminal": this.renderTerminalSection(body); break;
+      case "source-assist": this.renderSourceAssistSettings(body); break;
+      case "vim": this.renderVimSettings(body); break;
+      case "external-file-opener": this.renderExternalFileOpenerSettings(body); break;
+      case "filesystem-browser": this.renderFilesystemBrowserSettings(body); break;
+      case "git": this.renderGitSettings(body); break;
+    }
+  }
+
+  private renderIdeSection(containerEl: HTMLElement): void {
 
     const universalMcpEl = this.createIdeSubsection(
       containerEl,
@@ -929,21 +954,10 @@ export class MvAideIdeSettingTab extends PluginSettingTab {
     );
     this.renderIdeMcpToolSettings(activeEl);
 
-    containerEl = sourceAssistEl;
-    this.renderSourceAssistSettings(containerEl);
+  }
 
-    containerEl = vimEl;
-    this.renderVimSettings(containerEl);
-
-    containerEl = externalFileOpenerEl;
-    this.renderExternalFileOpenerSettings(containerEl);
-
-    containerEl = filesystemBrowserEl;
-    this.renderFilesystemBrowserSettings(containerEl);
-
-    this.renderGitSettings(gitEl);
-
-    containerEl = createRememberedSettingsSubsection(
+  private renderInDocumentAiSection(inDocumentAiEl: HTMLElement): void {
+    let containerEl = createRememberedSettingsSubsection(
       inDocumentAiEl,
       "providers",
       t("API提供商"),
@@ -999,9 +1013,9 @@ export class MvAideIdeSettingTab extends PluginSettingTab {
 
     if (this.plugin.settings.llm.enabled) {
       new Setting(containerEl)
-        .setName(t("网页视图注入右键菜单（实验性）"))
+        .setName(t("网页视图右键菜单（实验性）"))
         .setDesc(
-          t("因网页视图跨域隔离，Obsidian 读不到网页内的选区。开启后会向网页注入脚本，在网页内显示我们的右键菜单（会屏蔽网页原生右键，部分站点可能失效）。关闭时网页视图改用快捷键调用。"),
+          t("优先在 Obsidian 原生右键菜单中追加模板，保留已有菜单项。旧版缺少可适配接口时回退为页内注入菜单（会屏蔽网页原生右键，部分站点可能失效）。关闭后仍可使用已绑定的快捷键。"),
         )
         .addToggle((toggle) =>
           toggle
@@ -1011,7 +1025,7 @@ export class MvAideIdeSettingTab extends PluginSettingTab {
               await this.plugin.saveData(this.plugin.settings);
               new Notice(
                 value
-                  ? t("已开启网页右键菜单，将在网页内注入。")
+                  ? t("已开启网页右键菜单，优先使用原生菜单。")
                   : t("已关闭，网页视图请用快捷键调用。"),
                 4000,
               );
@@ -1093,8 +1107,10 @@ export class MvAideIdeSettingTab extends PluginSettingTab {
     });
     this.renderInlineCompletion(containerEl);
 
+  }
+
+  private renderTerminalSection(containerEl: HTMLElement): void {
     // ---- 💻 终端设置 ----
-    containerEl = terminalEl;
     containerEl.createEl("div", {
       text: t("💻 终端设置"),
       cls: "mv-aide-section-title setting-item-name",
@@ -1275,6 +1291,12 @@ export class MvAideIdeSettingTab extends PluginSettingTab {
         button
           .setButtonText(t("更新依赖"))
           .onClick(async () => {
+            const confirmed = await confirmAction(this.app, {
+              title: t("确认更新 Windows 终端依赖？"),
+              message: t("将使用检测到的 Python 通过 pip 安装/升级 pywinpty 包，这会改动该 Python 环境。"),
+              confirmText: t("更新依赖"),
+            });
+            if (!confirmed) return;
             button.setDisabled(true);
             try {
               new Notice(t("正在后台更新 Windows 依赖 (pywinpty)..."));
@@ -1295,27 +1317,56 @@ export class MvAideIdeSettingTab extends PluginSettingTab {
             }
           })
       );
-    this.restoreSettingsScrollTop(rootEl, previousScrollTop);
-    this.forceOpenSection = null;
   }
 
   hide(): void {
+    this.disposeLazyBodies(this.containerEl);
+    this.sectionBodies.clear();
     this.destroySourceAssistSnippetEditors();
+    this.editorDrafts.clear();
   }
 
   private rerenderSettings(openSection?: MainSettingsSectionId): void {
     if (openSection) {
       this.openSettingsSections.add(openSection);
+      const section = this.sectionBodies.get(openSection);
+      if (section) {
+        const scrollTop = this.captureSettingsUiState(this.containerEl);
+        (section.body.parentElement as HTMLDetailsElement).open = true;
+        this.disposeLazyBodies(section.body);
+        this.destroySourceAssistSnippetEditors(section.body);
+        section.invalidate();
+        this.restoreSettingsScrollTop(this.containerEl, scrollTop);
+        return;
+      }
       this.forceOpenSection = openSection;
     }
     this.display();
   }
 
-  private destroySourceAssistSnippetEditors(): void {
-    for (const editor of this.sourceAssistSnippetEditors) {
+  private destroySourceAssistSnippetEditors(container?: HTMLElement): void {
+    for (let i = this.sourceAssistSnippetEditors.length - 1; i >= 0; i--) {
+      const editor = this.sourceAssistSnippetEditors[i];
+      if (container && !container.contains(editor.dom)) continue;
+      this.editorDrafts.capture(editor);
       editor.destroy();
+      this.sourceAssistSnippetEditors.splice(i, 1);
     }
-    this.sourceAssistSnippetEditors.length = 0;
+  }
+
+  private disposeLazyBodies(container: HTMLElement): void {
+    for (const lazy of this.lazyBodies) {
+      if (lazy.body === container || !container.contains(lazy.body)) continue;
+      lazy.dispose();
+      this.lazyBodies.delete(lazy);
+    }
+  }
+
+  private lazyBody(body: HTMLElement, render: () => void): LazySettingsBody {
+    const lazy = new LazySettingsBody(body, render);
+    this.lazyBodies.add(lazy);
+    lazy.renderIfOpen();
+    return lazy;
   }
 
   private captureSettingsUiState(containerEl: HTMLElement): number {
@@ -1355,14 +1406,15 @@ export class MvAideIdeSettingTab extends PluginSettingTab {
     containerEl: HTMLElement,
     id: MainSettingsSectionId,
     title: string,
-  ): HTMLElement {
-    return createCollapsibleSettingsSection(
+  ): void {
+    const body = createCollapsibleSettingsSection(
       containerEl,
       id,
       title,
       this.sectionShouldOpen(id),
       (nextId, open) => this.setSectionOpen(nextId, open),
     );
+    this.sectionBodies.set(id, this.lazyBody(body, () => this.renderSettingsSection(id, body)));
   }
 
   private sectionShouldOpen(id: MainSettingsSectionId): boolean {
@@ -1476,6 +1528,12 @@ export class MvAideIdeSettingTab extends PluginSettingTab {
         )
         .addButton((button) =>
           button.setButtonText(t("轮换令牌")).onClick(async () => {
+            const confirmed = await confirmAction(this.app, {
+              title: t("确认轮换协议令牌？"),
+              message: t("轮换后，所有客户端配置中保存的旧令牌将立即失效，需要逐一重新复制配置。"),
+              confirmText: t("轮换令牌"),
+            });
+            if (!confirmed) return;
             await this.plugin.rotateUniversalMcpToken();
             new Notice(t("mv-AIDE 协议令牌已轮换，请更新所有客户端配置。"));
             this.rerenderSettings("ide");
@@ -2088,6 +2146,12 @@ export class MvAideIdeSettingTab extends PluginSettingTab {
         )
         .addButton((button) =>
           button.setButtonText(t("清理注册")).onClick(async () => {
+            const confirmed = await confirmAction(this.app, {
+              title: t("确认清理 MCP 注册？"),
+              message: t("将从已注册的 AI 客户端配置中移除 mv-AIDE 的 MCP 注册，之后可按“重新注册”恢复。"),
+              confirmText: t("清理注册"),
+            });
+            if (!confirmed) return;
             await this.plugin.cleanMcpRegistration();
             new Notice(this.plugin.mcpStatus);
             this.rerenderSettings("ide");
@@ -2559,6 +2623,12 @@ export class MvAideIdeSettingTab extends PluginSettingTab {
             .setButtonText(t("删除此网页"))
             .setClass("mod-warning")
             .onClick(async () => {
+              const confirmed = await confirmAction(this.app, {
+                title: t("确认删除网页“{name}”？", { name: page.name }),
+                message: t("将从自定义网页列表中删除该网页及其功能区按钮配置。"),
+                confirmText: t("删除"),
+              });
+              if (!confirmed) return;
               const next = this.plugin.settings.customWebPages.filter(
                 (_entry, entryIndex) => entryIndex !== index,
               );
@@ -2642,6 +2712,12 @@ export class MvAideIdeSettingTab extends PluginSettingTab {
           .setCta()
           .setDisabled(!settings.enabled || this.defaultOpenerOperationPending)
           .onClick(async () => {
+            const confirmed = await confirmAction(this.app, {
+              title: t("确认一键注入默认打开器？"),
+              message: t("将把 mv-AIDE 注册为受支持文件类型的系统默认打开器（向系统目录写入符号链接或注册表项）。"),
+              confirmText: t("一键注入"),
+            });
+            if (!confirmed) return;
             const result = await this.runDefaultOpenerOperation(
               () => this.plugin.installDefaultFileOpener(),
             );
@@ -2692,6 +2768,12 @@ export class MvAideIdeSettingTab extends PluginSettingTab {
           .setButtonText(t("清理"))
           .setDisabled(this.defaultOpenerOperationPending)
           .onClick(async () => {
+            const confirmed = await confirmAction(this.app, {
+              title: t("确认清理默认打开器注册？"),
+              message: t("将移除 mv-AIDE 的系统默认打开器注册（符号链接/注册表项）。"),
+              confirmText: t("清理"),
+            });
+            if (!confirmed) return;
             const result = await this.runDefaultOpenerOperation(
               () => this.plugin.cleanupDefaultFileOpener(),
             );
@@ -2715,6 +2797,12 @@ export class MvAideIdeSettingTab extends PluginSettingTab {
           .setButtonText(t("迁移到仓库目录"))
           .setDisabled(!this.plugin.externalFileStorageNeedsMigration())
           .onClick(async () => {
+            const confirmed = await confirmAction(this.app, {
+              title: t("确认迁移外部文件目录？"),
+              message: t("将把外部文件目录迁移到当前仓库的 mv-aide 目录，批量移动文件并更新全部映射。"),
+              confirmText: t("迁移"),
+            });
+            if (!confirmed) return;
             button.setDisabled(true);
             try {
               const summary = await this.plugin.migrateExternalFileStorage();
@@ -2740,6 +2828,12 @@ export class MvAideIdeSettingTab extends PluginSettingTab {
           .setTooltip(t("仅手动触发：先同步本机受管副本，再把安全收敛的副本迁移回真实符号链接"))
           .setDisabled(!settings.enabled)
           .onClick(async () => {
+            const confirmed = await confirmAction(this.app, {
+              title: t("确认重试并迁移符号链接？"),
+              message: t("将先同步本机受管副本，再把安全收敛的副本迁移回真实符号链接。"),
+              confirmText: t("迁移"),
+            });
+            if (!confirmed) return;
             button.setDisabled(true);
             try {
               await this.plugin.retryManagedCopiesAsSymlinks();
@@ -2988,6 +3082,12 @@ export class MvAideIdeSettingTab extends PluginSettingTab {
           .setButtonText(t("迁移旧配置"))
           .setDisabled(true)
           .onClick(async () => {
+            const confirmed = await confirmAction(this.app, {
+              title: t("确认迁移旧 Vim 配置？"),
+              message: t("将把旧 .vimrc 的内容复制到新的全局配置路径，部分来源的旧文件会在迁移成功后删除。"),
+              confirmText: t("迁移"),
+            });
+            if (!confirmed) return;
             try {
               const migrated = await this.plugin.migrateLegacyVimConfigFile();
               new Notice(
@@ -3161,6 +3261,12 @@ export class MvAideIdeSettingTab extends PluginSettingTab {
       deleteButton.addEventListener("click", async (event) => {
         event.preventDefault();
         event.stopPropagation();
+        const confirmed = await confirmAction(this.app, {
+          title: t("确认删除源码类型“.{ext}”？", { ext: profile.extension }),
+          message: t("将删除该源码类型的全部配置，并取消本插件对 .{ext} 后缀的识别。", { ext: profile.extension }),
+          confirmText: t("删除"),
+        });
+        if (!confirmed) return;
         this.plugin.settings.sourceAssist.profiles.splice(idx, 1);
         this.openSourceAssistProfileIds.delete(profile.id);
         this.openVimSourceProfileExtensions.delete(profile.extension);
@@ -3170,7 +3276,10 @@ export class MvAideIdeSettingTab extends PluginSettingTab {
     }
 
     const wrap = details.createDiv({ cls: "mv-aide-source-assist-profile-body" });
+    this.lazyBody(wrap, () => this.renderSourceAssistProfileBody(wrap, profile, idx));
+  }
 
+  private renderSourceAssistProfileBody(wrap: HTMLElement, profile: SourceAssistProfile, idx: number): void {
     if (profile.extension !== "md") {
       this.renderSourceAssistProfileHighlightThemeSetting(wrap, profile, idx);
     }
@@ -3219,10 +3328,10 @@ export class MvAideIdeSettingTab extends PluginSettingTab {
               await this.plugin.saveSourceAssistSettings();
             }),
         );
-      this.renderTexMathCustomFormatsSetting(wrap, profile, idx);
+      this.renderTexMathCustomFormatsSetting(wrap, profile);
     }
 
-    this.renderSourceAssistSnippetsEditor(wrap, profile, idx);
+    this.renderSourceAssistSnippetsEditor(wrap, profile);
     this.renderSourceAssistHotkeyIntro(wrap);
 
     this.renderSourceAssistHotkeySetting(
@@ -3345,6 +3454,12 @@ export class MvAideIdeSettingTab extends PluginSettingTab {
             .setButtonText(t("删除"))
             .setWarning()
             .onClick(async () => {
+              const confirmed = await confirmAction(this.app, {
+                title: t("确认删除高亮主题“{name}”？", { name: theme.name }),
+                message: t("将删除该主题，使用它的源码类型会回退为「跟随 Obsidian」。"),
+                confirmText: t("删除"),
+              });
+              if (!confirmed) return;
               removeSourceHighlightThemeReferences(
                 this.plugin.settings.sourceAssist,
                 theme.id,
@@ -3366,7 +3481,6 @@ export class MvAideIdeSettingTab extends PluginSettingTab {
   private renderSourceAssistSnippetsEditor(
     containerEl: HTMLElement,
     profile: SourceAssistProfile,
-    idx: number,
   ): void {
     const setting = new Setting(containerEl)
       .setDesc(
@@ -3384,7 +3498,7 @@ export class MvAideIdeSettingTab extends PluginSettingTab {
     const view = createSourceAssistSnippetsEditor({
       containerEl: editorWrap,
       footerEl: footer,
-      initialValue: profile.snippets,
+      initialValue: this.editorDrafts.value(`${profile.id}:snippets`, profile.snippets),
       validate: async (value) => {
         const snippetVariables = await getDefaultSourceAssistSnippetVariables();
         await parseSnippets(
@@ -3393,19 +3507,19 @@ export class MvAideIdeSettingTab extends PluginSettingTab {
         );
       },
       onValidChange: async (value) => {
-        const target = this.plugin.settings.sourceAssist.profiles[idx];
+        const target = this.plugin.settings.sourceAssist.profiles.find((candidate) => candidate.id === profile.id);
         if (!target || target.snippets === value) return;
         target.snippets = value;
         await this.plugin.saveSourceAssistSettings();
       },
     });
     this.sourceAssistSnippetEditors.push(view);
+    this.editorDrafts.attach(`${profile.id}:snippets`, view);
   }
 
   private renderTexMathCustomFormatsSetting(
     containerEl: HTMLElement,
     profile: SourceAssistProfile,
-    idx: number,
   ): void {
     const setting = new Setting(containerEl)
       .setName(t("自定义数学环境（行内 / 行间）"))
@@ -3424,18 +3538,19 @@ export class MvAideIdeSettingTab extends PluginSettingTab {
     const view = createSourceAssistSnippetsEditor({
       containerEl: editorWrap,
       footerEl: footer,
-      initialValue: profile.texMathFormats,
+      initialValue: this.editorDrafts.value(`${profile.id}:math-formats`, profile.texMathFormats),
       validate: async (value) => {
         parseTexMathFormats(value);
       },
       onValidChange: async (value) => {
-        const target = this.plugin.settings.sourceAssist.profiles[idx];
+        const target = this.plugin.settings.sourceAssist.profiles.find((candidate) => candidate.id === profile.id);
         if (!target || target.texMathFormats === value) return;
         target.texMathFormats = value;
         await this.plugin.saveSourceAssistSettings();
       },
     });
     this.sourceAssistSnippetEditors.push(view);
+    this.editorDrafts.attach(`${profile.id}:math-formats`, view);
   }
 
   private renderSourceAssistHotkeySetting(
@@ -3648,6 +3763,12 @@ export class MvAideIdeSettingTab extends PluginSettingTab {
       })
       .addButton((btn) =>
         btn.setButtonText(t("恢复默认")).onClick(async () => {
+          const confirmed = await confirmAction(this.app, {
+            title: t("确认恢复默认补全提示词主体？"),
+            message: t("当前修改的内容将被内置默认值覆盖。"),
+            confirmText: t("恢复默认"),
+          });
+          if (!confirmed) return;
           cfg.systemPromptBody = DEFAULT_INLINE_SYSTEM_PROMPT_BODY;
           await this.saveInlineCompletionSettings();
           this.rerenderSettings("in-document-ai");
@@ -3691,6 +3812,12 @@ export class MvAideIdeSettingTab extends PluginSettingTab {
       })
       .addButton((btn) =>
         btn.setButtonText(t("恢复默认")).onClick(async () => {
+          const confirmed = await confirmAction(this.app, {
+            title: t("确认恢复默认无需补全指令？"),
+            message: t("当前修改的内容将被内置默认值覆盖。"),
+            confirmText: t("恢复默认"),
+          });
+          if (!confirmed) return;
           cfg.noCompletionPrompt = DEFAULT_INLINE_NO_COMPLETION_PROMPT;
           await this.saveInlineCompletionSettings();
           this.rerenderSettings("in-document-ai");
@@ -3715,6 +3842,12 @@ export class MvAideIdeSettingTab extends PluginSettingTab {
       })
       .addButton((btn) =>
         btn.setButtonText(t("恢复默认")).onClick(async () => {
+          const confirmed = await confirmAction(this.app, {
+            title: t("确认恢复默认拒绝后重生成指令？"),
+            message: t("当前修改的内容将被内置默认值覆盖。"),
+            confirmText: t("恢复默认"),
+          });
+          if (!confirmed) return;
           cfg.rejectPrompt = DEFAULT_INLINE_REJECT_PROMPT;
           await this.saveInlineCompletionSettings();
           this.rerenderSettings("in-document-ai");
@@ -4018,6 +4151,12 @@ export class MvAideIdeSettingTab extends PluginSettingTab {
         .setIcon("trash")
         .setTooltip(t("删除该提供商"))
         .onClick(async () => {
+          const confirmed = await confirmAction(this.app, {
+            title: t("确认删除提供商“{name}”？", { name: provider.name }),
+            message: t("将删除该提供商及其全部模型；引用它的模板与行内补全配置会被清空绑定。"),
+            confirmText: t("删除"),
+          });
+          if (!confirmed) return;
           // Clear templates that referenced this provider.
           for (const t of this.plugin.settings.llm.templates) {
             if (t.providerId === provider.id) {
@@ -4121,20 +4260,25 @@ export class MvAideIdeSettingTab extends PluginSettingTab {
         const p = this.plugin.settings.llm.providers[idx];
         if (!p) return;
         const removed = p.models[midx];
+        if (!removed) return;
+        const confirmed = await confirmAction(this.app, {
+          title: t("确认删除模型“{name}”？", { name: removed.name }),
+          message: t("引用该模型的模板与行内补全配置会被清空绑定。"),
+          confirmText: t("删除"),
+        });
+        if (!confirmed) return;
         p.models.splice(midx, 1);
         // Clear templates pointing at the removed model.
-        if (removed) {
-          for (const t of this.plugin.settings.llm.templates) {
-            if (t.providerId === provider.id && t.modelId === removed.id) {
-              t.modelId = null;
-            }
+        for (const t of this.plugin.settings.llm.templates) {
+          if (t.providerId === provider.id && t.modelId === removed.id) {
+            t.modelId = null;
           }
-          if (
-            this.plugin.settings.inlineCompletion.providerId === provider.id &&
-            this.plugin.settings.inlineCompletion.modelId === removed.id
-          ) {
-            this.plugin.settings.inlineCompletion.modelId = null;
-          }
+        }
+        if (
+          this.plugin.settings.inlineCompletion.providerId === provider.id &&
+          this.plugin.settings.inlineCompletion.modelId === removed.id
+        ) {
+          this.plugin.settings.inlineCompletion.modelId = null;
         }
         await this.plugin.saveData(this.plugin.settings);
         this.plugin.refreshInlineCompletion();
@@ -4252,7 +4396,7 @@ export class MvAideIdeSettingTab extends PluginSettingTab {
           );
         }
       }
-      menu.showAtMouseEvent(evt as MouseEvent);
+      menu.showAtMouseEvent(evt);
     });
 
     // 思考下拉（默认/开/关/自定义），紧跟「选择模型」之后。选「自定义」展开 JSON 框。
@@ -4338,6 +4482,12 @@ export class MvAideIdeSettingTab extends PluginSettingTab {
         .setIcon("trash")
         .setTooltip(t("删除该模板"))
         .onClick(async () => {
+          const confirmed = await confirmAction(this.app, {
+            title: t("确认删除模板“{label}”？", { label: tpl.label }),
+            message: t("删除后该模板的划词菜单项与快捷键将一并失效。"),
+            confirmText: t("删除"),
+          });
+          if (!confirmed) return;
           const [removed] = this.plugin.settings.llm.templates.splice(idx, 1);
           if (
             removed &&

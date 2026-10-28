@@ -479,7 +479,7 @@ export function installToolDispatcher(ctx, store, options = {}) {
   const excludedNames = new Set([WORKSPACE_TOOL_NAME, ...(options.excludeToolNames ?? [])]);
   const agentTools = new WeakMap();
   const decoratedAgents = new Set();
-  const projection = options.projection ?? new WorkspaceRuntimeProjection();
+  const projection = options.projection ?? new WorkspaceRuntimeProjection(ctx);
   const batchExecutions = new WeakSet();
   // Session-key → boolean primary-disabled cache. Populated by refreshAgent via
   // the store (which holds the live settings value) so the three interceptors

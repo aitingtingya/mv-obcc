@@ -1,6 +1,7 @@
 import { Modal, Notice, Setting, setIcon, type App } from "obsidian";
 import type MvAideIdePlugin from "../../../../main";
 import { t } from "../../../i18n";
+import { confirmAction } from "../../../ui/confirm-modal";
 
 interface DshPluginEntry {
   id: string;
@@ -66,46 +67,6 @@ class ImportPluginModal extends Modal {
     this.submitted = true;
     this.close();
     void this.onImport(clean);
-  }
-
-  onClose(): void {
-    this.contentEl.empty();
-  }
-}
-
-class ConfirmDisablePmModal extends Modal {
-  private settled = false;
-
-  constructor(
-    app: App,
-    private readonly onConfirm: () => void,
-  ) {
-    super(app);
-  }
-
-  onOpen(): void {
-    this.setTitle(t("停用插件管理器确认"));
-    this.contentEl.createEl("p", {
-      cls: "setting-item-description",
-      text: t("警告：停用 mv-dsh-manager 插件管理器将导致无法在 Web UI 及此处继续进行插件启停管理。确定要停用吗？"),
-    });
-
-    new Setting(this.contentEl)
-      .addButton((btn) =>
-        btn.setButtonText(t("取消")).onClick(() => {
-          this.close();
-        }),
-      )
-      .addButton((btn) =>
-        btn
-          .setButtonText(t("确认停用"))
-          .setWarning()
-          .onClick(() => {
-            this.settled = true;
-            this.close();
-            this.onConfirm();
-          }),
-      );
   }
 
   onClose(): void {
@@ -296,10 +257,14 @@ export function renderDshPluginManager(
 
           // 仅在停用 mv-dsh-manager 时拦截二次确认
           if ((entry.id === "mv-dsh-manager" || entry.id === "mv-plugin-manager" || entry.id.includes("mv-dsh-manager")) && targetDisabled) {
-            new ConfirmDisablePmModal(plugin.app, () => {
-              void applyToggle();
-            }).open();
             toggle.setValue(!newValue); // 恢复原状态直到确认
+            void confirmAction(plugin.app, {
+              title: t("停用插件管理器确认"),
+              message: t("警告：停用 mv-dsh-manager 插件管理器将导致无法在 Web UI 及此处继续进行插件启停管理。确定要停用吗？"),
+              confirmText: t("确认停用"),
+            }).then((confirmed) => {
+              if (confirmed) void applyToggle();
+            });
             return;
           }
 
@@ -321,10 +286,19 @@ export function renderDshPluginManager(
               || entry.id.includes("mv-dsh-subworkspace");
             let force = false;
             if (isCore) {
-              if (!confirm(t("⚠️ 高危警告：插件 {id} 属于系统核心/官方或管理器插件，删除可能导致会话或管理功能异常！确定要强制删除吗？", { id: entry.id }))) return;
+              const confirmed = await confirmAction(plugin.app, {
+                title: t("确认强制删除插件“{id}”？", { id: entry.id }),
+                message: t("⚠️ 高危警告：该插件属于系统核心/官方或管理器插件，删除可能导致会话或管理功能异常。"),
+                confirmText: t("强制删除"),
+              });
+              if (!confirmed) return;
               force = true;
             } else {
-              if (!confirm(t("确定要卸载/删除插件 {id} 吗？", { id: entry.id }))) return;
+              const confirmed = await confirmAction(plugin.app, {
+                title: t("确认卸载/删除插件“{id}”？", { id: entry.id }),
+                confirmText: t("删除"),
+              });
+              if (!confirmed) return;
             }
 
             try {

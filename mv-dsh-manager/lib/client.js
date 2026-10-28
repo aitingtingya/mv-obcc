@@ -362,7 +362,7 @@ window.__ModuleLoader__.load({
             ? input.state.getSnapshot()
             : undefined;
           const current = state && typeof state.draft === 'string' ? state.draft : undefined;
-          if (current !== draft) input.setDraft(draft);
+          if (current !== draft) compat.setComposerDraft(input, draft);
         } catch {
           // If the session input facade is read-only, at least restore focus.
         }
@@ -384,7 +384,7 @@ window.__ModuleLoader__.load({
       const caret = captured && captured.preserveSurrounding === true ? captured.commandStart : 0;
       if (!input) return { draft, caret };
       try {
-        input.setDraft(draft);
+        compat.setComposerDraft(input, draft);
       } catch {
         // Never let composer plumbing failures break command execution.
       }
@@ -400,7 +400,7 @@ window.__ModuleLoader__.load({
       if (!spec || typeof spec.draftLine !== 'string' || spec.draftLine.length === 0) return;
       const input = inputFor(sessionId, ctx);
       if (!input) return;
-      input.setDraft(composePickerDraft(captured, spec.draftLine));
+      compat.setComposerDraft(input, composePickerDraft(captured, spec.draftLine));
     }
 
     /**

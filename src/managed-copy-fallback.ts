@@ -3,6 +3,9 @@ import { t } from "./i18n";
 import fs from "node:fs";
 import path from "node:path";
 import { ensureContainedVaultDirectory } from "./external-file-mirror-path";
+import { AsyncPermits } from "./runtime/async-permits";
+
+const checksumReads = new AsyncPermits(2);
 
 /**
  * Explicit proof that the primary symlink strategy was attempted and failed.
@@ -399,11 +402,13 @@ export function sha256File(filePath: string): string {
 
 /** Hash a file without monopolizing the renderer thread for the full read. */
 export async function sha256FileAsync(filePath: string): Promise<string> {
-  const hash = crypto.createHash("sha256");
-  for await (const chunk of fs.createReadStream(filePath)) {
-    hash.update(chunk as Buffer);
-  }
-  return hash.digest("hex");
+  return checksumReads.run(async () => {
+    const hash = crypto.createHash("sha256");
+    for await (const chunk of fs.createReadStream(filePath)) {
+      hash.update(chunk as Buffer);
+    }
+    return hash.digest("hex");
+  });
 }
 
 function temporarySiblingPath(destination: string, purpose: "new" | "backup"): string {

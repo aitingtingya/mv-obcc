@@ -1,6 +1,7 @@
 import { runProcess } from "../../../process-runner";
 import {
   createDefaultDshProcessDiscoveryAdapter,
+  isDshRuntimeProcess,
   windowsTcpTable,
   type DshProcessDiscoveryAdapter,
   type DshProcessInfo,
@@ -160,6 +161,12 @@ async function dshRootsForPort(
   dshPort: number,
   listenerPid: number,
 ): Promise<DshProcessInfo[]> {
+  // Most endpoints are served directly by a verified DSH Node entry. Read
+  // that one process before paying for global enumeration. This also handles
+  // `node .../node_modules/@deepseek-ai/dsh/lib/bin.js web`, whose command
+  // line contains neither the literal `dsh web` nor the source-repo layout.
+  const listener = await discovery.processInfo(listenerPid);
+  if (listener && !listener.nameOnly && isDshRuntimeProcess(listener)) return [listener];
   const processes = await discovery.listDshProcesses();
   const roots = processes.filter(
     (info) => info.pid === listenerPid || info.port === dshPort,
@@ -200,6 +207,7 @@ export async function isDshConnectedToBridge(
   if (roots.length === 0) return false;
 
   const connectedPids = await establishedBridgePids(bridgePort, platform, run);
+  if (roots.some((root) => connectedPids.includes(root.pid))) return true;
   for (const connectedPid of connectedPids) {
     for (const root of roots) {
       if (await isDescendantOrSelf(discovery, connectedPid, root.pid)) return true;

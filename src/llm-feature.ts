@@ -34,6 +34,11 @@ import {
   type LlmWebHotkeyPending,
   type LlmWebPendingInvoke,
 } from "./llm-web-menu-script";
+import {
+  WebSelectionMenuController,
+  type NativeMenuItemLike,
+  type WebSelectionMenuViewLike,
+} from "./llm-web-native-menu";
 import { activeWorkspaceLeaf, isBrowserViewType } from "./workspace-context";
 import { snapshotWorkspaceLeaves } from "./workspace-leaves";
 import type { LlmPromptTemplate } from "./types";
@@ -48,6 +53,11 @@ interface WebViewerLike extends View {
     getWebContentsId?(): number;
     isLoading?(): boolean;
   };
+  /** Obsidian ≥1.9 webviewer 的内部方法；老版本没有，走页内注入回退。 */
+  contextMenuItemsForSelection?(
+    selectionText: string,
+    isEditable: boolean,
+  ): NativeMenuItemLike[];
 }
 
 type WebviewElement = NonNullable<WebViewerLike["webview"]>;
@@ -137,9 +147,8 @@ function executeWebviewScript(
  *    same-document PDF.js viewer), gated by a cached selection captured on
  *    `selectionchange` (PDF.js finalises its DOM selection only on mouseup, so a
  *    synchronous read at contextmenu time would be empty).
- *  - webviewer: the Electron `<webview>` is isolated, so we inject a script into
- *    the page that draws its own floating menu and stashes the click; we poll
- *    that stash. Gated by `settings.webContextMenu`.
+ *  - webviewer: extend the native menu when supported. Older views use the
+ *    isolated page's injected menu and existing click polling.
  */
 export class LlmFeature {
   private readonly boundContainers = new WeakSet<HTMLElement>();
@@ -156,6 +165,7 @@ export class LlmFeature {
   private webPollTimer: OwnedInterval | null = null;
   private readonly menuPollInFlight = new WeakMap<WorkspaceLeaf, object>();
   private readonly webDocumentRevision = new WeakMap<WorkspaceLeaf, number>();
+  private readonly webNativeMenus = new WebSelectionMenuController();
   private menuEpoch = 0;
 
   // ---- Independent hotkey-sync chain (parallel to the context-menu chain).
@@ -262,19 +272,13 @@ export class LlmFeature {
       true,
     );
 
-    // Re-scan for new PDF/webviewer leaves on layout changes.
-    this.plugin.registerEvent(
-      this.app.workspace.on("layout-change", () => this.sync()),
-    );
-    this.plugin.registerEvent(
-      this.app.workspace.on("active-leaf-change", () => this.sync()),
-    );
+    // The shared workspace-maintenance controller owns layout invalidation.
 
     this.refreshRibbon();
     this.sync();
   }
 
-  /** Called periodically from main.ts's 500ms interval to catch late leaves. */
+  /** Called on structural changes and bounded late-mount retries. */
   tick(snapshot?: readonly WorkspaceLeaf[]): void {
     if (this.disposed) return;
     this.sync(snapshot);
@@ -286,6 +290,13 @@ export class LlmFeature {
     this.menuEpoch++;
     this.refreshRibbon();
     this.sync();
+  }
+
+  refreshActiveWeb(leaf: WorkspaceLeaf): void {
+    if (this.disposed || !this.settings.enabled) return;
+    // User hotkey changes have no workspace event. Refresh only the active
+    // browser's binding, without scanning every editor/leaf at idle.
+    this.installWebHotkeys(leaf);
   }
 
   /** Re-scan all leaves: attach PDF menus, install/cleanup web menus. */
@@ -301,6 +312,7 @@ export class LlmFeature {
       this.cleanupSameOriginDocumentWatchers();
       this.refreshPdfDocumentWatchers(new Set());
       this.cleanupAllWebviewLifecycles();
+      this.unpatchNativeWebMenu();
       this.stopPolling();
       return;
     }
@@ -319,8 +331,16 @@ export class LlmFeature {
       } else if (viewType === "webviewer") {
         seenWebLeaves.add(leaf);
         this.attachWebviewLifecycle(leaf);
+        // 优先补丁 Obsidian 原生右键菜单（不依赖 webview 就绪）；补丁不可用
+        // （老版本）时才回退到页内注入菜单。
+        const nativeMenu = this.ensureNativeWebMenu(leaf.view as WebViewerLike);
         if (this.isWebviewReady(leaf)) {
-          this.installWebMenu(leaf);
+          if (nativeMenu) {
+            // 原生模式下页内菜单让位；若此前注入过（如运行中升级），清理一次。
+            if (this.webInstallLeaves.has(leaf)) void this.uninstallWebMenu(leaf);
+          } else {
+            this.installWebMenu(leaf);
+          }
           this.installWebHotkeys(leaf);
           this.installWebDismiss(leaf);
           // Auto-trigger injection is gated by the session toggle, so it only
@@ -329,6 +349,9 @@ export class LlmFeature {
         }
       }
     });
+    this.webNativeMenus.retain(new Set(
+      Array.from(seenWebLeaves, leaf => leaf.view as WebViewerLike),
+    ));
     this.refreshSameOriginDocumentWatchers(seenSameOriginDocuments);
     this.refreshPdfDocumentWatchers(seenPdfDocuments);
 
@@ -364,6 +387,7 @@ export class LlmFeature {
     // Cleanup web menus for leaves that disappeared or when the toggle is off.
     if (!this.settings.webContextMenu) {
       this.cleanupAllWebMenus();
+      this.unpatchNativeWebMenu();
     } else {
       for (const leaf of this.webInstallLeaves) {
         if (!seenWebLeaves.has(leaf)) {
@@ -378,9 +402,12 @@ export class LlmFeature {
       this.cleanupAllWebAutoTriggers();
     }
 
-    // Start or stop the polling timer based on the toggle.
+    // Start or stop the polling timer based on the toggle. 原生菜单补丁的
+    // leaf 无需轮询（菜单项 click 直接派发），仅注入式菜单需要。
     const hasWebTarget = seenWebLeaves.size > 0;
-    if (hasWebTarget && this.settings.webContextMenu) {
+    const needsMenuPolling = Array.from(seenWebLeaves)
+      .some(leaf => !this.webNativeMenus.has(leaf.view as WebViewerLike));
+    if (hasWebTarget && this.settings.webContextMenu && needsMenuPolling) {
       this.ensurePolling();
     } else {
       this.stopPolling();
@@ -531,7 +558,7 @@ export class LlmFeature {
       this.lastHotkeyInstall.set(leaf, 0);
       this.lastAutoTriggerInstall.set(leaf, 0);
       this.lastWebDismissInstall.set(leaf, 0);
-      this.installWebMenu(leaf);
+      if (!this.ensureNativeWebMenu(leaf.view as WebViewerLike)) this.installWebMenu(leaf);
       this.installWebHotkeys(leaf);
       this.installWebDismiss(leaf);
       if (this.isAutoTriggerArmed()) this.installWebAutoTrigger(leaf);
@@ -599,6 +626,38 @@ export class LlmFeature {
       return false;
     }
     return false;
+  }
+
+  /**
+   * Register this view's native menu without deleting instance-owned methods.
+   * The controller owns prototype/instance wrapping and teardown; unsupported
+   * views retain the existing in-page menu fallback.
+   */
+  private ensureNativeWebMenu(view: WebSelectionMenuViewLike): boolean {
+    if (!this.settings.webContextMenu) return false;
+    return this.webNativeMenus.ensure(view, (selectionText) => {
+      if (
+        this.disposed ||
+        !this.settings.enabled ||
+        !this.settings.webContextMenu
+      ) {
+        return null;
+      }
+      if (!selectionText.trim()) return null;
+      const items = this.settings.templates
+        .filter((template) => template.enabled)
+        .map((template) => ({
+          label: template.label,
+          click: () => {
+            void this.invokeWithText(template, selectionText, "web");
+          },
+        }));
+      return items;
+    });
+  }
+
+  private unpatchNativeWebMenu(): void {
+    this.webNativeMenus.clear();
   }
 
   private installWebMenu(leaf: WorkspaceLeaf): void {
@@ -680,6 +739,8 @@ export class LlmFeature {
     if (this.disposed || !this.settings.enabled || !this.settings.webContextMenu) return;
     const active = this.app.workspace.getMostRecentLeaf();
     if (!active || active.view.getViewType() !== "webviewer") return;
+    // 原生菜单补丁的 leaf 没有页内注入菜单，无需轮询。
+    if (this.webNativeMenus.has(active.view as WebViewerLike)) return;
     const view = active.view as WebViewerLike;
     const webview = view.webview;
     if (!webview || !this.isWebviewReady(active) || this.menuPollInFlight.has(active)) return;
@@ -921,6 +982,7 @@ export class LlmFeature {
     this.cleanupSameOriginDocumentWatchers();
     this.refreshPdfDocumentWatchers(new Set());
     this.cleanupAllWebviewLifecycles();
+    this.unpatchNativeWebMenu();
     this.stopPolling();
     this.removeRibbon();
   }

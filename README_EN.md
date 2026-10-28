@@ -43,6 +43,8 @@ The active file, selection, and editor state are passively synchronized with the
 
 mv-agent puts the DSH web interface directly inside Obsidian. Its bottom status bar shows the real bridge state, current page or file, selection, port, and expandable live details; the command palette provides **Open / Stop / Restart mv-agent**.
 
+The primary supported preview is **DSH 0.2.1-rc.2**, with **0.2.0-rc.2** retained in regression coverage. Native modality and reasoning controls take priority; manager fills in expert parameters, level ordering, and built-in overrides. Native current-directory changes and subworkspace selection remain independent.
+
 Settings inspect Node.js, DSH, pnpm, and plugin injection as four separate layers. They support vault or global installations as well as verified DeepSeek Harness source checkouts. Once injected, DSH gains the `/mv-aide` command and `mv_aide__*` IDE tools, including:
 
 - per-conversation vault selection, history, and recovery;
@@ -91,6 +93,8 @@ Generate dimmed ghost text while writing Markdown. It enters the document only a
 ### 4. Terminal
 
 Run a real system terminal in the main area, a sidebar, or a bottom split, keeping the command line and editor in one workspace. Terminal settings control open position independently from the new-terminal mode (split or new tab). `mv-run: <command>` targets the most recently active mv-AIDE terminal (creating one when needed), while `mv-run -n: <command>` always creates a new terminal first. With mv-agent's **Enhanced terminal awareness** enabled, DSH can also read, send, run, focus, or close a terminal by id.
+
+The context menu offers **Markdown preview** for a terminal selection and **Clipboard Markdown preview** for copied text. Both open a floating native Obsidian editor with math, reading mode, resizing and pinning. In Codex, drag to select, right-click to copy, wait for the copy confirmation, then choose **Clipboard Markdown preview**. Use **New note** to keep your edited content; closing the preview removes its temporary content.
 
 ![Obsidian editor and the real mv-AIDE system terminal](media/readme/terminal.png)
 
@@ -164,12 +168,11 @@ Enable mv-AIDE under **Settings → Community plugins**.
 <summary>Build from source</summary>
 
 ```bash
-npm install
+npm ci
 npm run verify
-npm run deploy:local
 ```
 
-`npm run package` creates release artifacts under `release/`.
+The build produces `dist/main.js`; `manifest.json` and `styles.css` are in the repository root. Copy these three files using the manual installation steps above.
 
 </details>
 
@@ -186,6 +189,7 @@ See [Data and network boundaries](docs/features-en.md#storage-network) and the [
 
 ## Documentation
 
+- For intermittent slowdowns, run **Sample resource diagnostics for 30 seconds** from the command palette and reproduce the issue during collection. The numerical report contains no document contents, paths, or credentials. See [Resource diagnostics](docs/features-en.md#resource-diagnostics).
 - [Complete Feature Guide](docs/features-en.md)
 - [完整功能手册](docs/features.md)
 - [Third-party notices](THIRD_PARTY_NOTICES.md)

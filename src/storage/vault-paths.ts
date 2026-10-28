@@ -14,6 +14,8 @@ export const LLM_HISTORY_FOLDER = `${MV_AIDE_VAULT_STORAGE_FOLDER}/llm-history`;
 
 export const LLM_HISTORY_LATEST_PATH = `${LLM_HISTORY_FOLDER}/latest.md`;
 
+export const TERMINAL_PREVIEW_FOLDER = `${MV_AIDE_VAULT_STORAGE_FOLDER}/tmp/terminal-preview`;
+
 export function mvAideVaultRoot(vaultRoot: string): string {
   return path.join(vaultRoot, MV_AIDE_VAULT_STORAGE_FOLDER);
 }

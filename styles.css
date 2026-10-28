@@ -240,6 +240,29 @@
   -webkit-app-region: no-drag;
 }
 
+.popover.hover-popover.mv-aide-terminal-preview {
+  min-width: 280px;
+  min-height: 200px;
+  max-width: calc(100vw - 16px);
+  max-height: calc(100vh - 16px);
+  resize: both;
+  overflow: hidden;
+}
+
+.mv-aide-terminal-preview-status {
+  padding: 8px 12px;
+  color: var(--text-error);
+  overflow-wrap: anywhere;
+}
+
+.mv-aide-terminal-preview-status:empty {
+  display: none;
+}
+
+.mv-aide-terminal-preview .inline-title {
+  display: none;
+}
+
 .mv-aide-llm-titlebar,
 .mv-aide-llm-host,
 .mv-aide-llm-error,
@@ -633,6 +656,9 @@
 .vault-terminal-host .xterm {
 	cursor: text;
 	position: relative;
+	/* xterm measures repeated glyphs; CJK punctuation compression would
+	   under-measure them and add excess spacing to the fixed-cell rows. */
+	text-spacing-trim: space-all;
 	user-select: none;
 	-ms-user-select: none;
 	-webkit-user-select: none;

@@ -43,6 +43,8 @@ Claude Code、Codex CLI 和任意 MCP Agent 可以读取当前标签、选区、
 
 mv-agent 把 DSH Web 界面直接放进 Obsidian。视图底部状态栏显示真实桥接状态、当前页面或文件、选区、端口和可展开的现场详情；命令面板提供「打开 / 停止 / 重启 mv-agent」。
 
+当前主要适配 DSH **0.2.1-rc.2**，同时保留 **0.2.0-rc.2** 回归。新版模型设置优先使用原生模态与思考控件，manager 补齐专家参数、等级排序及内置模型覆盖；原生当前目录与子工作区选择互相独立。
+
 设置页按 Node.js、DSH、pnpm、插件注入四层检测环境，可安装到当前 Vault 或全局位置，也能识别、验证并管理 DeepSeek Harness 源码仓库。注入后 DSH 获得 `/mv-aide` 命令和 `mv_aide__*` IDE 工具，并支持：
 
 - 每个 DSH 对话独立选择、记忆和恢复 Vault；
@@ -91,6 +93,8 @@ mv-AIDE 完整注入会管理 mv-agent、mv-dsh-manager 和独立的 mv-dsh-subw
 ### 4. 终端
 
 在 Obsidian 的主栏、侧栏或底部分栏运行真实系统终端，让命令行和编辑器保持在同一个工作区。终端设置把“打开位置”和“新终端打开方式（分屏 / 新建标签页）”分开控制。`mv-run: <命令>` 会发送到最近活跃的 mv-AIDE 终端（没有时自动新建），`mv-run -n: <命令>` 则始终新建终端执行。开启 mv-agent 的「终端感知增强」后，DSH 还能按终端 ID 读取、输入、运行命令、聚焦或关闭标签。
+
+右键菜单提供 **Markdown 预览**（终端选区）和 **剪贴板 Markdown 预览**，均使用 Obsidian 原生悬浮编辑器，支持数学公式、阅读模式、拖动缩放和钉住。在 Codex 中普通拖选后右键复制，看到复制成功提示，再点击“剪贴板 Markdown 预览”即可。点击“新建笔记”可保存当前编辑内容；否则关窗后清理临时内容。
 
 ![Obsidian 编辑器与 mv-AIDE 真实系统终端](media/readme/terminal.png)
 
@@ -164,12 +168,11 @@ mv-AIDE 完整注入会管理 mv-agent、mv-dsh-manager 和独立的 mv-dsh-subw
 <summary>从源码构建</summary>
 
 ```bash
-npm install
+npm ci
 npm run verify
-npm run deploy:local
 ```
 
-`npm run package` 会在 `release/` 中生成发布产物。
+构建产物为 `dist/main.js`，以及根目录的 `manifest.json` 和 `styles.css`。按上面的手动安装步骤复制这三个文件。
 
 </details>
 
@@ -186,6 +189,7 @@ npm run deploy:local
 
 ## 文档
 
+- 遇到间歇卡顿，可在命令面板运行「采集 30 秒资源诊断」，在采集期间复现操作，再查看数值报告；不记录正文、路径或凭据。详见[资源诊断](docs/features.md#resource-diagnostics)。
 - [完整功能手册（中文）](docs/features.md)
 - [Complete Feature Guide (English)](docs/features-en.md)
 - [第三方声明](THIRD_PARTY_NOTICES.md)

@@ -24,6 +24,7 @@ import { promises as fs } from 'node:fs';
 import { realpathSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { resolveToolFilePath } from '../../mv-dsh-compat/lib/host.js';
 
 export const DIFF_TIMEOUT_MS = 5 * 60 * 1000;
 
@@ -345,7 +346,8 @@ export function createDiffHook({ ctx, supervisor, resolveSupervisor, log }) {
     const rawPath =
       toolName === 'str_replace_editor' ? args.path : args.file_path;
     if (typeof rawPath !== 'string' || rawPath.trim().length === 0) return next();
-    const targetPath = resolveTargetPath(rawPath, policy, exec);
+    const targetPath = await resolveToolFilePath(ctx, rawPath, exec)
+      ?? resolveTargetPath(rawPath, policy, exec);
 
     const review = shouldReviewDiff({
       toolName,

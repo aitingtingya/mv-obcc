@@ -76,6 +76,7 @@ export interface FileTypeIconViewOptions {
 export class FileTypeIconView {
   private readonly supportedExtensions = new Set<string>();
   private readonly badgedIconEls = new WeakSet<HTMLElement>();
+  private readonly renderedIcons = new WeakMap<HTMLElement, { id: string; node: ChildNode | null }>();
   private started = false;
 
   constructor(private readonly options: FileTypeIconViewOptions) {}
@@ -148,7 +149,11 @@ export class FileTypeIconView {
           ? supportedFileTypeIconId(extension, this.supportedExtensions)
           : null;
       if (supportedId) {
-        setIcon(iconEl, supportedId);
+        const rendered = this.renderedIcons.get(iconEl);
+        if (rendered?.id !== supportedId || rendered.node !== iconEl.firstChild) {
+          setIcon(iconEl, supportedId);
+          this.renderedIcons.set(iconEl, { id: supportedId, node: iconEl.firstChild });
+        }
         this.badgedIconEls.add(iconEl);
       } else if (this.badgedIconEls.has(iconEl)) {
         // Only restore icon slots we badged ourselves. Every other tab —
@@ -156,6 +161,7 @@ export class FileTypeIconView {
         // setIcon would wipe their custom content (a favicon <img>) and
         // replace it with getIcon()'s default (the globe).
         this.badgedIconEls.delete(iconEl);
+        this.renderedIcons.delete(iconEl);
         if (typeof view?.getIcon === "function") {
           setIcon(iconEl, view.getIcon());
         }
@@ -177,6 +183,7 @@ export class FileTypeIconView {
         typeof view?.getIcon === "function"
       ) {
         this.badgedIconEls.delete(iconEl);
+        this.renderedIcons.delete(iconEl);
         setIcon(iconEl, view.getIcon());
       }
     });

@@ -1,6 +1,7 @@
 import { Modal, Notice, Setting, type App } from "obsidian";
 import type MvAideIdePlugin from "../../../../main";
 import { t } from "../../../i18n";
+import { confirmAction } from "../../../ui/confirm-modal";
 
 interface DshPresetEntry {
   id: string;
@@ -294,10 +295,19 @@ export function renderDshPresetManager(
           .onClick(async () => {
             let force = false;
             if (preset.trust === "system") {
-              if (!confirm(t("⚠️ 高危警告：预设 {name} 是 DeepSeek 官方系统内置预设，删除可能影响基础会话！确定要强制删除吗？", { name: preset.name }))) return;
+              const confirmed = await confirmAction(plugin.app, {
+                title: t("确认强制删除系统预设“{name}”？", { name: preset.name }),
+                message: t("⚠️ 高危警告：该预设是 DeepSeek 官方系统内置预设，删除可能影响基础会话。"),
+                confirmText: t("强制删除"),
+              });
+              if (!confirmed) return;
               force = true;
             } else {
-              if (!confirm(t("确定要删除自定义预设 {name} 吗？", { name: preset.name }))) return;
+              const confirmed = await confirmAction(plugin.app, {
+                title: t("确认删除预设“{name}”？", { name: preset.name }),
+                confirmText: t("删除"),
+              });
+              if (!confirmed) return;
             }
 
             try {

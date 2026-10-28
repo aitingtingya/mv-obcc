@@ -69,6 +69,30 @@ export function modelRowDisclosure(entry) {
   return found.length === 1 ? found[0] : null;
 }
 
+/** Model catalogs and identity fields share the released row structure. */
+export function modelCatalogSections(root = document) {
+  return [...root.querySelectorAll('section')].filter(node => hasLocalClass(node, 'modelCatalog'));
+}
+
+export function modelIdInputs(root) {
+  return [...root.querySelectorAll('button[aria-expanded]')]
+    .map(button => button.parentElement.querySelector('input'))
+    .filter(Boolean);
+}
+
+/** Scope observer work to the verified modelCatalog structure, not chat output. */
+export function mutationAffectsModelSettings(record, knownSections = new Set()) {
+  const isCatalog = (node) => node?.tagName === 'SECTION' &&
+    (hasLocalClass(node, 'modelCatalog') || knownSections.has(node));
+  let ancestor = record.target.nodeType === 1 ? record.target : record.target.parentElement;
+  while (ancestor) {
+    if (isCatalog(ancestor)) return true;
+    ancestor = ancestor.parentElement;
+  }
+  return [...record.addedNodes, ...record.removedNodes].some((node) => node.nodeType === 1 &&
+    (isCatalog(node) || [...node.querySelectorAll('section')].some(isCatalog)));
+}
+
 /**
  * The action row that closes one provider editor: the `div` holding its cancel
  * and commit controls. Every editor renders exactly one, and the card's own
@@ -117,6 +141,116 @@ export function editorSaveButton(root) {
  */
 export function editorCancelButton(root) {
   return editorActionButton(editorActionRow(root), 'secondary');
+}
+
+/** Locate the provider editor by its unique action row, including keyless providers. */
+export function modelEditorRoot(section) {
+  let node = section?.parentElement;
+  while (node && node !== section.ownerDocument.body) {
+    if (editorSaveButton(node)) return node;
+    node = node.parentElement;
+  }
+  return null;
+}
+
+/** Model controls owned by the released host, identified by their local class names. */
+export function nativeModelControls(entry) {
+  const nodes = entry?.querySelectorAll?.('*') ?? [];
+  return {
+    input: [...nodes].some(node => hasLocalClass(node, 'modelInputTypes')),
+    reasoning: [...nodes].some(node => hasLocalClass(node, 'modelReasoning')),
+  };
+}
+
+/** Read only the released native reasoning row controls, never the localized copy. */
+export function nativeReasoningValues(entry) {
+  const group = [...(entry?.querySelectorAll?.('[role="group"]') ?? [])]
+    .find(node => hasLocalClass(node, 'modelReasoning'));
+  if (!group) return null;
+  return Object.fromEntries([...group.querySelectorAll('select')].map(select => {
+    const input = select.parentElement.querySelector('input');
+    return [select.value, select.value === 'off' && !input?.value ? null : input?.value ?? ''];
+  }));
+}
+
+/** Native modality controls use the schema's text/image order in both previews. */
+export function nativeModelInputValues(entry) {
+  const group = [...(entry?.querySelectorAll?.('fieldset') ?? [])].find(node => hasLocalClass(node, 'modelInputTypes'));
+  const inputs = group?.querySelectorAll('input[type="checkbox"]');
+  return inputs?.length === 2 ? ['text', 'image'].filter((_, index) => inputs[index].checked) : null;
+}
+
+/** Observe native save outcomes without changing remote request arguments or results. */
+export function observeModelSaves(ctx, started) {
+  const restores = [];
+  for (const [namespace, method] of [['settings', 'mutate'], ['credentials', 'set']]) {
+    const service = safeClientGet(ctx, `remote.${namespace}`) ?? safeClientGet(ctx, 'remote')?.[namespace];
+    if (typeof service?.[method] !== 'function') continue;
+    const descriptor = Object.getOwnPropertyDescriptor(service, method);
+    const original = service[method];
+    const wrapper = function (...args) {
+      const settled = started(namespace, args[0]);
+      let result;
+      try { result = original.apply(this, args); }
+      catch (error) { settled?.(false); throw error; }
+      if (settled) Promise.resolve(result).then(value => settled(value?.ok === true), () => settled(false));
+      return result;
+    };
+    Object.defineProperty(service, method, { configurable: true, writable: true, value: wrapper });
+    restores.push(() => {
+      if (Object.getOwnPropertyDescriptor(service, method)?.value !== wrapper) return;
+      if (descriptor) Object.defineProperty(service, method, descriptor);
+      else delete service[method];
+    });
+  }
+  return () => restores.forEach(restore => restore());
+}
+
+/** Semantic editor operations; the older plain-draft face remains with its existing adapter. */
+export function resolveStructuredComposerInput(input) {
+  const snapshot = input?.draftSnapshot;
+  if (!snapshot || typeof snapshot.text !== 'string' || !Array.isArray(snapshot.references)
+      || typeof input.caretSpan !== 'function' || typeof input.insertText !== 'function') return null;
+  const state = () => input.state.getSnapshot();
+  return {
+    capture: () => structuredClone(input.draftSnapshot),
+    restore: value => input.setDraft(value),
+    range: () => input.caretSpan(),
+    insertText: (text, range = input.caretSpan()) => input.insertText(text, { ...range, draftRev: state().draftRev }),
+    insertReference: (reference, range = input.caretSpan()) => input.insertReference(reference, { ...range, draftRev: state().draftRev }),
+    clipboardOffset(offset) {
+      const draft = input.draftSnapshot;
+      const command = draft.command?.token?.trimEnd();
+      const chips = [
+        ...(command ? [{ offset: 0, length: command.length }] : []),
+        ...draft.references,
+      ];
+      let divergence = 0;
+      for (const chip of chips) {
+        if (offset <= chip.offset - divergence) break;
+        divergence += chip.length - 1;
+      }
+      return offset + divergence;
+    },
+  };
+}
+
+/** Preserve unchanged native references and the leading command during picker/recall edits. */
+export function setComposerDraft(input, text) {
+  const editor = resolveStructuredComposerInput(input);
+  if (!editor) return input.setDraft(text);
+  const before = editor.capture();
+  if (before.text === text) return;
+  let prefix = 0;
+  while (prefix < before.text.length && prefix < text.length && before.text[prefix] === text[prefix]) prefix++;
+  let suffix = 0;
+  while (suffix < before.text.length - prefix && suffix < text.length - prefix
+      && before.text[before.text.length - 1 - suffix] === text[text.length - 1 - suffix]) suffix++;
+  const delta = text.length - before.text.length;
+  const references = before.references.filter(ref => ref.offset + ref.length <= prefix || ref.offset >= before.text.length - suffix)
+    .map(ref => ref.offset >= before.text.length - suffix ? { ...ref, offset: ref.offset + delta } : ref);
+  const command = before.command && prefix >= before.command.token.trimEnd().length ? before.command : undefined;
+  editor.restore({ text, references, ...(command ? { command } : {}) });
 }
 
 export function resolveConversationImageEncoder(ctx) {
@@ -370,7 +504,7 @@ function buildComposer(target, doc) {
         end: Math.max(0, Math.min(selected.end, snapshot.draft.length)),
       };
     },
-    setDraft: (text) => target.input.setDraft(text),
+    setDraft: (text) => setComposerDraft(target.input, text),
     strictSelection: () => composerStrictSelection({ element: dom.element }),
     focusAt(start, end = start) {
       const snapshot = target.input.state.getSnapshot();
@@ -496,10 +630,20 @@ export const CLIENT_COMPAT_API = Object.freeze({
   resolveSettingsCardHost,
   resolveSessions,
   modelRowDisclosure,
+  modelCatalogSections,
+  modelIdInputs,
+  mutationAffectsModelSettings,
   editorActionRow,
   editorActionButton,
   editorSaveButton,
   editorCancelButton,
+  modelEditorRoot,
+  nativeModelControls,
+  nativeReasoningValues,
+  nativeModelInputValues,
+  observeModelSaves,
+  resolveStructuredComposerInput,
+  setComposerDraft,
   resolveConversationImageEncoder,
   currentSessionState,
   currentSessionId,

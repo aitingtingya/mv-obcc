@@ -42,6 +42,10 @@ class MarkerPlugin {
     if (update.docChanged || revision !== this.revision) this.schedule(600);
   }
   private schedule(delay: number): void {
+    if (!this.feature.settings.enabled || !this.feature.settings.editMarkers) {
+      this.clear(this.feature.repository.snapshot?.revision ?? -1);
+      return;
+    }
     if (this.timer !== null) return;
     const win = this.view.dom.ownerDocument?.defaultView ?? window;
     this.timer = win.setTimeout(() => { this.timer = null; void this.recompute(); }, delay);

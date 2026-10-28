@@ -1,6 +1,7 @@
 import { Modal, Notice, Setting, type App, type ButtonComponent } from "obsidian";
 import type MvAideIdePlugin from "../../../../main";
 import { t } from "../../../i18n";
+import { confirmAction } from "../../../ui/confirm-modal";
 import type { DshAutoOpenRegion, DshInstallTarget } from "../settings";
 import {
   DSH_ACTIVE_CHANNELS,
@@ -402,7 +403,21 @@ export function renderDshSection(
 
   const chooseTarget = (layer: Exclude<DshInstallLayer, "plugin">): Promise<DshInstallTarget | null> =>
     chooseInstallTarget(plugin.app, layer);
-  const runLayer = async (layer: DshInstallLayer): Promise<void> => {
+  const runLayer = async (
+    layer: DshInstallLayer,
+    name: string,
+    actionLabel: string,
+  ): Promise<void> => {
+    // 安装/升级/重装/修复都会联网下载或改写运行时目录，先弹统一确认。
+    const confirmed = await confirmAction(plugin.app, {
+      title: t("确认{action}{name}？", { action: actionLabel, name }),
+      message: t(
+        "即将对 {name} 执行“{action}”操作，期间依赖它的功能可能短暂不可用。",
+        { name, action: actionLabel },
+      ),
+      confirmText: actionLabel,
+    });
+    if (!confirmed) return;
     setEnvironmentBusy(true);
     try {
       const result = await dshFeature.ensureLayer(layer, null, chooseTarget);
@@ -422,10 +437,11 @@ export function renderDshSection(
     .setDesc(environment.updates.node.error || nodeStatus.detail || t("点击“检测”刷新实际状态。"))
     .addButton((button) => {
       environmentButtons.push(button);
+      const actionLabel = runtimeActionLabel(nodeInstalled, environment.updates.node);
       button
-        .setButtonText(runtimeActionLabel(nodeInstalled, environment.updates.node))
+        .setButtonText(actionLabel)
         .setDisabled(dshFeature.isEnvironmentBusy())
-        .onClick(() => runLayer("node"));
+        .onClick(() => runLayer("node", "Node.js", actionLabel));
     });
   statusSpan(
     nodeSetting.settingEl,
@@ -453,7 +469,7 @@ export function renderDshSection(
         button
           .setButtonText(actionLabel)
           .setDisabled(dshFeature.isEnvironmentBusy())
-          .onClick(() => runLayer(layer));
+          .onClick(() => runLayer(layer, name, actionLabel));
       });
     statusSpan(setting.settingEl, runtimeStatusText(status, update), layerStatusClass(status));
   }
@@ -567,7 +583,7 @@ export function renderDshSection(
         .setButtonText(pluginAction)
         .setCta()
         .setDisabled(dshFeature.isEnvironmentBusy() || protectedHigherVersion)
-        .onClick(() => runLayer("plugin"));
+        .onClick(() => runLayer("plugin", t("插件注入"), pluginAction));
     });
   statusSpan(
     pluginSetting.settingEl,

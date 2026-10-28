@@ -1,6 +1,7 @@
 // Per-call workspace projection that preserves the original DSH Agent identity.
 
 import { AsyncLocalStorage } from 'node:async_hooks';
+import { resolveWorkingDirectory } from '../../mv-dsh-compat/lib/host.js';
 
 function bindMethod(target, value) {
   return typeof value === 'function' ? value.bind(target) : value;
@@ -17,11 +18,28 @@ function projectedSession(session, workspacePath) {
 }
 
 export class WorkspaceRuntimeProjection {
-  constructor() {
+  constructor(ctx) {
     this.storage = new AsyncLocalStorage();
     this.records = new WeakMap();
     this.agents = new Set();
     this.disposed = false;
+    const directory = resolveWorkingDirectory(ctx);
+    this.restoreDirectory = null;
+    if (directory) {
+      const descriptor = Object.getOwnPropertyDescriptor(directory, 'get');
+      const original = directory.get;
+      const storage = this.storage;
+      const projectedGet = function get(session) {
+        const active = storage.getStore();
+        return active?.session === session ? active.workspacePath : original.call(this, session);
+      };
+      Object.defineProperty(directory, 'get', { configurable: true, writable: true, value: projectedGet });
+      this.restoreDirectory = () => {
+        if (Object.getOwnPropertyDescriptor(directory, 'get')?.value !== projectedGet) return;
+        if (descriptor) Object.defineProperty(directory, 'get', descriptor);
+        else delete directory.get;
+      };
+    }
   }
 
   install(agent) {
@@ -115,5 +133,7 @@ export class WorkspaceRuntimeProjection {
   dispose() {
     this.disposed = true;
     for (const agent of [...this.agents]) this.disposeAgent(agent);
+    this.restoreDirectory?.();
+    this.restoreDirectory = null;
   }
 }

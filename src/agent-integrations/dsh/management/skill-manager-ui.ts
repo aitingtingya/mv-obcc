@@ -1,6 +1,7 @@
 import { Modal, Notice, Setting, setIcon, type App } from "obsidian";
 import type MvAideIdePlugin from "../../../../main";
 import { t } from "../../../i18n";
+import { confirmAction } from "../../../ui/confirm-modal";
 
 interface DshSkillEntry {
   id: string;
@@ -241,7 +242,12 @@ export function renderDshSkillManager(
           .setIcon("trash")
           .setTooltip(t("删除技能"))
           .onClick(async () => {
-            if (!confirm(t("确定要删除技能 {name} 吗？此操作无法撤销。", { name: skill.name }))) return;
+            const confirmed = await confirmAction(plugin.app, {
+              title: t("确认删除技能“{name}”？", { name: skill.name }),
+              message: t("此操作无法撤销。"),
+              confirmText: t("删除"),
+            });
+            if (!confirmed) return;
             try {
               const res = await fetch(`http://127.0.0.1:${port}/api/mv-aide/skills/${encodeURIComponent(skill.id)}`, {
                 method: "DELETE",

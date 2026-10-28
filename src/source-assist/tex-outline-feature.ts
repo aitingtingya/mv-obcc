@@ -1,10 +1,10 @@
 import type { Extension } from "@codemirror/state";
 import {
+  TFile,
   type App,
   type CachedMetadata,
   type Events,
   type HeadingCache,
-  type TFile,
 } from "obsidian";
 import {
   texOutlineFoldService,
@@ -262,7 +262,10 @@ export class TexOutlineFeature {
 
   private readonly handleVaultCreate = (file: TFile): void => {
     this.patchOutlineGetHeadings();
-    if (isTexExtension(file.extension)) void this.preload(file);
+    // vault 的 create 事件对文件夹同样触发，TFolder 没有 extension。
+    if (file instanceof TFile && isTexExtension(file.extension)) {
+      void this.preload(file);
+    }
   };
 
   private readonly handleVaultDelete = (file: TFile): void => {
@@ -274,7 +277,10 @@ export class TexOutlineFeature {
     oldPath: string,
   ): void => {
     this.headingCache.delete(oldPath);
-    if (isTexExtension(file.extension)) void this.preload(file);
+    // rename 同样会对文件夹触发。
+    if (file instanceof TFile && isTexExtension(file.extension)) {
+      void this.preload(file);
+    }
   };
 
   private readonly handleFileOpen = (file: TFile): void => {

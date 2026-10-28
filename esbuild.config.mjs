@@ -162,6 +162,8 @@ async function assertProductionBundle(filePath) {
     throw new Error(`Production bundle is missing required markers: ${missing.join(", ")}`);
   }
   const forbiddenDebugMarkers = [
+    "native-menu diagnostics build",
+    "[mv-aide] web native menu:",
     "[mv-aide vim] controller created",
     "[mv-aide vim] controller destroyed",
     "[mv-aide vim] host document changed",

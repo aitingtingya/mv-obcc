@@ -70,7 +70,8 @@ import {
   openDshWebviewInNewLeaf,
   stopOpenMvAgentViews,
 } from "./runtime/webview";
-import { isDshConnectedToBridge } from "./ide/bridge-status";
+import { BRIDGE_PROBE_MIN_INTERVAL_MS, isDshConnectedToBridge } from "./ide/bridge-status";
+import { SharedProbe } from "../../runtime/shared-probe";
 import {
   inspectDshSourceUpdate,
   rebuildOrUpgradeDshSource,
@@ -236,6 +237,7 @@ const probeDshWebViaRequestUrl = createRequestUrlDshProbe(requestUrl);
  * existing core logic.
  */
 export class DshFeature {
+  private readonly bridgeStatusProbes = new SharedProbe<boolean>(BRIDGE_PROBE_MIN_INTERVAL_MS);
   private readonly processManager: DshProcessManager;
   private readonly pluginAutoUpdater: DshPluginAutoUpdater;
   private commandRegistered = false;
@@ -696,6 +698,7 @@ export class DshFeature {
   }
 
   dispose(): void {
+    this.bridgeStatusProbes.clear();
     this.mvAgentOperationGeneration += 1;
     if (this.mvAgentPopoutGeometryPoll) {
       this.mvAgentPopoutGeometryPoll.owner.clearInterval(
@@ -1828,17 +1831,17 @@ export class DshFeature {
    * The view URL is authoritative even before this Vault's private process
    * manager has adopted a shared DSH instance.
    */
-  async isDshViewConnectedToBridge(dshUrl: string): Promise<boolean> {
+  async isDshViewConnectedToBridge(dshUrl: string, fresh = false): Promise<boolean> {
     const bridgePort = Number((this.plugin as unknown as { port?: number }).port ?? 0);
     const normalized = normalizeDshWebUrl(dshUrl);
     if (!bridgePort || !normalized) return false;
     const dshPort = Number(new URL(normalized).port);
     if (!Number.isInteger(dshPort) || dshPort <= 0 || dshPort >= 65536) return false;
     try {
-      return await isDshConnectedToBridge(
+      return await this.bridgeStatusProbes.read(`${normalized}\0${bridgePort}`, () => isDshConnectedToBridge(
         { dshPort, bridgePort, dshUrl: normalized },
         { probe: probeDshWebViaRequestUrl },
-      );
+      ), fresh);
     } catch {
       return false;
     }

@@ -6,7 +6,7 @@ import {
   type Diagnostic,
 } from "@codemirror/lint";
 import { editorInfoField, MarkdownView, Notice } from "obsidian";
-import * as child_process from "child_process";
+import { execLintCommand } from "./lint-process";
 import * as path from "path";
 import type MvAideIdePlugin from "../../main";
 import { t } from "../i18n";
@@ -26,8 +26,10 @@ export interface LintDiagnosticsFile {
 export class LintFeature {
   readonly extensions: Extension[];
   private readonly compartment = new Compartment();
-  private autoLintTimer: number | null = null;
-  private pendingAutoView: MarkdownView | null = null;
+  private readonly autoLintTimers = new Map<string, { owner: Window; id: number }>();
+  private readonly running = new Map<string, { controller: AbortController; promise: Promise<void> }>();
+  private readonly queued = new Map<string, MarkdownView>();
+  private disposed = false;
   /** 布局就绪前不自动触发 lint（规范二：外部系统命令必须等 workspace 布局就绪）。 */
   private layoutReady = false;
   /** 诊断在 CM state 里，这里另存一份中央快照供桥接层读取。 */
@@ -94,11 +96,11 @@ export class LintFeature {
 
   /** 卸载清理：取消挂起的防抖定时器，避免卸载后仍派生子进程。 */
   dispose(): void {
-    if (this.autoLintTimer !== null) {
-      activeWindow.clearTimeout(this.autoLintTimer);
-      this.autoLintTimer = null;
-    }
-    this.pendingAutoView = null;
+    this.disposed = true;
+    for (const timer of this.autoLintTimers.values()) timer.owner.clearTimeout(timer.id);
+    this.autoLintTimers.clear();
+    this.queued.clear();
+    for (const task of this.running.values()) task.controller.abort();
     this.diagnosticsByFile.clear();
   }
 
@@ -157,6 +159,13 @@ export class LintFeature {
   }
 
   private clearDiagnostics(view: MarkdownView): void {
+    if (view.file) {
+      const timer = this.autoLintTimers.get(view.file.path);
+      if (timer) timer.owner.clearTimeout(timer.id);
+      this.autoLintTimers.delete(view.file.path);
+      this.queued.delete(view.file.path);
+      this.running.get(view.file.path)?.controller.abort();
+    }
     const cm = (view.editor as unknown as { cm: EditorView }).cm;
     if (isDestroyed(cm)) return;
     cm.dispatch(setDiagnostics(cm.state, []));
@@ -176,6 +185,25 @@ export class LintFeature {
   }
 
   private async runLint(view: MarkdownView): Promise<void> {
+    const key = view.file?.path;
+    if (!key || this.disposed) return;
+    const current = this.running.get(key);
+    if (current) {
+      this.queued.set(key, view);
+      return current.promise;
+    }
+    const controller = new AbortController();
+    const promise = this.executeLint(view, controller.signal).finally(async () => {
+      this.running.delete(key);
+      const next = this.queued.get(key);
+      this.queued.delete(key);
+      if (next && !this.disposed) await this.runLint(next);
+    });
+    this.running.set(key, { controller, promise });
+    return promise;
+  }
+
+  private async executeLint(view: MarkdownView, signal: AbortSignal): Promise<void> {
     const file = view.file;
     if (!file) return;
     const extension = file.extension.toLowerCase();
@@ -186,6 +214,8 @@ export class LintFeature {
     }
     const cm = (view.editor as unknown as { cm?: EditorView }).cm;
     if (!cm || isDestroyed(cm)) return;
+    const document = cm.state.doc;
+    const filePath = file.path;
     const vaultRoot =
       (this.plugin.app.vault.adapter as any).getBasePath?.() ?? "";
     if (!vaultRoot) {
@@ -194,10 +224,12 @@ export class LintFeature {
     }
     const fullPath = path.join(vaultRoot, file.path);
 
-    const { stdout, stderr, error } = await execCapture(
+    const { stdout, stderr, error } = await execLintCommand(
       buildLintCommand(command, fullPath),
-      { cwd: path.dirname(fullPath), maxBuffer: 8 * 1024 * 1024 },
+      { cwd: path.dirname(fullPath), maxBuffer: 8 * 1024 * 1024, signal },
     );
+    if (signal.aborted || this.disposed || isDestroyed(cm) ||
+      cm.state.doc !== document || view.file?.path !== filePath) return;
     if (error && !stdout && !stderr) {
       new Notice(
         t("Lint 命令执行失败：{message}", {
@@ -232,7 +264,10 @@ export class LintFeature {
 
   /** 常驻触发入口：文件常驻则防抖自动 lint。 */
   private maybeAutoLintFor(cm: EditorView | undefined): void {
-    if (!cm || !this.layoutReady) return;
+    if (!cm || !this.layoutReady || this.disposed) return;
+    const file = cm.state.field(editorInfoField, false)?.file;
+    if (!file || !lintCommandFor(this.plugin.settings.sourceLint, file.extension).trim() ||
+      !lintPersistentFor(this.plugin.settings.sourceLint, file.extension, file.path)) return;
     const view = this.mdViewForCm(cm);
     if (!view?.file) return;
     if (
@@ -244,19 +279,18 @@ export class LintFeature {
     ) {
       return;
     }
-    if (this.autoLintTimer !== null) {
-      activeWindow.clearTimeout(this.autoLintTimer);
-    }
-    this.pendingAutoView = view;
-    this.autoLintTimer = activeWindow.setTimeout(() => {
-      this.autoLintTimer = null;
-      const pending = this.pendingAutoView;
-      this.pendingAutoView = null;
-      if (!pending?.file) return;
-      const cm = (pending.editor as unknown as { cm?: EditorView }).cm;
+    const key = view.file.path;
+    const previous = this.autoLintTimers.get(key);
+    if (previous) previous.owner.clearTimeout(previous.id);
+    const owner = cm.dom.ownerDocument.defaultView!;
+    const id = owner.setTimeout(() => {
+      this.autoLintTimers.delete(key);
+      if (view.file?.path !== key) return;
+      const cm = (view.editor as unknown as { cm?: EditorView }).cm;
       if (isDestroyed(cm)) return;
-      void this.runLint(pending);
+      void this.runLint(view);
     }, AUTO_LINT_DELAY_MS);
+    this.autoLintTimers.set(key, { owner, id });
   }
 
   private mdViewForCm(cm: EditorView): MarkdownView | null {
@@ -341,19 +375,4 @@ function isDestroyed(view: EditorView | null | undefined): boolean {
   return (
     !view || (view as unknown as { destroyed?: boolean }).destroyed === true
   );
-}
-
-function execCapture(
-  command: string,
-  options: child_process.ExecOptions,
-): Promise<{ stdout: string; stderr: string; error?: Error }> {
-  return new Promise((resolve) => {
-    child_process.exec(command, options, (error, stdout, stderr) => {
-      resolve({
-        stdout: String(stdout ?? ""),
-        stderr: String(stderr ?? ""),
-        error: error ?? undefined,
-      });
-    });
-  });
 }

@@ -226,6 +226,7 @@ function setTextIfChanged(element: HTMLElement | null, text: string): void {
  * 端口 3080。打开/选中前的方形勾选框可独立控制对应被动推送；点击整栏展开明细。
  */
 export class DshWebView extends ItemView {
+  private renderedStatus: readonly unknown[] = [];
   private frameEl: HTMLIFrameElement | null = null;
   private currentUrl = "";
   private statusPortEl: HTMLSpanElement | null = null;
@@ -1052,7 +1053,7 @@ export class DshWebView extends ItemView {
     const generation = ++this.bridgeProbeGeneration;
     this.bridgeProbeBusy = true;
     try {
-      const connected = await feature.isDshViewConnectedToBridge(url);
+      const connected = await feature.isDshViewConnectedToBridge(url, force);
       if (
         !this.closed &&
         generation === this.bridgeProbeGeneration &&
@@ -1085,6 +1086,15 @@ export class DshWebView extends ItemView {
     const connectionState = this.bridgeConnectionState;
     const connected = connectionState === "connected";
     const snapshot = plugin.latestSelectionSnapshot();
+    const status = [this.statusPortEl, actualUrl, actualPort, connectionState,
+      settings.language, settings.dsh.port, settings.dsh.pushLocation, settings.dsh.pushSelection,
+      this.loadFailed, this.loadFailureReason, this.expanded,
+      snapshot?.filePath, snapshot?.relativePath, snapshot?.title, snapshot?.url,
+      snapshot?.resourceType, snapshot?.viewType, snapshot?.page, snapshot?.cursor.line,
+      snapshot?.selection.isEmpty, snapshot?.selection.start.line, snapshot?.selection.end.line,
+      snapshot?.selection.text];
+    if (status.length === this.renderedStatus.length && status.every((value, i) => value === this.renderedStatus[i])) return;
+    this.renderedStatus = status;
     const parts = buildDshStatusParts(snapshot);
     const port = actualPort ?? settings.dsh.port;
 

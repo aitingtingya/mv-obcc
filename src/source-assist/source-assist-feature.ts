@@ -27,6 +27,7 @@ import {
 export class SourceAssistFeature {
   readonly extensions: Extension[] = [];
   private rebuildGeneration = 0;
+  private appliedSettings = "";
 
   constructor(private readonly plugin: MvAideIdePlugin) {}
 
@@ -40,6 +41,8 @@ export class SourceAssistFeature {
 
   private async rebuild(): Promise<void> {
     const generation = ++this.rebuildGeneration;
+    const settingsKey = JSON.stringify(this.plugin.settings.sourceAssist);
+    if (settingsKey === this.appliedSettings) return;
     const runtime = await buildLatexSuiteProfileRuntime(
       this.plugin,
       this.plugin.settings.sourceAssist,
@@ -49,6 +52,7 @@ export class SourceAssistFeature {
     if (generation !== this.rebuildGeneration) return;
     const next = this.sourceAssistExtensions(runtime, mathConfig);
     this.extensions.splice(0, this.extensions.length, ...next);
+    this.appliedSettings = settingsKey;
     this.plugin.app.workspace.updateOptions();
   }
 

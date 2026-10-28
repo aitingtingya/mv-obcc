@@ -113,6 +113,7 @@ interface ParsedHeading {
 // Immutable document identity invalidates this cache on edits; closed documents
 // are not retained. Selection-only updates reuse the exact same parsed headings.
 const headingCache = new WeakMap<Text, readonly ParsedHeading[]>();
+const headingDecorationCache = new WeakMap<Text, { key: string; value: TexOutlineHeadingDecorations }>();
 
 function parsedHeadings(doc: Text): readonly ParsedHeading[] {
   const cached = headingCache.get(doc);
@@ -163,9 +164,13 @@ export function buildTexOutlineHeadingDecorations(
   if (hits.length === 0) return EMPTY_TEX_OUTLINE_HEADINGS;
 
   const livePreview = state.field(editorLivePreviewField, false) ?? false;
+  const touched = livePreview ? hits.map((hit) => selectionTouchesLine(state, hit.from, hit.to)) : [];
+  const key = `${livePreview}:${touched.map((value) => value ? "1" : "0").join("")}`;
+  const cached = headingDecorationCache.get(state.doc);
+  if (cached?.key === key) return cached.value;
   const lineBuilder = new RangeSetBuilder<Decoration>();
   const inlineBuilder = new RangeSetBuilder<Decoration>();
-  for (const hit of hits) {
+  for (const [index, hit] of hits.entries()) {
     const { level, shellFrom, titleFrom, titleTo } = hit;
     lineBuilder.add(
       hit.from,
@@ -173,7 +178,7 @@ export function buildTexOutlineHeadingDecorations(
       Decoration.line({ class: `HyperMD-header HyperMD-header-${level}` }),
     );
     const hideShell =
-      livePreview && !selectionTouchesLine(state, hit.from, hit.to);
+      livePreview && !touched[index];
     if (hideShell) {
       inlineBuilder.add(shellFrom, titleFrom, Decoration.replace({}));
     }
@@ -186,10 +191,12 @@ export function buildTexOutlineHeadingDecorations(
       inlineBuilder.add(titleTo, titleTo + 1, Decoration.replace({}));
     }
   }
-  return {
+  const value = {
     lineDecorations: lineBuilder.finish(),
     inlineDecorations: inlineBuilder.finish(),
   };
+  headingDecorationCache.set(state.doc, { key, value });
+  return value;
 }
 
 function selectionTouchesLine(

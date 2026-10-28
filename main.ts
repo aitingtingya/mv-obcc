@@ -20,6 +20,9 @@ import {
 } from "obsidian";
 import { breadcrumbAtLine } from "./src/heading-breadcrumb";
 import { snapshotWorkspaceLeaves } from "./src/workspace-leaves";
+import { WorkspaceMaintenance } from "./src/runtime/workspace-maintenance";
+import { SettingsEffects } from "./src/runtime/settings-effects";
+import { RuntimeDiagnostics } from "./src/runtime/runtime-diagnostics";
 import { StateEffect, type EditorState } from "@codemirror/state";
 import {
   Decoration,
@@ -477,6 +480,9 @@ export default class MvAideIdePlugin extends Plugin {
   terminalRegistry: TerminalRegistry | null = null;
   private dshTerminalRpc: DshTerminalRpc | null = null;
   private selectionHighlighter: SelectionHighlightController | null = null;
+  private workspaceMaintenance: WorkspaceMaintenance<WorkspaceLeaf> | null = null;
+  private readonly settingsEffects = new SettingsEffects();
+  private readonly runtimeDiagnostics = new RuntimeDiagnostics();
   private llmFeature: LlmFeature | null = null;
   private inlineCompletion: InlineCompletionFeature | null = null;
   private sourceAssist: SourceAssistFeature | null = null;
@@ -764,13 +770,24 @@ export default class MvAideIdePlugin extends Plugin {
       onLog: (message) => console.error("[mv-aide]", message),
     });
 
+    this.workspaceMaintenance = new WorkspaceMaintenance(
+      this.app.workspace.containerEl.ownerDocument.defaultView!,
+      () => snapshotWorkspaceLeaves(this.app),
+      (leaves, force) => {
+        this.runtimeDiagnostics.count("workspaceMaintenance");
+        this.runtimeDiagnostics.count("leavesVisited", leaves.length);
+        this.selectionHighlighter?.sync(force, leaves);
+        this.llmFeature?.tick(leaves);
+        this.trackWebSelectionReporters(leaves);
+      },
+    );
+    this.app.workspace.onLayoutReady(() => this.workspaceMaintenance?.invalidate(true));
     this.registerEvent(
       this.app.workspace.on("active-leaf-change", (leaf) => {
         this.terminalRegistry?.refresh();
         this.terminalRegistry?.markActiveLeaf(leaf);
         this.fileTypeIconView?.refreshTabIcons();
-        this.selectionHighlighter?.sync(true);
-        this.trackWebSelectionReporters();
+        this.workspaceMaintenance?.invalidate(true);
         this.scheduleBroadcast();
         // Returning to a terminal tab must hand keyboard focus back to
         // xterm's textarea; otherwise the terminal looks dead until clicked.
@@ -781,15 +798,23 @@ export default class MvAideIdePlugin extends Plugin {
       this.app.workspace.on("layout-change", () => {
         this.terminalRegistry?.refresh();
         this.fileTypeIconView?.refreshTabIcons();
-        this.selectionHighlighter?.sync();
-        this.trackWebSelectionReporters();
+        this.workspaceMaintenance?.invalidate();
         this.scheduleBroadcast();
       }),
     );
+    const workspaceDocument = this.app.workspace.containerEl.ownerDocument;
+    let workspaceSelection = false;
     this.registerDomEvent(
-      this.app.workspace.containerEl.ownerDocument,
+      workspaceDocument,
       "selectionchange",
-      () => this.scheduleBroadcast(),
+      () => {
+        const anchor = workspaceDocument.getSelection()?.anchorNode;
+        const next = !!anchor && this.app.workspace.containerEl.contains(anchor);
+        // Settings, command-palette and other modal input selections do not
+        // change document context. Still publish a workspace selection clear.
+        if (next || (workspaceSelection && !anchor)) this.scheduleBroadcast();
+        workspaceSelection = next;
+      },
     );
     this.registerDomEvent(activeWindow, "focus", () => {
       this.previousBroadcasts.clear();
@@ -797,12 +822,11 @@ export default class MvAideIdePlugin extends Plugin {
     });
     this.registerInterval(
       activeWindow.setInterval(() => {
-        const leaves = snapshotWorkspaceLeaves(this.app);
-        this.selectionHighlighter?.sync(false, leaves);
-        this.llmFeature?.tick(leaves);
-        this.inlineCompletion?.tick();
         const leaf = activeWorkspaceLeaf(this.app);
-        this.trackWebSelectionReporters(leaves);
+        if (leaf?.view.getViewType() === "webviewer") {
+          this.selectionHighlighter?.refreshActiveWeb(leaf);
+          this.llmFeature?.refreshActiveWeb(leaf);
+        }
         if (
           this.settings.activityTracking.supportAllActivePages ||
           leaf?.view.getViewType() === "webviewer"
@@ -856,6 +880,8 @@ export default class MvAideIdePlugin extends Plugin {
     this.registerEditorExtension(this.customMarkdownHighlightExtension());
     this.registerEditorExtension(
       EditorView.updateListener.of((update) => {
+        this.runtimeDiagnostics.count("editorTransactions", update.transactions.length);
+        if (update.docChanged) this.runtimeDiagnostics.count("documentUpdates");
         if (update.selectionSet || update.docChanged) this.scheduleBroadcast();
       }),
     );
@@ -906,6 +932,9 @@ export default class MvAideIdePlugin extends Plugin {
   }
 
   onunload(): void {
+    this.runtimeDiagnostics.cancel();
+    this.workspaceMaintenance?.dispose();
+    this.workspaceMaintenance = null;
     // 终端 PTY 清扫必须最先执行且逐叶保护：卸载序列后续任何 dispose 抛异常
     // 都不能阻止进程组被收割（实测曾出现 PTY 穿透插件重载残留）。
     try {
@@ -1016,14 +1045,26 @@ export default class MvAideIdePlugin extends Plugin {
 
   async saveAndApplySettings(): Promise<void> {
     await this.saveData(this.settings);
-    this.gitFeature?.syncPresentation();
-    this.fileTypeIconView?.syncFromSettings();
-    this.syncCustomMarkdownExtensions();
+    await this.settingsEffects.run("git", () => JSON.stringify([this.settings.git, this.settings.language]), () => this.gitFeature?.syncPresentation());
+    await this.settingsEffects.run("file-icons", () => JSON.stringify([this.settings.sourceAssist, this.settings.externalFileOpener, this.settings.language]), () => {
+      this.fileTypeIconView?.syncFromSettings();
+    });
+    await this.settingsEffects.run("source-presentation", () => JSON.stringify([this.settings.sourceAssist, this.settings.language]), () => {
+      this.syncCustomMarkdownExtensions();
+    });
     await this.sourceAssist?.settingsChanged();
-    await this.syncLocalServices(false);
-    await this.syncCodexIdeProvider();
-    await this.applyUniversalMcpSetting();
-    this.scheduleCodexMcpRegistrationIfReady();
+    await this.settingsEffects.run("local-services", () => JSON.stringify([
+      this.settings.ideIntegrations, this.dshFeature?.requiresBridge(),
+      this.settings.externalFileOpener, this.settings.mcpEnabled,
+      this.settings.mcpAuthToken, this.settings.claudeExecutable,
+    ]), () => this.syncLocalServices(false));
+    await this.settingsEffects.run("codex", () => JSON.stringify([
+      this.settings.ideIntegrations.codex, this.settings.codexExecutable, this.settings.mcpEnabled,
+    ]), async () => {
+      await this.syncCodexIdeProvider();
+      this.scheduleCodexMcpRegistrationIfReady();
+    });
+    await this.settingsEffects.run("universal-mcp", () => JSON.stringify(this.settings.universalMcp), () => this.applyUniversalMcpSetting());
     // Push the mv-agent settings to connected dsh plugins live (they read
     // them on initialize as well; this covers mid-session toggles).
     this.server?.broadcast({
@@ -1231,7 +1272,16 @@ export default class MvAideIdePlugin extends Plugin {
    * did-start-navigation 时就缓存，切换标签瞬间即可显示新页面地址。
    */
   private trackWebSelectionReporters(snapshot?: readonly WorkspaceLeaf[]): void {
-    (snapshot ?? snapshotWorkspaceLeaves(this.app)).forEach((leaf) => {
+    const leaves = snapshot ?? snapshotWorkspaceLeaves(this.app);
+    const live = new Set(leaves.map((leaf) => (leaf.view as { webview?: HTMLElement }).webview));
+    for (const [webview, handlers] of this.webSelectionListeners) {
+      if (live.has(webview)) continue;
+      for (const { type, listener } of handlers) webview.removeEventListener(type, listener);
+      this.webSelectionListeners.delete(webview);
+      this.webElementLeaf.delete(webview);
+      this.reportedWebElements.delete(webview);
+    }
+    leaves.forEach((leaf) => {
       if (leaf.view?.getViewType() !== "webviewer") return;
       const view = leaf.view as {
         webview?: (HTMLElement & {
@@ -1333,6 +1383,26 @@ export default class MvAideIdePlugin extends Plugin {
       this.removeCommand(id);
     }
     this.registeredStaticCommandIds.clear();
+
+    this.addCommand({
+      id: "sample-runtime-resources",
+      name: t("采集 30 秒资源诊断"),
+      callback: () => {
+        new Notice(t("正在采集 30 秒资源诊断，请复现卡顿操作。不会记录正文、路径或凭据。"));
+        this.runtimeDiagnostics.start(activeWindow, (report) => {
+          const modal = new Modal(this.app);
+          modal.contentEl.createEl("h3", { text: t("资源诊断结果") });
+          modal.contentEl.createEl("pre", { text: JSON.stringify({
+            ...report,
+            webSelectionListeners: this.webSelectionListeners.size,
+            terminalProcesses: this.app.workspace.getLeavesOfType(TERMINAL_VIEW_TYPE)
+              .filter((leaf) => leaf.view instanceof TerminalView && leaf.view.isShellAlive()).length,
+          }, null, 2) });
+          modal.open();
+        });
+      },
+    });
+    this.registeredStaticCommandIds.add("sample-runtime-resources");
 
     this.addCommand({
       id: "send-selection-to-claude-code",
@@ -3216,6 +3286,7 @@ export default class MvAideIdePlugin extends Plugin {
   }
 
   private async broadcastSelection(): Promise<void> {
+    this.runtimeDiagnostics.count("contextBroadcasts");
     const generation = ++this.broadcastGeneration;
     const leaf = activeWorkspaceLeaf(this.app);
     const activeState =

@@ -210,9 +210,6 @@
   "src/settings-tab.ts": {
     "@typescript-eslint/no-misused-promises": {
       "count": 13
-    },
-    "@typescript-eslint/no-unnecessary-type-assertion": {
-      "count": 1
     }
   },
   "src/source-assist/latex-suite-blackbox.ts": {

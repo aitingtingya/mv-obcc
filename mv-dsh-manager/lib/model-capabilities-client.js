@@ -15,12 +15,10 @@ window.__ModuleLoader__.load({
     Object.defineProperty(exports, Symbol.toStringTag, { value: 'Module' });
 
     const compat = require('@mv-aide/mv-dsh-compat/client/manager');
-    const { modelRowDisclosure, editorActionRow, editorActionButton, editorSaveButton } = compat;
+    const { modelRowDisclosure, editorActionRow, editorActionButton, mutationAffectsModelSettings } = compat;
 
     const INSTALL_KEY = '__MV_AIDE_MODEL_CAPABILITIES_CLIENT__';
     const API_PATH = '/api/mv-aide/model-capabilities';
-    const MODELS_LABELS = new Set(['模型目录', 'Models']);
-    const MODEL_ID_PREFIXES = ['模型 ID ', 'Model ID '];
     const COMPAT_GROUPS = [
       {
         title: ['推理兼容', 'Reasoning compatibility'],
@@ -100,8 +98,12 @@ window.__ModuleLoader__.load({
         duplicateKey: '模板参数名不能重复。', keyRequired: '模板参数名不能为空。',
         positiveCapacity: '容量必须是正整数，可使用 K/M 后缀。',
         loadFailed: '模型能力加载失败：',
+        nativeExtras: '原生思考等级补充', resetField: '恢复继承',
+        nativeSaveUnconfirmed: '尚未确认原生模型保存成功；模型能力未写入，请重试保存。',
       },
       en: {
+        nativeExtras: 'Native reasoning extras', resetField: 'Restore inheritance',
+        nativeSaveUnconfirmed: 'Native model save was not confirmed; capabilities were not written. Retry saving.',
         title: 'Model capabilities',
         input: 'Input modalities', inherit: 'Inherit', custom: 'Custom', text: 'Text', image: 'Image',
         reasoning: 'Reasoning', reasoningOff: 'Non-reasoning model', reasoningCustom: 'Custom reasoning levels',
@@ -185,30 +187,19 @@ window.__ModuleLoader__.load({
     }
 
     function modelSections() {
-      return [...document.querySelectorAll('section[aria-label]')]
-        .filter((node) => MODELS_LABELS.has(node.getAttribute('aria-label')));
+      return compat.modelCatalogSections(document);
     }
 
     function modelIdInputs(section) {
-      return [...section.querySelectorAll('input[aria-label]')]
-        .filter((input) => MODEL_ID_PREFIXES.some((prefix) => (input.getAttribute('aria-label') || '').startsWith(prefix)));
+      return compat.modelIdInputs(section);
     }
 
     function modelIdInput(entry) {
-      return [...entry.querySelectorAll('input[aria-label]')].find((input) => {
-        const label = input.getAttribute('aria-label') || '';
-        return MODEL_ID_PREFIXES.some((prefix) => label.startsWith(prefix));
-      });
+      return compat.modelIdInputs(entry)[0];
     }
 
     function editorRoot(section) {
-      let node = section.parentElement;
-      while (node && node !== document.body) {
-        const hasKey = node.querySelector('input[aria-label="API key"], input[aria-label="API 密钥"]');
-        if (hasKey && editorSaveButton(node)) return node;
-        node = node.parentElement;
-      }
-      return null;
+      return compat.modelEditorRoot(section);
     }
 
     function installStyle() {
@@ -440,7 +431,7 @@ window.__ModuleLoader__.load({
         });
         checks.appendChild(element('label', { className: 'mv-aide-cap-check' }, box, element('span', { text: t[modality] || modality })));
       }
-      panel.appendChild(field(t.input, checks));
+      if (!draft.native?.input) panel.appendChild(field(t.input, checks));
 
       if (draft.input.includes('image')) {
         const budget = element('select', { className: 'mv-aide-cap-select', disabled });
@@ -487,6 +478,60 @@ window.__ModuleLoader__.load({
       if (draft.error) panel.appendChild(element('p', { className: 'mv-aide-cap-error', text: draft.error, role: 'alert' }));
     }
 
+    function nativeReasoningOrder(draft, values) {
+      const order = [...(draft.reasoningOrder || Object.keys(values)).filter(key => hasOwn(values, key)),
+        ...Object.keys(values).filter(key => draft.reasoningOrder && !draft.reasoningOrder.includes(key))];
+      if (draft.reasoningOrder) draft.reasoningOrder = order;
+      return order;
+    }
+
+    // Reconcile only manager-owned rows. Native edits must not rebuild the
+    // expert form, reset disclosures, or replace an input the user is editing.
+    function renderNativeReasoningExtras(extra, draft, disabled) {
+      const t = copy();
+      const values = compat.nativeReasoningValues(draft.nativeRoot) || {};
+      const order = nativeReasoningOrder(draft, values);
+      const rows = new Map([...extra.querySelectorAll(':scope > [data-mv-aide-reasoning-level]')]
+        .map(row => [row.getAttribute('data-mv-aide-reasoning-level'), row]));
+      for (const [level, row] of rows) if (!hasOwn(values, level)) row.remove();
+      order.forEach((level, index) => {
+        let row = rows.get(level);
+        if (!row) {
+          row = element('span', { className: 'mv-aide-cap-actions', 'data-mv-aide-reasoning-level': level },
+            element('span', { text: level }));
+          for (const [glyph, title, offset] of [['↑', t.up, -1], ['↓', t.down, 1]]) {
+            const button = element('button', { type: 'button', className: 'mv-aide-cap-button', text: glyph, title });
+            button.addEventListener('click', () => {
+              const next = nativeReasoningOrder(draft, compat.nativeReasoningValues(draft.nativeRoot) || {});
+              const at = next.indexOf(level);
+              if (at < 0 || at + offset < 0 || at + offset >= next.length) return;
+              [next[at], next[at + offset]] = [next[at + offset], next[at]];
+              draft.reasoningOrder = next;
+              dirty(draft);
+              renderNativeReasoningExtras(extra, draft, disabled);
+            });
+            row.appendChild(button);
+          }
+          if (level === 'off') {
+            const input = element('input', { className: 'mv-aide-cap-input', 'aria-label': t.wire });
+            input.addEventListener('input', () => { draft.offWire = input.value; dirty(draft); });
+            row.appendChild(input);
+          }
+        }
+        const buttons = row.querySelectorAll('button');
+        buttons[0].disabled = disabled || index === 0;
+        buttons[1].disabled = disabled || index === order.length - 1;
+        const input = row.querySelector('input');
+        if (input) {
+          const value = draft.offWire ?? values.off ?? '';
+          if (input.value !== value) input.value = value;
+          input.disabled = disabled;
+        }
+        const position = extra.children[index + 1];
+        if (position !== row) extra.insertBefore(row, position || null);
+      });
+    }
+
     function renderCapabilityPanel(panel, draft, disabled, builtin) {
       const t = copy();
       panel.replaceChildren();
@@ -530,7 +575,12 @@ window.__ModuleLoader__.load({
         checks.appendChild(element('label', { className: 'mv-aide-cap-check' }, box, element('span', { text: t[modality] || modality })));
       }
       inputControls.append(inputMode, checks);
-      panel.appendChild(field(t.input, inputControls));
+      if (!draft.native?.input) panel.appendChild(field(t.input, inputControls));
+      else {
+        const reset = element('button', { type: 'button', className: 'mv-aide-cap-button', text: `${t.input}: ${t.resetField}`, disabled });
+        reset.addEventListener('click', () => { draft.inputMode = 'inherit'; draft.resetNativeInput = true; dirty(draft); });
+        panel.appendChild(reset);
+      }
 
       const reasoning = element('div', {});
       reasoning.appendChild(select([
@@ -539,7 +589,16 @@ window.__ModuleLoader__.load({
         { value: 'custom', label: t.reasoningCustom },
       ], draft.reasoningMode, (value) => { draft.reasoningMode = value; dirty(draft); rerender(); }, disabled));
       if (draft.reasoningMode === 'custom') renderReasoningRows(reasoning, draft, disabled, rerender);
-      panel.appendChild(field(t.reasoning, reasoning));
+      if (!draft.native?.reasoning) panel.appendChild(field(t.reasoning, reasoning));
+      else {
+        const extra = element('details', { className: 'mv-aide-cap-expert', 'data-mv-aide-native-reasoning': '' },
+          element('summary', { text: t.nativeExtras }));
+        const reset = element('button', { type: 'button', className: 'mv-aide-cap-button', text: t.resetField, disabled });
+        reset.addEventListener('click', () => { draft.resetNativeReasoning = true; dirty(draft); });
+        extra.appendChild(reset);
+        renderNativeReasoningExtras(extra, draft, disabled);
+        panel.appendChild(extra);
+      }
 
       const expert = element('details', { className: 'mv-aide-cap-expert' });
       expert.appendChild(element('summary', { text: t.expert }));
@@ -652,7 +711,7 @@ window.__ModuleLoader__.load({
       return { kind: 'catalog', modelId, set, unset };
     }
 
-    function changeFor(draft, modelId) {
+    function fullChangeFor(draft, modelId) {
       if (draft.family === 'deepseek') return deepseekChangeFor(draft, modelId);
       const set = {};
       const unset = [];
@@ -678,6 +737,52 @@ window.__ModuleLoader__.load({
         else compatUnset.push(fieldName);
       }
       return { kind: draft.kind, modelId, set, unset, compat, compatUnset };
+    }
+
+    // Store changes to fields, not the complete capability form read at mount.
+    // Native model controls may have committed a different field meanwhile.
+    function changeFor(draft, modelId) {
+      const change = fullChangeFor(draft, modelId);
+      if (!draft.baseline) return change;
+      const base = draft.baseline;
+      const explicit = draft.explicit || {};
+      for (const field of Object.keys(change.set)) {
+        if (JSON.stringify(change.set[field]) === JSON.stringify(base.set[field])) delete change.set[field];
+      }
+      change.unset = change.unset.filter(field => !base.unset.includes(field));
+      for (const field of Object.keys(change.compat || {})) {
+        if (JSON.stringify(change.compat[field]) === JSON.stringify(base.compat[field])) delete change.compat[field];
+      }
+      if (change.compatUnset) change.compatUnset = change.compatUnset.filter(field => !base.compatUnset.includes(field));
+      const inputField = draft.family === 'deepseek' ? 'inputModalities' : 'input';
+      if (draft.native?.input && !draft.resetNativeInput) {
+        delete change.set[inputField]; change.unset = change.unset.filter(field => field !== inputField);
+        if (draft.family === 'deepseek' && !draft.input.includes('image')) {
+          // Native text-only saves already remove these schema-incompatible
+          // limits; do not replay their pre-save values as manager changes.
+          for (const field of ['imagePixelBudget', 'imageMaxBytes']) delete change.set[field];
+          change.unset = change.unset.filter(field => !['imagePixelBudget', 'imageMaxBytes'].includes(field));
+        }
+      } else if (draft.native?.input && draft.resetNativeInput) {
+        delete change.set[inputField];
+        if (!change.unset.includes(inputField)) change.unset.push(inputField);
+      }
+      if (draft.native?.reasoning) {
+        delete change.set.reasoningEfforts; change.unset = change.unset.filter(field => field !== 'reasoningEfforts');
+        if (draft.resetNativeReasoning) change.unset.push('reasoningEfforts');
+        else if (draft.reasoningOrder || draft.offWire !== undefined) {
+          const latest = draft.savedExplicit?.reasoningEfforts;
+          if (latest && typeof latest === 'object') {
+            const order = [...(draft.reasoningOrder || []).filter(key => hasOwn(latest, key)), ...Object.keys(latest).filter(key => !draft.reasoningOrder?.includes(key))];
+            change.set.reasoningEfforts = Object.fromEntries(order.map(key => [key, key === 'off' && draft.offWire !== undefined ? draft.offWire || null : latest[key]]));
+          }
+        }
+      }
+      change.expected = Object.fromEntries([...Object.keys(change.set), ...change.unset].map(field => [field, explicit[field] ?? null]));
+      if (draft.resetNativeInput) change.expected[inputField] = draft.savedExplicit?.[inputField] ?? null;
+      if (draft.native?.reasoning && (hasOwn(change.set, 'reasoningEfforts') || draft.resetNativeReasoning)) change.expected.reasoningEfforts = draft.savedExplicit?.reasoningEfforts ?? null;
+      change.compatExpected = Object.fromEntries([...Object.keys(change.compat || {}), ...(change.compatUnset || [])].map(field => [field, explicit.compat?.[field] ?? null]));
+      return change;
     }
 
     const NOTICE_TIMEOUT_MS = 3000;
@@ -768,11 +873,9 @@ window.__ModuleLoader__.load({
 
     /** Every model id this card shows, in row order. */
     function editorModelIds(editor) {
-      const section = [...editor.querySelectorAll('section[aria-label]')]
-        .find((node) => MODELS_LABELS.has(node.getAttribute('aria-label')));
+      const section = compat.modelCatalogSections(editor)[0];
       if (!section) return [];
-      const ids = [...section.querySelectorAll('input[aria-label]')]
-        .filter((input) => MODEL_ID_PREFIXES.some((prefix) => (input.getAttribute('aria-label') || '').startsWith(prefix)))
+      const ids = modelIdInputs(section)
         .map((input) => input.value.trim())
         .filter(Boolean);
       return [...new Set(ids)];
@@ -913,7 +1016,7 @@ window.__ModuleLoader__.load({
       const options = familyOptions(providerData, response, family);
       const byId = new Map(providerData.customModels.map((model) => [model.id, model]));
       for (const row of customEntries(section)) {
-        if (!(row.advanced instanceof Element) || row.advanced.querySelector(':scope > [data-mv-aide-model-capabilities]')) continue;
+        if (!(row.advanced instanceof Element)) continue;
         const key = customDraftKey(providerData.provider, row.input);
         const model = byId.get(row.input.value) || { explicit: {}, effective: {} };
         let draft = state.drafts.get(key);
@@ -926,6 +1029,16 @@ window.__ModuleLoader__.load({
         draft.modelIdInput = row.input;
         draft.provider = providerData.provider;
         draft.settingsNs = providerData.settingsNs ?? response.namespace ?? editor.getAttribute('data-mv-aide-settings-ns');
+        draft.native = compat.nativeModelControls(row.advanced);
+        draft.nativeRoot = row.advanced;
+        if (family === 'deepseek' && draft.native.input) draft.input = compat.nativeModelInputValues(row.advanced) || draft.input;
+        draft.baseline ??= fullChangeFor(draft, row.input.value);
+        const existing = row.advanced.querySelector(':scope > [data-mv-aide-model-capabilities]');
+        if (existing) {
+          const extra = existing.querySelector('[data-mv-aide-native-reasoning]');
+          if (extra) renderNativeReasoningExtras(extra, draft, !response.writable || !response.support.supported);
+          continue;
+        }
         const panel = element('div', { className: 'mv-aide-model-capabilities', 'data-mv-aide-model-capabilities': 'custom' });
         row.advanced.appendChild(panel);
         renderCapabilityPanel(panel, draft, !response.writable || !response.support.supported, false);
@@ -964,6 +1077,7 @@ window.__ModuleLoader__.load({
           draft.provider = providerData.provider;
           draft.settingsNs = providerData.settingsNs ?? response.namespace;
           draft.modelId = model.id;
+          draft.baseline ??= fullChangeFor(draft, model.id);
           const body = element('div', { className: 'mv-aide-builtin-body' });
           const panel = element('div', { className: 'mv-aide-model-capabilities', 'data-mv-aide-model-capabilities': 'builtin' });
           body.appendChild(panel); entry.appendChild(body);
@@ -1131,7 +1245,8 @@ window.__ModuleLoader__.load({
       queueMicrotask(() => {
         state.scanQueued = false;
         state.scanStamp = (state.scanStamp ?? 0) + 1;
-        for (const section of modelSections()) {
+        state.modelSections = new Set(modelSections());
+        for (const section of state.modelSections) {
           void injectSection(state, section).catch((error) => {
             console.warn('[mv-dsh-manager] model capability UI unavailable', error);
             showSectionError(section, error);
@@ -1161,8 +1276,7 @@ window.__ModuleLoader__.load({
       const { editor } = staged;
       const drafts = staged.entries.map((entry) => entry.draft);
       const byId = new Map(providerData.customModels.map((model) => [model.id, model]));
-      const section = [...editor.querySelectorAll('section[aria-label]')]
-        .find((node) => MODELS_LABELS.has(node.getAttribute('aria-label')));
+      const section = compat.modelCatalogSections(editor)[0];
       const rows = section ? customEntries(section) : [];
       const rowIndexByInput = new Map(rows.map((row, index) => [row.input, index]));
       const unresolved = [];
@@ -1219,7 +1333,8 @@ window.__ModuleLoader__.load({
       const changed = () => staged.entries.map((entry) => changeFor(
         entry.draft,
         entry.draft.resolvedModelId ?? entry.modelId,
-      ));
+      )).filter(change => Object.keys(change.set).length || change.unset.length
+        || Object.keys(change.compat || {}).length || change.compatUnset?.length);
 
       /**
        * Read the provider and the card together until the staged rows have a
@@ -1249,6 +1364,10 @@ window.__ModuleLoader__.load({
         const { unresolved, providerData, fresh } = await settle();
         if (unresolved.length > 0) staged.sent = false;
         const family = familyOf(providerData, fresh, staged.editor);
+        for (const entry of staged.entries) {
+          const modelId = entry.draft.resolvedModelId ?? entry.modelId;
+          entry.draft.savedExplicit = [...providerData.customModels, ...providerData.catalogModels].find(model => model.id === modelId)?.explicit || {};
+        }
         const settingsNs = providerData.settingsNs ?? fresh.namespace;
         if (staged.settingsNs && settingsNs && staged.settingsNs !== settingsNs) {
           throw new Error(`The write target moved from ${staged.settingsNs} to ${settingsNs}; reopen the provider and try again.`);
@@ -1257,9 +1376,8 @@ window.__ModuleLoader__.load({
           throw new Error(`${copy().syncFailed}${unresolved.join(', ')}`);
         }
         const changes = changed();
-        if (changes.length === 0) throw new Error(`${copy().syncFailed}${staged.provider}`);
         staged.posted = true;
-        await managerJson(`${API_PATH}/apply`, {
+        if (changes.length > 0) await managerJson(`${API_PATH}/apply`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             provider: staged.provider,
@@ -1292,20 +1410,24 @@ window.__ModuleLoader__.load({
     function checkPending(state) {
       const pending = state.pending;
       if (!pending) return;
-      if (!pending.editor.isConnected) {
-        state.pending = null;
-        void applyStaged(state, pending);
+      if (Date.now() - pending.started >= 30000 || pending.nativeFailed) {
+        clearPending(state);
+        if (!pending.nativeFailed && pending.editor.isConnected) showSectionError(pending.editor, new Error(copy().nativeSaveUnconfirmed));
         return;
       }
-      const elapsed = Date.now() - pending.started;
-      const save = editorSaveButton(pending.editor);
-      const idleSave = save && !save.disabled;
-      // The native commit is done once its own save control is idle again (or
-      // the wait ran out): either way the staged capability write must run.
-      if ((elapsed > 800 && idleSave) || elapsed > 30000) {
-        state.pending = null;
-        void applyStaged(state, pending);
+      if (!pending.editor.isConnected) {
+        if (pending.nativePending > 0 && !pending.nativeFailed) return;
+        clearPending(state);
+        if (!pending.nativeFailed && pending.nativePending === 0 && pending.parent.isConnected
+            && window.location.href === pending.href) void applyStaged(state, pending);
+        return;
       }
+    }
+
+    function clearPending(state) {
+      state.pending = null;
+      if (state.pendingTimer !== null) window.clearTimeout(state.pendingTimer);
+      state.pendingTimer = null;
     }
 
     function stageSave(state, editor, provider, event) {
@@ -1321,11 +1443,15 @@ window.__ModuleLoader__.load({
           return;
         }
       }
+      clearPending(state);
       state.pending = {
         editor, provider, entries, started: Date.now(),
+        parent: editor.parentElement, href: window.location.href,
+        nativePending: 0, nativeFailed: false,
         settingsNs: editor.getAttribute('data-mv-aide-settings-ns') || undefined,
         changes: entries.map((entry) => changeFor(entry.draft, entry.modelId)),
       };
+      state.pendingTimer = window.setTimeout(() => checkPending(state), 30000);
       // One explicit rebuild per native commit, never per keystroke, so the
       // panel reflects the committed row without the scan loop owning renders.
       window.setTimeout(() => checkPending(state), 900);
@@ -1365,7 +1491,7 @@ window.__ModuleLoader__.load({
       const draftRoute = editor.querySelector('input[aria-label="Provider ID"]')?.value.trim();
       const provider = draftRoute || editor.getAttribute('data-mv-aide-model-provider');
       if (cancel === button) {
-        if (state.pending?.editor === editor) state.pending = null;
+        if (state.pending?.editor === editor) clearPending(state);
         clearProviderDrafts(state, editor);
         return;
       }
@@ -1383,23 +1509,54 @@ window.__ModuleLoader__.load({
       installStyle();
       const state = {
         disposed: false, scanQueued: false, directory: null, providers: new Map(), drafts: new Map(),
-        expandedBuiltins: new Set(), pending: null, partial: null, partialTimer: null, scanStamp: 0,
-        sections: new Map(), scanTimer: null, openedRows: new WeakSet(),
+        expandedBuiltins: new Set(), pending: null, pendingTimer: null, partial: null, partialTimer: null, scanStamp: 0,
+        sections: new Map(), modelSections: new Set(), scanTimer: null, openedRows: new WeakSet(),
         directoryFailure: null, providerFailures: new Map(),
       };
-      const observer = new MutationObserver(() => {
-        if (!enabled()) { removeUi(); return; }
-        // Coalesce bursts: one keystroke in the native editor can emit many
-        // records, and each scan must not re-render the panels it just wrote.
+      const stopObservingSaves = compat.observeModelSaves(ctx, (namespace, key) => {
+        const pending = state.pending;
+        if (!pending || (namespace === 'settings' && pending.settingsNs && key !== pending.settingsNs)) return null;
+        pending.nativePending += 1;
+        return success => {
+          pending.nativePending -= 1;
+          pending.nativeFailed ||= !success;
+          window.setTimeout(() => checkPending(state), 0);
+        };
+      });
+      const queueScan = () => {
         if (state.scanTimer !== null) window.clearTimeout(state.scanTimer);
         state.scanTimer = window.setTimeout(() => { state.scanTimer = null; scheduleScan(state); }, 25);
+      };
+      const observer = new MutationObserver((records) => {
+        if (!enabled()) return;
+        const relevant = (state.pending && !state.pending.editor.isConnected) || records.some((record) => {
+          const target = record.target.nodeType === 1 ? record.target : record.target.parentElement;
+          if (target?.closest('[data-mv-aide-model-capabilities], [data-mv-aide-builtin-catalog]')) return false;
+          return mutationAffectsModelSettings(record, state.modelSections);
+        });
+        if (!relevant) return;
+        // Coalesce bursts: one keystroke in the native editor can emit many
+        // records, and each scan must not re-render the panels it just wrote.
+        queueScan();
       });
       const click = (event) => { if (enabled()) onClick(state, event); };
+      const nativeChange = event => {
+        if (!enabled() || !(event.target instanceof Element) || event.target.closest('[data-mv-aide-model-capabilities]')) return;
+        for (const draft of state.drafts.values()) {
+          if (!draft.nativeRoot?.contains(event.target)) continue;
+          if (draft.family === 'deepseek' && draft.native?.input && event.type === 'change' && event.target.matches('input[type="checkbox"]')) {
+            draft.input = compat.nativeModelInputValues(draft.nativeRoot);
+            renderCapabilityPanel(draft.panel, draft, event.target.disabled, false);
+          } else if (draft.family === 'pi-ai' && draft.native?.reasoning) queueScan();
+        }
+      };
       const unsubscribe = options.subscribe?.(() => {
         if (enabled()) scheduleScan(state);
         else removeUi();
       });
       document.addEventListener('click', click, true);
+      document.addEventListener('change', nativeChange);
+      document.addEventListener('input', nativeChange);
       if (document.body) observer.observe(document.body, { childList: true, subtree: true });
       else document.addEventListener('DOMContentLoaded', () => {
         if (!state.disposed) observer.observe(document.body, { childList: true, subtree: true });
@@ -1407,14 +1564,19 @@ window.__ModuleLoader__.load({
       const dispose = () => {
         if (state.disposed) return;
         state.disposed = true;
+        clearPending(state);
         observer.disconnect();
+        stopObservingSaves();
         unsubscribe?.();
         document.removeEventListener('click', click, true);
+        document.removeEventListener('change', nativeChange);
+        document.removeEventListener('input', nativeChange);
         removeUi();
         state.partial?.remove();
         if (state.partialTimer !== null) { window.clearTimeout(state.partialTimer); state.partialTimer = null; }
         if (state.scanTimer !== null) { window.clearTimeout(state.scanTimer); state.scanTimer = null; }
         state.sections.clear();
+        state.modelSections.clear();
         document.getElementById('mv-aide-model-capabilities-style')?.remove();
         delete window[INSTALL_KEY];
       };

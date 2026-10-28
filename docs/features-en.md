@@ -301,6 +301,8 @@ Ordinary DSH uploads use the confirmed Vault policy for their session. A file dr
 
 mv-dsh-manager appends **Model capabilities** inside the capacity disclosure of each model in DSH's native Models catalog; it does not create a second model-settings page. Models fall into two families with non-overlapping editable fields, and writes go into each family's own settings namespace:
 
+The primary acceptance runtime is `0.2.1-rc.2`, with `0.2.0-rc.2` retained in regression coverage. Each row follows **native first, manager fills the gaps**: existing native modality, reasoning-level and wire-value controls remain authoritative, without a second complete form. Manager retains collapsed level-ordering, special `off` mappings, inheritance resets, expert compatibility parameters and built-in overrides. Older rows lacking native reasoning controls keep the full enhancement. Editors without an API Key field are supported too.
+
 - Hand-declared models and `llm-pi-ai` built-in catalog models can declare text/image input, disabled or mapped reasoning levels, and every model-level compatibility field exposed by DSH's `llm-pi-ai` schema. Reasoning uses canonical DSH levels (`off/minimal/low/medium/high/xhigh/max`) mapped to the provider's wire value, for example `max → 最大`.
 - DSH's built-in DeepSeek catalog (`llm-deepseek`) models can declare input modalities (text/image), an image pixel budget (inheriting the 640000 default, low detail 512×512, or a custom value) and max bytes per image, plus display name, context window, and max output tokens; reasoning levels and compatibility parameters are not offered. Turning off the image modality also removes the image limit fields; fields not shown in the UI (such as the description) are preserved as-is on write.
 
@@ -320,6 +322,7 @@ The input, reasoning, and expert-area descriptions below apply to hand-declared 
 - Editing a built-in model shows a warning and creates only that model's `modelOverrides`; it never changes or copies the installed catalog. Clearing the last field removes the empty override and restores catalog defaults.
 - Each model card writes only to a precisely identified provider: the card's own Provider ID is preferred, with a unique match between the card's model list and the catalog as fallback. When no unique target exists, a provider chooser appears below the card and nothing is written until the user chooses.
 - Capability drafts share the native provider card's Save action. DSH first saves the native model, capacity, credential, and provider fields; only after that editor closes successfully are capabilities committed atomically against a fresh revision. Cancel or native failure writes nothing. If the native save re-registers the model ID, the capability write waits until the server and card views agree and then submits with the new ID; when they cannot be reconciled, saving stops with a "model row is inconsistent with the server" message and the provider must be reopened. A second-stage failure explicitly reports that the base model was saved while capabilities were not; the failure banner offers retry and close buttons, disappears after 3 seconds, and never stacks.
+- Drafts contain field-level changes: editing an expert parameter does not replay stale modalities or reasoning levels. Ordering and special mappings apply to the latest native save. Configuration and credential outcomes must succeed and the editor must leave edit mode; cancellation, failure, page departure or an unconfirmed timeout never triggers the capability write. The second phase resolves the latest identity and revision and merges atomically; unrelated fields survive, while a same-field conflict stops the write and retains the draft for retry.
 - Independent host/client modules implement the feature. The host accepts only whitelisted model fields of the corresponding namespace and preserves other models, unknown fields, and future compat keys. Older DSH schemas are reported as unsupported and are never guessed into. When a hand-declared `llm-pi-ai` model's list comes from the composition layer rather than the user layer, save the provider once in the native editor before editing capabilities.
 
 ### DSH Plugin, Skill, and Preset Management
@@ -380,7 +383,7 @@ The master switch is off by default and independent from IDE Bridge. Once enable
 
 - Markdown: use `LLM → Template` from the context menu or a hotkey. **The Markdown reading view (preview) has no CodeMirror instance holding a DOM selection** — `view.editor` only mirrors the last source/live-preview state. When `view.getMode() === "preview"`, the plugin falls back to the DOM selection instead; see `src/workspace-context.ts`.
 - PDF: the context menu is commonly owned by Obsidian/pdf++; use a hotkey.
-- Web Viewer: bound hotkeys are injected by default. Experimental context-menu injection suppresses the page's native menu and may be blocked by site security policy.
+- Web Viewer: bound hotkeys are injected by default. The experimental context-menu option first appends templates to Obsidian's native menu, preserving native items and other extensions. Older views without a compatible native interface use the injected in-page menu, which suppresses the page's native menu and may be blocked by site security policy. Disabling or unloading mv-AIDE removes only its own menu contribution.
 
 #### Prompt Templates
 
@@ -463,6 +466,20 @@ Multiple terminals can coexist in main, side, and bottom areas. Closing a termin
 - Double-clicking or Ctrl-clicking a recognized path attempts to open and locate it in Obsidian.
 
 `getTerminalOutput` returns only the requested recent lines and does not continuously transmit terminal content. Network activity by commands inside the shell remains the user's responsibility.
+
+### Terminal Selection Markdown Preview
+
+The terminal context menu offers two sources: **Markdown preview** reads the xterm selection and is disabled without one; **Clipboard Markdown preview** reads plain text from the system clipboard and requires no terminal selection. Both use the same draggable, resizable, pinnable window with a complete native Obsidian Markdown editor, initially in edit mode (Live Preview), with the native reading-mode switch available. Markdown, tables, code and math follow Obsidian's rules; no additional renderer, delimiter conversion, or reconstruction of Markdown removed by a CLI is performed.
+
+Terminal applications such as Codex can manage their own text highlighting, which is separate from an xterm selection. In Codex, drag to select, right-click to copy, wait for the copy confirmation, then choose **Clipboard Markdown preview** from the same menu. Codex clearing its highlight after a successful copy is its native behavior. The plugin does not take over that mouse or copy flow or read Codex's internal selection.
+
+- **Markdown preview** uses a snapshot of the xterm selection when the menu opens. xterm joins soft-wrapped rows and preserves hard line breaks.
+- **Clipboard Markdown preview** reads the current plain text once, through the owning Obsidian window's clipboard API, only when you click the item. It preserves line breaks and Markdown as copied. Opening the menu does not read the clipboard; there is no clipboard monitoring, caching or HTML-to-Markdown conversion. Empty text or a failed read produces a notice without opening an empty window or replacing an existing preview.
+- Later terminal output or clipboard changes do not update the preview; no history scan or Agent request is involved.
+- Each terminal reuses one window. A new preview replaces its temporary content, including edits, and returns to edit mode while preserving position, size and pin state. Other terminals remain independent.
+- Clicking outside closes an unpinned window. Escape closes it only while unpinned and focused. A pinned window remains open while you use the terminal; its close button always works.
+- **Copy source** copies the current editor text. **New note** creates an independent copy in Obsidian's configured new-note folder. With no source file, the “same folder as current file” option uses Obsidian's no-active-file behavior. Names increment from `Untitled.md` without overwriting existing notes. The note opens in a normal tab; an unpinned preview closes, while a pinned preview remains. Later preview edits do not update an exported note.
+- Native autosave writes only to `mv-aide/tmp/terminal-preview/<runtime>/<window>.md`. Closing the preview or terminal, or unloading the plugin, releases the editor before deleting its temporary file. Notes created with **New note** remain. Temporary files are separate from Selection Assistant's `latest.md`.
 
 ### mv-agent / DSH Enhanced Terminal Awareness
 
@@ -884,6 +901,10 @@ mv-agent shares IDE Bridge's local bridge service, the same public tool switches
 
 `@mv-aide/mv-dsh-subworkspace` is fully decoupled from IDE Bridge: with the bridge off, the lock file missing, or IDE tools disabled, associated roots, the `workspace` tool, and the `_workspace` selector all keep working. When mv-agent and mv-dsh-manager are also installed, ordinary DSH tool-pipeline composition applies.
 
+In DSH `0.2.1-rc.2`, a session's original project and its native current directory are distinct: bridge identity and associated-root configuration belong to the project, while native relative paths use the current directory. Changing that directory does not switch the IDE bridge. `workspace switch/reset` and `_workspace` (one root, an array, or `all`) project a root only for that Agent's async call and nested execution. The new adapter projects `workingDirectory.get()` and keeps native `ensure()` validation; the older adapter retains the session-header path. Completion restores normal resolution without calling native `set()`, adding temporary directory history or synchronizing the two selections. Diff uses the same directory and filesystem resolution as native file tools; the permission workspace root remains a permission boundary only.
+
+The new composer stores command chips, file references and text as a semantic draft. Drops insert at native coordinates, including around `/goal` and `/plan`, rather than counting only file chips. Recursive command selection and history recall share the compatibility layer and retain untouched chips. A failed drop restores the complete draft and original attachments, releasing only new attachments; session, editor or draft-revision changes cancel stale transactions. Nothing is sent automatically; image fitting and native attachment limits are unchanged. New plan-review cancellation keeps DSH's native turn-concluding result with manager's Escape enhancement; the previous preview retains its existing continuation gate.
+
 ### Vim status display and the native status bar
 
 **Hide the native Obsidian status bar** (§2 mv-agent) and **Editor-overlay Vim status** (§6 Vim Enhancement) are coupled through a shared settings hook: hiding the native status bar forces the editor overlay badge on, and restoring the native bar returns control to the user's preference.
@@ -987,6 +1008,20 @@ The following settings are pure local fields in `data.json`; none of them reache
 
 <a id="troubleshooting"></a>
 ## Troubleshooting
+
+<a id="resource-diagnostics"></a>
+### Resource diagnostics and scheduling boundaries
+
+**Sample resource diagnostics for 30 seconds** is inactive by default. Run it, reproduce the slowdown during collection, and read the resulting dialog. It reports event-loop delay P95/P99/maximum, browser long-task count/maximum, and counts of editor transactions, document updates, workspace maintenance, context broadcasts, current browser selection listeners, and live terminal processes. Only numbers and fixed metric names are collected: no document contents, selections, paths, model requests, or credentials. Nothing is written to settings or diagnostic files. Starting another sample replaces the unfinished one; plugin unload cancels collection.
+
+Event-loop delay and long tasks cover the current Obsidian renderer, including Obsidian, themes, and other plugins. They do not identify one mv-AIDE feature as the cause. The report is not CPU usage, proof of a memory leak, or cross-platform desktop acceptance.
+
+- Main settings sections construct contents on first expansion. Code Suite profiles also defer editor construction until expanded. Collapse/reopen retains controls; local refresh does not rebuild other sections. Code drafts survive local redraws in memory; closing settings does not persist invalid drafts.
+- Layout and active-tab events coalesce workspace maintenance, with late-mount checks at 150ms and 1000ms. Lightweight active-webview updates remain; there is no full workspace enumeration every 500ms.
+- TeX analysis preserves comment, escape, delimiter precedence, and region semantics. Missing delimiters are not repeatedly searched during one analysis. Selection updates reuse analysis and equivalent decorations; large-file features are not disabled and contents are not truncated.
+- Git still reads actual repository state and operation markers; unchanged snapshots do not increment revision or notify UI repeatedly. DSH status shares read-only probes for no longer than the existing 15-second interval, with forced checks on navigation. Connections, heartbeats and session supervisors are not paused by status-UI optimization.
+- Lint runs serially per file, discards results superseded by a changed document, and cancels its owned command tree on unload. Terminal tail scrolling is batched into animation frames; PTY bytes, parsing, readiness and reads never wait for that frame.
+- Managed copies still read complete files and compute SHA-256, including changes with identical size and timestamps. At most two checksum streams run concurrently; stat metadata never substitutes for content validation.
 
 ### Agent Does Not Connect
 

@@ -31,11 +31,14 @@ import {
   type ReadDiagnostics,
 } from "./terminal-read";
 import { TerminalInputQueue } from "./terminal-input-queue";
+import { VisualFrame } from "../runtime/visual-frame";
 import {
   terminalShellKind,
   type TerminalShellKind,
 } from "./terminal-command";
 import type MvAideIdePlugin from "../../main";
+import { TerminalMarkdownPreview } from "../terminal-markdown-preview/feature";
+import { installTerminalContextMenu } from "./terminal-context-menu";
 
 // stdin 帧协议：[type: 1B][length: 4B LE][payload]。前端按消息打帧、后端
 // 按帧拆分，不再从无边界字节流里猜转义序列边界（旧方案下 Windows 裸 ESC
@@ -63,6 +66,7 @@ export class TerminalView extends ItemView {
   // 且不自愈（表现为输出时视图瞬移到顶部），所以由我们自己跟踪：只在用户
   // 通过滚轮/触控板/Shift+PageUp/Down 主动滚动后重新采样。
   private followPinned = true;
+  private readonly outputScroll = new VisualFrame();
   private shellStartGeneration = 0;
   // PTY 就绪前的输入帧队列（含人工键入与 agent 写入），stdin 挂上后按序冲刷。
   private inputQueue = new TerminalInputQueue();
@@ -73,6 +77,7 @@ export class TerminalView extends ItemView {
   private readonly sessionListeners = new Set<(event: TerminalSessionEvent) => void>();
   /** 记录 Obsidian 覆盖层（命令面板/模态）本次按键内关闭，用于让行。 */
   private readonly overlayTracker = new ObsidianOverlayTracker();
+  private markdownPreview: TerminalMarkdownPreview | null = null;
 
   sessionGeneration(): number { return this.shellStartGeneration; }
 
@@ -192,6 +197,7 @@ export class TerminalView extends ItemView {
 
   async onOpen(): Promise<void> {
     this.buildUI();
+    this.markdownPreview = new TerminalMarkdownPreview(this.app, () => this.containerEl.ownerDocument);
     this.initTerminal();
     await this.startShell();
     
@@ -215,6 +221,8 @@ export class TerminalView extends ItemView {
     this.term?.dispose();
     this.term = null;
     this.fitAddon = null;
+    await this.markdownPreview?.dispose();
+    this.markdownPreview = null;
   }
 
   private buildUI() {
@@ -308,14 +316,12 @@ export class TerminalView extends ItemView {
       passive: true,
     });
 
-    this.registerDomEvent(this.termHost, "contextmenu", (event) => {
-      event.preventDefault();
+    this.register(installTerminalContextMenu(this.termHost, this.term, (event, selection) => {
       const menu = new Menu();
-      if (this.term?.hasSelection()) {
+      if (selection) {
         menu.addItem((item) =>
           item.setTitle(t("复制")).onClick(() => {
-            const selection = this.term?.getSelection() ?? "";
-            if (selection) void navigator.clipboard.writeText(selection);
+            void navigator.clipboard.writeText(selection);
             this.term?.clearSelection();
           }),
         );
@@ -330,8 +336,9 @@ export class TerminalView extends ItemView {
       menu.addItem((item) =>
         item.setTitle(t("全选")).onClick(() => this.term?.selectAll()),
       );
+      this.markdownPreview?.addMenuItem(menu, selection);
       menu.showAtMouseEvent(event);
-    });
+    }));
 
     this.term.registerLinkProvider?.({
       provideLinks: (y, callback) => {
@@ -602,7 +609,7 @@ export class TerminalView extends ItemView {
             this.outputRevision += 1;
             // 写完每个输出块后若用户钉在底部则强制回底：无论 xterm 内部跟随
             // 状态被 reflow/转义序列带歪成什么样，下一个输出块都会扶正。
-            if (this.followPinned) this.term?.scrollToBottom();
+            this.scheduleOutputScroll();
           });
         }
       });
@@ -615,7 +622,7 @@ export class TerminalView extends ItemView {
             if (generation !== this.shellStartGeneration || this.proc !== child) return;
             this.firstParsedOutput = true;
             this.outputRevision += 1;
-            if (this.followPinned) this.term?.scrollToBottom();
+            this.scheduleOutputScroll();
           });
         }
       });
@@ -674,6 +681,7 @@ export class TerminalView extends ItemView {
 
   /** 停止 PTY（插件卸载清扫与「刷新终端」共用）。 */
   stopShell() {
+    this.outputScroll.cancel();
     this.publishSession({ type: "reset" });
     this.shellStartGeneration += 1;
     // 进程被终止，未冲刷的输入帧随之作废，避免串到下一个 shell 会话。
@@ -714,6 +722,13 @@ export class TerminalView extends ItemView {
       if (rem) this.term?.write(rem);
       this.stderrDecoder = null;
     }
+  }
+
+  private scheduleOutputScroll(): void {
+    if (!this.followPinned) return;
+    this.outputScroll.request(this.containerEl.ownerDocument.defaultView!, () => {
+      if (this.followPinned) this.term?.scrollToBottom();
+    });
   }
 
   private debouncedFit() {

@@ -508,6 +508,26 @@ window.__ModuleLoader__.load({
     // "append at end" behaviour when no composer caret can be located.
     function applyPreparedInsertions(target, prepared) {
       if (prepared.length === 0) return;
+      const editor = compat.resolveStructuredComposerInput(target.input);
+      if (editor) {
+        for (const item of prepared) {
+          const range = editor.range();
+          const before = inputState(target).draft;
+          const offset = editor.clipboardOffset(range.start);
+          const prefix = offset > 0 && !/\s/u.test(before.charAt(offset - 1)) ? ' ' : '';
+          if (item.kind === 'image') {
+            if (!editor.insertText(`${prefix}${imagePlaceholderText(item.name)} `, range)) throw new Error(copy().rejected);
+          } else {
+            if (prefix && !editor.insertText(prefix, { start: range.start, end: range.start })) throw new Error(copy().rejected);
+            const adjusted = prefix ? { start: range.start + 1, end: range.end + 1 } : range;
+            if (!editor.insertReference({
+              source: 'reference', ref: item.mention, label: item.label,
+              appearance: item.appearance, clipboardText: item.mention,
+            }, adjusted)) throw new Error(copy().rejected);
+          }
+        }
+        return;
+      }
       let state = inputState(target);
       if (!state) throw new Error(copy().inputUnavailable);
       const caret = composerCaret(target, state);
@@ -589,6 +609,8 @@ window.__ModuleLoader__.load({
       const original = inputState(target);
       if (!original) throw new Error(copy().inputUnavailable);
       const originalDraft = original.draft;
+      const editor = compat.resolveStructuredComposerInput(target.input);
+      const originalDocument = editor?.capture();
       const files = createFiles(imagePayloads, prepared, autoFitImageSize);
       validateImageLimits(prepared, target);
       const api = attachmentApi(target);
@@ -603,7 +625,8 @@ window.__ModuleLoader__.load({
         applyPreparedInsertions(target, prepared);
       } catch (error) {
         try {
-          target.input.setDraft(originalDraft);
+          if (editor) editor.restore(originalDocument);
+          else target.input.setDraft(originalDraft);
           for (const attachment of attachments) api.remove?.(attachment.id);
           api.release?.(attachments);
         } catch {
@@ -661,7 +684,7 @@ window.__ModuleLoader__.load({
             if (seen.size > 100) seen.delete(seen.values().next().value);
             const target = currentSession(ctx);
             if (!target) throw new Error(copy().noSession);
-            validateInput(target);
+            const initialState = validateInput(target);
             const files = validateMetadata(data.files, target);
             if (typeof data.autoFitImageSize !== 'boolean') throw new Error(copy().invalidBatch);
             const references = files.filter(
@@ -677,6 +700,8 @@ window.__ModuleLoader__.load({
               requestId: data.requestId,
               transactionId,
               sessionId: target.sessionId,
+              input: target.input,
+              draftRev: initialState.draftRev,
               files,
               autoFitImageSize: data.autoFitImageSize,
               createdAt: Date.now(),
@@ -702,7 +727,8 @@ window.__ModuleLoader__.load({
             prepared = undefined;
             const target = currentSession(ctx);
             if (!target || target.sessionId !== transaction.sessionId) throw new Error(copy().sessionChanged);
-            validateInput(target);
+            const state = validateInput(target);
+            if (target.input !== transaction.input || state.draftRev !== transaction.draftRev) throw new Error(copy().changed);
             commitPrepared(target, transaction.files, data.images, transaction.autoFitImageSize);
             reply('result', {
               requestId: transaction.requestId,

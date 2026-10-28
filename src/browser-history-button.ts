@@ -50,6 +50,11 @@ export class BrowserHistoryButtonFeature {
   }
 
   install(): void {
+    const views: ItemView[] = [];
+    this.plugin.app.workspace.iterateAllLeaves((leaf) => views.push(leaf.view as ItemView));
+    // Inactive live views may be detached from the DOM. Ownership follows
+    // workspace leaves, not isConnected, so disable still removes their UI.
+    this.buttons = this.buttons.filter((button) => views.some((view) => view.containerEl.contains(button)));
     if (!this.enabled) return;
     const commands = (
       this.plugin.app as unknown as {
@@ -66,8 +71,7 @@ export class BrowserHistoryButtonFeature {
     const executeCommandById = commands?.executeCommandById?.bind(commands);
     if (!openHistoryCommand || !executeCommandById) return;
 
-    this.plugin.app.workspace.iterateAllLeaves((leaf) => {
-      const view = leaf.view as ItemView;
+    views.forEach((view) => {
       if (!BROWSER_VIEW_TYPES.has(view.getViewType())) return;
       if (this.installedViews.has(view)) return;
       if (typeof view.addAction !== "function") return;

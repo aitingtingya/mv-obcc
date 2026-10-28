@@ -329,11 +329,6 @@ type TexMathFormatSpec = TexMathFormatSpecBase &
       }
   );
 
-interface TexMathOpening {
-  at: number;
-  format: TexMathFormatSpec;
-}
-
 export function analyzeTexMathSource(
   source: string,
   config: TexMathCustomConfig,
@@ -342,22 +337,31 @@ export function analyzeTexMathSource(
   if (source.length === 0) return [];
 
   const masked = maskTexComments(source);
+  // Each delimiter advances through this document once. A missing delimiter
+  // must not rescan the entire remaining document for every formula.
+  const searches = formats.map((format) => ({
+    format,
+    open: createDelimiterSearch(masked, format.open, format),
+    close: createDelimiterSearch(masked, format.close, format),
+  }));
+  let nextLineEnd = -2;
   const regions: TexMathRegion[] = [];
   let cursor = 0;
 
   while (cursor < masked.length) {
-    const opening = findNextOpening(masked, formats, cursor);
+    const opening = findNextOpening(searches, cursor);
     if (!opening) break;
 
-    const { at: outerStart, format } = opening;
+    const { at: outerStart, search } = opening;
+    const { format } = search;
     const innerStart = outerStart + format.open.length;
-    const closeAt = findDelimiter(
-      masked,
-      format.close,
-      innerStart,
-      format,
-      format.closeOnSameLine,
-    );
+    let closeAt = search.close(innerStart);
+    if (format.closeOnSameLine) {
+      if (nextLineEnd === -2 || (nextLineEnd !== -1 && nextLineEnd < innerStart)) {
+        nextLineEnd = masked.indexOf("\n", innerStart);
+      }
+      if (nextLineEnd !== -1 && closeAt >= nextLineEnd) closeAt = -1;
+    }
     if (closeAt === -1) {
       cursor =
         format.origin === "native-dollar"
@@ -367,12 +371,7 @@ export function analyzeTexMathSource(
     }
 
     if (format.open !== format.close) {
-      const repeatedOpen = findDelimiter(
-        masked,
-        format.open,
-        innerStart,
-        format,
-      );
+      const repeatedOpen = search.open(innerStart);
       if (repeatedOpen !== -1 && repeatedOpen < closeAt) {
         cursor = repeatedOpen;
         continue;
@@ -483,24 +482,47 @@ function isReservedNativeDollarPair(pair: TexMathDelimiterPair): boolean {
   );
 }
 
+interface TexMathSearch {
+  format: TexMathFormatSpec;
+  open: (from: number) => number;
+  close: (from: number) => number;
+}
+
 function findNextOpening(
-  source: string,
-  formats: readonly TexMathFormatSpec[],
+  searches: readonly TexMathSearch[],
   from: number,
-): TexMathOpening | null {
-  let best: TexMathOpening | null = null;
-  for (const format of formats) {
-    const at = findDelimiter(source, format.open, from, format);
+): { at: number; search: TexMathSearch } | null {
+  let best: { at: number; search: TexMathSearch } | null = null;
+  for (const search of searches) {
+    const at = search.open(from);
     if (at === -1) continue;
     if (
       best === null ||
       at < best.at ||
-      (at === best.at && format.open.length > best.format.open.length)
+      (at === best.at && search.format.open.length > best.search.format.open.length)
     ) {
-      best = { at, format };
+      best = { at, search };
     }
   }
   return best;
+}
+
+function createDelimiterSearch(
+  source: string,
+  delimiter: string,
+  format: TexMathFormatSpec,
+): (from: number) => number {
+  let next = -2;
+  return (from) => {
+    // The existing native-dollar grammar allows the final dollar of a run
+    // when it is exactly the search boundary. This is not a global match.
+    if (format.format === "native-inline" && source[from] === "$" &&
+      source[from + 1] !== "$" && !isEscaped(source, from)) return from;
+    if (next === -2 || (next !== -1 && next < from)) {
+      next = findDelimiter(source, delimiter, from, format);
+    }
+    return next;
+  };
 }
 
 function findDelimiter(

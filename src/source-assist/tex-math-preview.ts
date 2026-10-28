@@ -28,6 +28,7 @@ import {
 } from "./tex-math";
 
 const mathJaxRenderTokens = new WeakMap<HTMLElement, object>();
+const visualDecorationCache = new WeakMap<readonly TexMathRegion[], { touched: string; value: DecorationSet }>();
 
 interface TexMathVisualState {
   mathJaxReady: boolean;
@@ -45,6 +46,14 @@ const texMathVisualStateField = StateField.define<TexMathVisualState>({
     let mathJaxReady = value.mathJaxReady;
     for (const effect of transaction.effects) {
       if (effect.is(setTexMathJaxReadyEffect)) mathJaxReady = true;
+    }
+    if (mathJaxReady === value.mathJaxReady &&
+      !transaction.docChanged &&
+      transaction.startState.selection.eq(transaction.state.selection) &&
+      texMathRegions(transaction.startState) === texMathRegions(transaction.state) &&
+      editorExtension(transaction.startState) === editorExtension(transaction.state) &&
+      isLivePreview(transaction.startState) === isLivePreview(transaction.state)) {
+      return value;
     }
     return {
       mathJaxReady,
@@ -191,7 +200,11 @@ function buildTexMathVisualDecorationsUnsafe(
 
   const builder = new RangeSetBuilder<Decoration>();
   const regions = texMathRegions(state);
-  for (const region of regions) {
+  const touched = regions.map((region) => selectionTouchesBound(state, region));
+  const key = touched.map((value) => value ? "1" : "0").join("");
+  const cached = visualDecorationCache.get(regions);
+  if (cached?.touched === key) return cached.value;
+  for (const [index, region] of regions.entries()) {
     if (region.origin !== "configured") continue;
     if (!isValidBound(state, region)) continue;
     const source = region.renderSource;
@@ -201,7 +214,7 @@ function buildTexMathVisualDecorationsUnsafe(
       region.display,
       region.inner_start,
     );
-    if (isLivePreview(state) && !selectionTouchesBound(state, region)) {
+    if (!touched[index]) {
       builder.add(
         region.outer_start,
         region.outer_end,
@@ -225,7 +238,9 @@ function buildTexMathVisualDecorationsUnsafe(
       }),
     );
   }
-  return builder.finish();
+  const value = builder.finish();
+  visualDecorationCache.set(regions, { touched: key, value });
+  return value;
 }
 
 function renderMathInto(

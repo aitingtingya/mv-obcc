@@ -328,6 +328,10 @@ export class SelectionHighlightController {
     this.watchedDocuments.clear();
   }
 
+  refreshActiveWeb(leaf: WorkspaceLeaf): void {
+    if (this.enabled) void this.installWebHighlight(leaf, false);
+  }
+
   private refreshDocumentWatchers(leaves: Set<WorkspaceLeaf>): void {
     const documents = new Set<Document>();
     for (const leaf of leaves) {

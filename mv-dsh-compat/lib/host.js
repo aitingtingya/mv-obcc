@@ -29,6 +29,23 @@ export function resolveHostSettings(ctx) {
     : null;
 }
 
+/** Resolve the released effective-directory service without changing project identity. */
+export function resolveWorkingDirectory(ctx) {
+  const service = safeGet(ctx, 'workingDirectory');
+  return typeof service?.get === 'function' && typeof service.ensure === 'function'
+    ? service : null;
+}
+
+/** Match native file-tool resolution when the effective-directory service is present. */
+export async function resolveToolFilePath(ctx, rawPath, exec) {
+  const directory = resolveWorkingDirectory(ctx);
+  if (!directory) return null;
+  const cwd = exec?.agent ? await directory.ensure(exec.agent, exec.signal) : undefined;
+  const filesystem = safeGet(ctx, 'fs');
+  const target = await filesystem.resolve(rawPath, { cwd, signal: exec?.signal });
+  return filesystem.processPath(target);
+}
+
 /**
  * Producer attribution for a message an mv-aide plugin injects into a session.
  *

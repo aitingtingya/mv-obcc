@@ -15,6 +15,7 @@ export class GitRepository {
   private listeners = new Set<() => void>();
   private version = "";
   private configuredExecutable = "";
+  private snapshotKey = "";
   snapshot: GitSnapshot | null = null;
   busy = 0;
   error = "";
@@ -39,13 +40,20 @@ export class GitRepository {
   async text(args: readonly string[], input?: string | Uint8Array, allowed = [0]): Promise<string> { return (await this.bytes(args, input, allowed)).toString("utf8"); }
   /** Stash subcommands never take user pathspecs here; --literal-pathspecs would break --include-untracked cleanup. */
   async stash(args: readonly string[]): Promise<Buffer> { return this.bytes(args, undefined, [0], false); }
-  private async existsGitPath(name: string): Promise<boolean> {
-    const value = (await this.text(["rev-parse", "--git-path", name])).trim();
-    try { await fs.access(path.resolve(this.snapshot?.root ?? this.vaultRoot, value)); return true; } catch { return false; }
-  }
   async operation(): Promise<GitInProgress> {
-    if (await this.existsGitPath("rebase-merge") || await this.existsGitPath("rebase-apply")) return "rebase";
-    for (const [file, op] of [["MERGE_HEAD", "merge"], ["CHERRY_PICK_HEAD", "cherry-pick"], ["REVERT_HEAD", "revert"]] as const) if (await this.existsGitPath(file)) return op;
+    return this.operationAt((await this.text(["rev-parse", "--absolute-git-dir"])).trim());
+  }
+  private async operationAt(gitDir: string): Promise<GitInProgress> {
+    // These are all per-worktree state, not shared refs. Resolve the Git dir
+    // once rather than spawning Git separately for every sentinel file.
+    const files = ["rebase-merge", "rebase-apply", "MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD"];
+    const present = await Promise.all(files.map(async (name) => {
+      try { await fs.access(path.join(gitDir, name)); return true; } catch { return false; }
+    }));
+    if (present[0] || present[1]) return "rebase";
+    if (present[2]) return "merge";
+    if (present[3]) return "cherry-pick";
+    if (present[4]) return "revert";
     return null;
   }
   refresh(): Promise<GitSnapshot | null> {
@@ -57,13 +65,17 @@ export class GitRepository {
     const generation = this.generation;
     try {
       const runner = await this.process();
-      const probe = await runner.run(this.vaultRoot, ["rev-parse", "--show-toplevel"], undefined, [0, 128]);
+      const probe = await runner.run(this.vaultRoot, ["rev-parse", "--show-toplevel", "--absolute-git-dir"], undefined, [0, 128]);
       if (probe.code !== 0) {
         // A permission/ownership error is not an invitation to initialize a new repository.
         if (!probe.stderr.includes("not a git repository")) throw new Error(probe.stderr);
-        this.snapshot = null; this.error = ""; this.notify(); return null;
+        const changed = this.snapshot !== null || this.error !== "";
+        this.snapshot = null; this.snapshotKey = ""; this.error = "";
+        if (changed) this.notify();
+        return null;
       }
-      const root = await fs.realpath(probe.stdout.toString().trim());
+      const [rootPath, gitDir] = probe.stdout.toString().trim().split("\n");
+      const root = await fs.realpath(rootPath);
       const run = async (args: string[]) => (await runner.run(root, args)).stdout.toString();
       const [status, refsText, remotesText, stashText] = await Promise.all([
         run(["status", "--porcelain=v2", "--branch", "-z", "--untracked-files=all"]),
@@ -77,9 +89,13 @@ export class GitRepository {
       const stashFields = stashText.split("\0"), stashes: GitSnapshot["stashes"] = [];
       for (let i = 0; i + 2 < stashFields.length; i += 3) if (stashFields[i]) stashes.push({ name: stashFields[i], oid: stashFields[i + 1], message: stashFields[i + 2] });
       const next: GitSnapshot = { ...parseStatus(status), root, version: this.version, refs, stashes,
-        remotes: remotesText.trim().split("\n").filter(Boolean), operation: null, revision: (this.snapshot?.revision ?? 0) + 1 };
+        remotes: remotesText.trim().split("\n").filter(Boolean), operation: await this.operationAt(gitDir), revision: 0 };
       if (generation !== this.generation || this.disposed) return this.snapshot;
-      this.snapshot = next; next.operation = await this.operation(); this.error = ""; this.notify(); return next;
+      const key = JSON.stringify(next);
+      if (key === this.snapshotKey && !this.error) return this.snapshot;
+      next.revision = (this.snapshot?.revision ?? 0) + 1;
+      this.snapshotKey = key;
+      this.snapshot = next; this.error = ""; this.notify(); return next;
     } catch (error) {
       this.error = error instanceof Error ? error.message : String(error); this.notify(); throw error;
     }
