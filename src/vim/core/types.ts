@@ -1,4 +1,5 @@
 import type { VimDocumentSnapshot } from "./document";
+import type { VimScriptRuntime } from "../script/runtime";
 
 export type VimMode =
   | "normal"
@@ -87,6 +88,8 @@ export interface VimBuffer {
   redo(): boolean;
   displayLineMotion?(position: number, direction: -1 | 1, count: number): number;
   viewportMotion?(position: number, command: string, count: number): number;
+  saveScriptView?(): { topline: number; leftcol: number };
+  restoreScriptView?(view: { topline: number; leftcol: number }): void;
   reindent?(from: number, to: number): readonly VimEdit[];
   fold?(position: number, command: string): void;
   highlightSearch?(ranges: readonly { from: number; to: number }[]): void;
@@ -151,15 +154,18 @@ export interface VimMapping {
   rhs: readonly string[];
   recursive: boolean;
   expression?: boolean;
+  nowait?: boolean;
 }
 
 export interface VimAbbreviation {
+  expression?: boolean;
   lhs: string;
   rhs: string;
   recursive: boolean;
 }
 
 export interface VimRuntimeConfig {
+  script?: VimScriptRuntime;
   mapleader?: string;
   options: VimOptions;
   mappings: readonly VimMapping[];
@@ -169,6 +175,8 @@ export interface VimRuntimeConfig {
 }
 
 export type VimAutocmdEvent =
+  | "FileType" | "BufAdd" | "BufDelete" | "BufWinEnter" | "BufWinLeave"
+  | "CursorMoved" | "CursorMovedI" | "TextChanged" | "TextChangedI" | "User"
   | "BufEnter"
   | "BufLeave"
   | "BufWritePre"

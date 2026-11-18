@@ -11,7 +11,7 @@ Pure compatibility boundary shared by mv-AIDE's Obsidian host and its managed De
 
 ## Preview-first resolution
 
-DSH `0.2.1-rc.2` is the primary preview baseline; `0.2.0-rc.2` remains in regression coverage. Resolvers select verified object capabilities, never a version-number branch. The host directory adapter uses native `workingDirectory.ensure` and filesystem resolution when present. The client adapter owns native model-row structure and semantic composer operations (`caretSpan`, local insertion, `draftSnapshot` restoration), preserving the older paths when those capabilities are absent. Version numbers identify source evidence and acceptance runtimes, not production behavior.
+DSH `0.2.1-rc.5` is the primary preview baseline; `0.2.0-rc.2` remains in regression coverage. Resolvers select verified object capabilities, never a version-number branch. The host directory adapter uses native `workingDirectory.ensure` and filesystem resolution when present. The client adapter owns native model-row structure and semantic composer operations (`caretSpan`, local insertion, `draftSnapshot` restoration), preserving the older paths when those capabilities are absent. Version numbers identify source evidence and acceptance runtimes, not production behavior.
 
 ## Exports
 
@@ -22,4 +22,4 @@ DSH `0.2.1-rc.2` is the primary preview baseline; `0.2.0-rc.2` remains in regres
 
 ## Test matrix
 
-`tests/fixtures/dsh-compat-matrix.json` pins exact versions, tags and commits for `preview` (`0.2.1-rc.2`) and `previousPreview` (`0.2.0-rc.2`); the alpha row is historical evidence only. `npm run test:dsh-preview` validates the unchanged official vendor checkout and both runtime packages, then runs both versions' package and real DSH/browser acceptance suites concurrently. Set `MV_DSH_PREVIEW_ROOT` and `MV_DSH_PREVIOUS_PREVIEW_ROOT` to isolated package directories; otherwise it uses the global primary package and installs the pinned previous package in a temporary directory. It never replaces the user's global DSH. Alpha compatibility is not extended or included in release gates.
+`tests/fixtures/dsh-compat-matrix.json` pins exact versions, tags and commits for `preview` (`0.2.1-rc.5`) and `previousPreview` (`0.2.0-rc.2`); the alpha row is historical evidence only. `npm run test:dsh-preview` validates the unchanged official vendor checkout and both runtime packages, then runs both versions' package and real DSH/browser acceptance suites concurrently. Set `MV_DSH_PREVIEW_ROOT` and `MV_DSH_PREVIOUS_PREVIEW_ROOT` to isolated package directories; otherwise it uses the global primary package and installs the pinned previous package in a temporary directory. It never replaces the user's global DSH. Alpha compatibility is not extended or included in release gates.

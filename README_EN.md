@@ -43,7 +43,7 @@ The active file, selection, and editor state are passively synchronized with the
 
 mv-agent puts the DSH web interface directly inside Obsidian. Its bottom status bar shows the real bridge state, current page or file, selection, port, and expandable live details; the command palette provides **Open / Stop / Restart mv-agent**.
 
-The primary supported preview is **DSH 0.2.1-rc.2**, with **0.2.0-rc.2** retained in regression coverage. Native modality and reasoning controls take priority; manager fills in expert parameters, level ordering, and built-in overrides. Native current-directory changes and subworkspace selection remain independent.
+The primary supported preview is **DSH 0.2.1-rc.5**, with **0.2.0-rc.2** retained in regression coverage. Native modality and reasoning controls take priority; manager fills in expert parameters, level ordering, and built-in overrides. Native current-directory changes and subworkspace selection remain independent.
 
 Settings inspect Node.js, DSH, pnpm, and plugin injection as four separate layers. They support vault or global installations as well as verified DeepSeek Harness source checkouts. Once injected, DSH gains the `/mv-aide` command and `mv_aide__*` IDE tools, including:
 
@@ -114,7 +114,7 @@ Register non-Markdown source extensions and configure highlighting, linting, reg
 
 The independently implemented Vim core supports the major modes, motions, operators, text objects, registers, macros, search, Ex commands, and a vault-level `.vimrc`. When Obsidian's native status bar is hidden, the Vim mode badge automatically falls back to an overlay inside the editor.
 
-Includes bidirectional system clipboard sharing with `clipboard=unnamed,unnamedplus`, Unicode character boundaries, counted repeat, and common Vim search syntax. It is not a complete Vimscript or third-party Vim plugin runtime; see the capability reference for boundaries.
+Includes bidirectional system clipboard sharing with `clipboard=unnamed,unnamedplus`, Unicode character boundaries, counted repeat, and common Vim search syntax. It also loads `.vim` scripts from `mv-aide/vim/`, including functions, expression mappings, file-type plugins and local packages. See the [Vimscript guide](docs/vim-scripts-en.md) for the supported subset; this is not a complete Vim implementation.
 
 ![Vim modes, relative line numbers, and a real edit](media/readme/vim.gif)
 

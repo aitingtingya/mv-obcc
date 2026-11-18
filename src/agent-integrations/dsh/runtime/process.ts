@@ -24,12 +24,16 @@ import {
 } from "./runtime-owner";
 import { resolveWebNoOpenCapability } from "./web-launch-capabilities";
 import { resolveDshHomeDirectory } from "../paths";
+import { t } from "../../../i18n";
+import { DshLaunchReadiness } from "./launch-readiness";
+import { DshLifecycleCoordinator, DshStartCancelledError, withDshLifecycleLock, awaitDshObservation, type DshLifecycleOperation } from "./lifecycle";
+export { DshStartCancelledError } from "./lifecycle";
 import {
   DshWebProxy,
   type DshWebProxyDeps,
   type DshWebProxyLike,
 } from "./web-proxy";
-import type { DshWebAuthStore } from "./web-auth-store";
+import { DshWebAuthUnavailableError, type DshWebAuthStore } from "./web-auth-store";
 
 /** The dsh web SPA root HTML carries this stable marker. */
 const DSH_WEB_MARKER = "__DSH_BOOT__";
@@ -203,13 +207,6 @@ export interface DshWebProbe {
 
 export type DshWebProbeFn = (url: string, timeoutMs: number) => Promise<DshWebProbe>;
 
-export class DshStartCancelledError extends Error {
-  constructor() {
-    super("dsh start cancelled");
-    this.name = "DshStartCancelledError";
-  }
-}
-
 export function isDshStartCancelled(error: unknown): boolean {
   return error instanceof DshStartCancelledError;
 }
@@ -226,6 +223,13 @@ export class DshAuthorizationRequiredError extends Error {
   constructor(readonly identityUrl: string, options?: ErrorOptions) {
     super(`DSH 要求重新授权。原实例仍在 ${identityUrl} 运行，mv-AIDE 不会另起实例争抢其会话。请使用“使用 DSH 授权 URL 重新连接 mv-agent”，或明确重启该实例。`, options);
     this.name = "DshAuthorizationRequiredError";
+  }
+}
+
+export class DshLaunchAuthorizationError extends Error {
+  constructor(message: string, options?: ErrorOptions) {
+    super(t("DSH 新实例启动授权失败：{message}", { message }), options);
+    this.name = "DshLaunchAuthorizationError";
   }
 }
 
@@ -363,9 +367,15 @@ export class DshProcessManager {
   private startGeneration = 0;
   private cancelPendingLaunch: (() => void) | null = null;
   private disposed = false;
+  private readonly lifecycle = new DshLifecycleCoordinator();
+  private operationCommand: DshCommand | null | undefined;
+  private managedReady = false;
+  private connectsPending = 0;
+  private operationSignal: AbortSignal | null = null;
   /** Loopback proxy for the current auth-gated endpoint; null when unneeded. */
   private webProxy: DshWebProxyLike | null = null;
   private webProxyBusy: Promise<void> | null = null;
+  private readonly proxyTasks = new Set<Promise<void>>();
 
   constructor(
     private readonly vaultRoot: () => string,
@@ -385,6 +395,53 @@ export class DshProcessManager {
     ) => Promise<boolean> = resolveWebNoOpenCapability,
   ) {}
 
+  isLifecycleChanging(): boolean {
+    return this.lifecycle.stopping || this.lifecycle.restarting;
+  }
+
+  private runLifecycle<T>(kind: DshLifecycleOperation, operation: () => Promise<T>, knownCommand?: DshCommand | null): Promise<T> {
+    if (kind === "connect") this.connectsPending += 1;
+    const result = this.lifecycle.run(kind, async (signal) => {
+      // Preserve probe-first startup and allow a stop to cancel discovery
+      // before invoking the (potentially expensive) CLI/environment resolver.
+      if (kind === "connect") await awaitDshObservation(signal, this.probe(dshWebUrl(this.port()), 1500));
+      const command = knownCommand === undefined
+        ? await awaitDshObservation(signal, this.selectedCommand()) : knownCommand;
+      const execute = async (): Promise<T> => {
+        if (signal.aborted) throw new DshStartCancelledError();
+        this.operationCommand = command;
+        this.operationSignal = signal;
+        try {
+          const result = await operation();
+          if (signal.aborted) throw new DshStartCancelledError();
+          return result;
+        } finally {
+          // A cancelled half-start has no recoverable session yet. Finish its
+          // own cleanup before another renderer can acquire this data root.
+          try {
+            if (signal.aborted) {
+              await Promise.allSettled([...this.proxyTasks]);
+              if (this.child && !this.managedReady) await this.stopInternal();
+            }
+          } finally { this.operationCommand = undefined; this.operationSignal = null; }
+        }
+      };
+      return command?.homeDirectory
+        ? withDshLifecycleLock(command.homeDirectory, signal, execute)
+        : execute();
+    }, () => this.invalidatePendingStart());
+    if (kind === "connect") {
+      const done = (): void => { this.connectsPending -= 1; };
+      void result.then(done, done);
+    }
+    return result;
+  }
+
+  private probeEndpoint(url: string, timeoutMs: number): Promise<DshWebProbe> {
+    const observation = this.probe(url, timeoutMs);
+    return this.operationSignal ? awaitDshObservation(this.operationSignal, observation) : observation;
+  }
+
   isRunning(): boolean {
     return this.child !== null && this.child.exitCode === null && !this.child.killed;
   }
@@ -398,7 +455,11 @@ export class DshProcessManager {
    * for auth-gated (Alpha) endpoints, the real endpoint otherwise. Never
    * carries the launch token. Returns null while no endpoint is known.
    */
-  async webViewUrl(): Promise<string | null> {
+  webViewUrl(): Promise<string | null> {
+    return this.runLifecycle("lookup", () => this.webViewUrlInternal());
+  }
+
+  private async webViewUrlInternal(): Promise<string | null> {
     const proxy = await this.ensureWebProxy();
     if (proxy?.url) return proxy.url;
     const identity = normalizeDshWebUrl(this.announcedUrl ?? "");
@@ -530,21 +591,26 @@ export class DshProcessManager {
       this.stopWebProxy();
     }
     if (this.webProxyBusy) return this.webProxyBusy.then(() => this.webProxy);
-    this.webProxyBusy = (async () => {
-      const proxy = this.webProxy ?? this.proxyFactory(identity, {
+    const generation = this.startGeneration;
+    const busy = (async () => {
+      const command = await this.selectedCommand();
+      this.assertStartActive(generation);
+      const proxy: DshWebProxyLike = this.webProxy ?? this.proxyFactory(identity, {
         onUnauthorized: () => {
           // The held cookie stopped authenticating (upstream restarted).
           // Drop it so the next webViewUrl() re-exchanges the live token.
-          this.webProxy?.invalidateExchange();
-          this.authorizationRequiredEndpoint = identity;
-          this.authGatedEndpoint = identity;
-          void this.selectedCommand().then((command) => command
-            ? this.authStore?.remove(command, identity)
-            : undefined).catch(() => undefined);
+          if (this.webProxy !== proxy || generation !== this.startGeneration || this.disposed) return;
+          void this.runLifecycle("lookup", async () => {
+            if (this.webProxy !== proxy || generation !== this.startGeneration) return;
+            proxy.invalidateExchange();
+            this.authorizationRequiredEndpoint = identity;
+            this.authGatedEndpoint = identity;
+            if (command) await this.authStore?.remove(command, identity);
+          }).catch(() => undefined);
         },
         onSessionReady: async (credential) => {
           try {
-            const command = await this.selectedCommand();
+            if (this.webProxy !== proxy || generation !== this.startGeneration || this.disposed) return;
             if (!command || !this.authStore) return;
             await this.authStore.save(command, identity, credential);
           } catch (error) {
@@ -553,38 +619,54 @@ export class DshProcessManager {
         },
       });
       this.webProxy = proxy;
+      const assertCurrent = (): void => {
+        if (this.webProxy !== proxy || generation !== this.startGeneration || this.disposed) {
+          proxy.stop();
+          throw new DshStartCancelledError();
+        }
+      };
       try {
         if (!proxy.url) await proxy.start();
+        assertCurrent();
         if (launch && launch !== identity) {
           // No-op for an already-redeemed launch URL; re-exchanges after token
           // rotation (upstream restart) or an invalidated session.
           await proxy.ensureExchanged(launch);
         } else {
-          const command = await this.selectedCommand();
           const credential = command && this.authStore
             ? await this.authStore.load(command, identity)
             : null;
+          assertCurrent();
           if (!credential) throw new DshAuthorizationRequiredError(identity);
           try {
             if (!proxy.restoreSession) throw new Error("当前 DSH 代理不支持登录态恢复。");
             await proxy.restoreSession(credential);
+            assertCurrent();
             this.authorizationRequiredEndpoint = null;
           } catch (error) {
+            assertCurrent();
             if (command && this.authStore) await this.authStore.remove(command, identity);
             throw new DshAuthorizationRequiredError(identity, { cause: error });
           }
         }
+        assertCurrent();
       } catch (error) {
         if (this.webProxy === proxy) this.stopWebProxy();
         throw error;
       }
-    })().finally(() => {
-      this.webProxyBusy = null;
-    });
-    return this.webProxyBusy.then(() => this.webProxy);
+    })();
+    this.webProxyBusy = busy;
+    this.proxyTasks.add(busy);
+    const clear = (): void => {
+      this.proxyTasks.delete(busy);
+      if (this.webProxyBusy === busy) this.webProxyBusy = null;
+    };
+    void busy.then(clear, clear);
+    return busy.then(() => this.webProxy);
   }
 
   private async selectedCommand(): Promise<DshCommand | null> {
+    if (this.operationCommand !== undefined) return this.operationCommand;
     const command = await this.commandProvider();
     if (!command) return null;
     const homeDirectory = resolveDshHomeDirectory(command.homeDirectory, command.env);
@@ -667,7 +749,7 @@ export class DshProcessManager {
   async isEndpointLive(url?: string | null): Promise<boolean> {
     const target = normalizeDshWebUrl(url ?? this.announcedUrl ?? "");
     if (!target) return false;
-    const probe = await this.probe(target, 1500);
+    const probe = await this.probeEndpoint(target, 1500);
     return probe.reachable && probe.isDsh;
   }
 
@@ -682,7 +764,14 @@ export class DshProcessManager {
    *   start a second instance that cannot take the session write lease. Manual
    *   authorization URLs keep the strict ownership gate.
    */
-  async confirmDshUrl(
+  confirmDshUrl(url: string, timeoutMs = 1500, options: { trustOwnEndpoint?: boolean } = {}): Promise<string | null> {
+    return this.runLifecycle("lookup", () => this.confirmDshUrlInternal(url, timeoutMs, options)).catch(error => {
+      if (isDshStartCancelled(error)) return null;
+      throw error;
+    });
+  }
+
+  private async confirmDshUrlInternal(
     url: string,
     timeoutMs = 1500,
     options: { trustOwnEndpoint?: boolean } = {},
@@ -691,7 +780,7 @@ export class DshProcessManager {
     const normalized = normalizeDshWebUrl(url);
     if (!normalized) return null;
     const [probe, expected] = await Promise.all([
-      this.probe(normalized, timeoutMs),
+      this.probeEndpoint(normalized, timeoutMs),
       this.selectedCommand(),
     ]);
     if (generation !== this.startGeneration) return null;
@@ -732,7 +821,14 @@ export class DshProcessManager {
    * terminal, on a different port). Returns the first URL that serves the
    * dsh SPA, or null when none does.
    */
-  async findDshUrl(): Promise<string | null> {
+  findDshUrl(): Promise<string | null> {
+    return this.runLifecycle("lookup", () => this.findDshUrlInternal()).catch(error => {
+      if (isDshStartCancelled(error)) return null;
+      throw error;
+    });
+  }
+
+  private async findDshUrlInternal(): Promise<string | null> {
     const generation = this.startGeneration;
     const existing = await this.findBestExistingDsh([]);
     if (generation !== this.startGeneration) return null;
@@ -743,12 +839,16 @@ export class DshProcessManager {
     return null;
   }
 
-  async ensureStarted(timeoutMs = 120_000): Promise<string> {
+  ensureStarted(timeoutMs = 120_000): Promise<string> {
+    return this.runLifecycle("connect", () => this.ensureStartedInternal(timeoutMs));
+  }
+
+  private async ensureStartedInternal(timeoutMs = 120_000): Promise<string> {
     if (this.disposed) throw new Error("dsh process manager is disposed");
     const generation = this.startGeneration;
     if (this.announcedUrl) {
       if (this.isRunning()) return this.navigationUrl() ?? this.announcedUrl;
-      const adopted = await this.confirmDshUrl(this.announcedUrl, 2000, { trustOwnEndpoint: true });
+      const adopted = await this.confirmDshUrlInternal(this.announcedUrl, 2000, { trustOwnEndpoint: true });
       this.assertStartActive(generation);
       if (adopted) return adopted;
     }
@@ -757,7 +857,11 @@ export class DshProcessManager {
   }
 
   /** Open policy: prefer an existing DSH, Obsidian children first. */
-  async ensureStartedForOpen(
+  ensureStartedForOpen(connectedUrls: readonly string[] = []): Promise<string> {
+    return this.runLifecycle("connect", () => this.ensureStartedForOpenInternal(connectedUrls));
+  }
+
+  private async ensureStartedForOpenInternal(
     connectedUrls: readonly string[] = [],
   ): Promise<string> {
     if (this.disposed) throw new Error("dsh process manager is disposed");
@@ -772,7 +876,11 @@ export class DshProcessManager {
   }
 
   /** Restart policy: never reuse an existing DSH; always spawn one. */
-  async ensureStartedNew(timeoutMs = 120_000): Promise<string> {
+  ensureStartedNew(timeoutMs = 120_000): Promise<string> {
+    return this.runLifecycle("connect", () => this.ensureStartedNewInternal(timeoutMs));
+  }
+
+  private async ensureStartedNewInternal(timeoutMs = 120_000): Promise<string> {
     if (this.disposed) throw new Error("dsh process manager is disposed");
     if (this.starting) return this.starting;
     return this.startManaged(timeoutMs, this.port(), false);
@@ -824,7 +932,7 @@ export class DshProcessManager {
     for (let candidate = firstPort; candidate <= 65535; candidate += 1) {
       this.assertStartActive(generation);
       const url = dshWebUrl(candidate);
-      const probe = await this.probe(url, 1500);
+      const probe = await this.probeEndpoint(url, 1500);
       this.assertStartActive(generation);
       if (probe.reachable) {
         // Only an occupied port needs the stored-endpoint lookup: it reads the
@@ -900,6 +1008,7 @@ export class DshProcessManager {
         stdio: ["ignore", "pipe", "pipe"],
       });
       this.child = child;
+      this.managedReady = false;
       this.managedCommand = command;
       this.output = "";
       this.announcedUrl = null;
@@ -919,8 +1028,14 @@ export class DshProcessManager {
 
       const fallbackUrl = dshWebUrl(port);
       const startedAt = Date.now();
+      const readiness = new DshLaunchReadiness();
       let settled = false;
       let pollTimer: ReturnType<typeof setTimeout> | null = null;
+      let listenerPid: number | null = null;
+      let restoreAttempted = false;
+      let waitingForAuthorization = false;
+      const currentLaunch = (): boolean => generation === this.startGeneration
+        && !this.disposed && this.child === child;
 
       const clearPending = (): void => {
         if (pollTimer) clearTimeout(pollTimer);
@@ -931,6 +1046,7 @@ export class DshProcessManager {
         if (settled) return;
         settled = true;
         clearPending();
+        this.managedReady = true;
         resolve(url);
       };
       const rejectLaunch = (error: unknown): void => {
@@ -942,37 +1058,73 @@ export class DshProcessManager {
       const cancel = (): void => rejectLaunch(new DshStartCancelledError());
       this.cancelPendingLaunch = cancel;
 
-      const onData = (chunk: Buffer) => {
-        if (generation !== this.startGeneration || this.disposed) return;
-        this.output += chunk.toString("utf8");
-        if (!this.announcedUrl) {
-          const parsed = parseDshWebEndpoint(this.output);
-          if (parsed) this.rememberEndpoint(parsed.launchUrl, port);
+      const failLaunch = async (error: Error): Promise<void> => {
+        if (settled) return;
+        settled = true;
+        clearPending();
+        if (this.child === child) this.stopWebProxy();
+        // Pin this launch's PIDs; a later restart may already own the port.
+        const pids = new Set([child.pid, listenerPid].filter((pid): pid is number => typeof pid === "number"));
+        for (const pid of pids) {
+          try { await this.discovery.killProcessTree(pid); } catch { /* verify below */ }
         }
+        if (child.exitCode === null) {
+          try { child.kill("SIGKILL"); } catch { /* verify below */ }
+        }
+        if (generation !== this.startGeneration || this.disposed) {
+          reject(new DshStartCancelledError());
+          return;
+        }
+        const released = await this.waitForPortsReleased([port], PORT_RELEASE_TIMEOUT_MS);
+        if (!released.has(port)) {
+          reject(new Error(t("{message} 本次 DSH 新实例未能停止（端口：{port}），已保留运行记录。", {
+            message: error.message, port,
+          }), { cause: error }));
+          return;
+        }
+        await ownerReady;
+        if (child.pid) await removeDshRuntimeOwner(command, port, child.pid);
+        reject(error);
       };
-      child.stdout?.on("data", onData);
-      child.stderr?.on("data", onData);
+
+      const onData = (stream: "stdout" | "stderr") => (chunk: Buffer) => {
+        if (!currentLaunch()) return;
+        this.output += chunk.toString("utf8");
+        const parsed = readiness.push(stream, chunk);
+        if (parsed) this.rememberEndpoint(parsed.launchUrl, port);
+      };
+      child.stdout?.on("data", onData("stdout"));
+      child.stderr?.on("data", onData("stderr"));
+
+      const retry = (): void => {
+        if (settled) return;
+        const remaining = timeoutMs - (Date.now() - startedAt);
+        if (remaining <= 0) {
+          const error = waitingForAuthorization
+            ? new DshLaunchAuthorizationError(t("等待启动授权超时（{seconds} 秒）。请重试“重启 mv-agent”。", { seconds: timeoutMs / 1000 }))
+            : new Error(redactDshWebSecrets(this.output.trim()) || `dsh web 未在 ${timeoutMs / 1000}s 内启动（端口 ${port}）。`);
+          void failLaunch(error);
+          return;
+        }
+        pollTimer = setTimeout(() => void poll().catch(handlePollError), Math.min(400, remaining));
+      };
 
       const poll = async () => {
         if (settled) return;
         const target = this.navigationUrl() ?? fallbackUrl;
         // Probing needs endpoint identity only. Never pass Alpha's one-shot
         // launch authority into logging/instrumentation supplied by a probe.
-        const probe = await this.probe(normalizeDshWebUrl(target) ?? target, 1500);
+        const probe = await this.probeEndpoint(normalizeDshWebUrl(target) ?? target, 1500);
         if (settled) return;
-        if (generation !== this.startGeneration || this.disposed) {
+        if (!currentLaunch()) {
           cancel();
           return;
         }
         if (probe.reachable && probe.isDsh) {
           const ownerError = await ownerReady;
+          if (!currentLaunch()) { cancel(); return; }
           if (ownerError) {
-            try {
-              child.kill("SIGTERM");
-            } catch {
-              /* ignore cleanup failure */
-            }
-            rejectLaunch(ownerError);
+            await failLaunch(ownerError);
             return;
           }
           // Record the real listener PID alongside the spawned child PID: on
@@ -983,7 +1135,8 @@ export class DshProcessManager {
           // listener-pid hint — the initial record already satisfies the
           // ownership invariant — so it degrades silently.
           try {
-            const listenerPid = await this.discovery.listenerPid(port);
+            listenerPid = await this.discovery.listenerPid(port);
+            if (!currentLaunch()) { cancel(); return; }
             if (
               listenerPid
               && child.pid
@@ -995,6 +1148,7 @@ export class DshProcessManager {
           } catch {
             /* listener-pid hint is best-effort */
           }
+          if (!currentLaunch()) { cancel(); return; }
           const url = this.rememberEndpoint(target, port);
           if (probe.authenticationRequired === true) {
             this.noAuthEndpoint = null;
@@ -1005,54 +1159,33 @@ export class DshProcessManager {
             // the proxy instead of handing out a read-only raw URL.
             this.noAuthEndpoint = normalizeDshWebUrl(target);
           }
-          // Alpha token endpoints need the loopback proxy before any iframe
-          // can load: exchange the token for a session cookie now, while the
-          // launch authority is still fresh. A proxy failure is a boot
-          // failure — the child is killed and the start rejected. Settle
-          // FIRST so the synchronous exit handler cannot race a second
-          // rejection through.
-          if (this.launchUrl) {
+          // HTTP readiness can precede stdout. Keep waiting for complete launch
+          // authority (or restore a stored session) before publishing success.
+          if (readiness.requiresAuthorization(probe.authenticationRequired)) {
+            waitingForAuthorization = true;
+            const authority = this.launchUrl;
+            if (!authority && (restoreAttempted || !this.authStore)) { retry(); return; }
+            restoreAttempted = true;
             try {
               await this.ensureWebProxy();
             } catch (error) {
-              settled = true;
-              clearPending();
-              if (child.pid) {
-                try {
-                  child.kill("SIGTERM");
-                } catch {
-                  /* ignore cleanup failure */
-                }
+              if (!currentLaunch()) { cancel(); return; }
+              if (!authority && (error instanceof DshAuthorizationRequiredError || error instanceof DshWebAuthUnavailableError)) {
+                retry();
+                return;
               }
-              reject(error instanceof Error
-                ? error
-                : new Error("dsh 授权代理启动失败。"));
+              await failLaunch(new DshLaunchAuthorizationError(
+                error instanceof Error ? error.message : String(error), { cause: error },
+              ));
               return;
             }
           }
-          resolveLaunch(url);
+          if (!currentLaunch()) { cancel(); return; }
+          if (Date.now() - startedAt >= timeoutMs) { retry(); return; }
+          resolveLaunch(this.navigationUrl() ?? url);
           return;
         }
-        if (Date.now() - startedAt > timeoutMs) {
-          // A timed-out start must not leave a live child behind: the exit
-          // handler owns the owner-record and manager-state cleanup, so kill
-          // first and reject.
-          if (child.pid) {
-            try {
-              child.kill("SIGTERM");
-            } catch {
-              /* ignore cleanup failure */
-            }
-          }
-          rejectLaunch(
-            new Error(
-              redactDshWebSecrets(this.output.trim()) ||
-                `dsh web 未在 ${timeoutMs / 1000}s 内启动（端口 ${port}）。`,
-            ),
-          );
-          return;
-        }
-        pollTimer = setTimeout(() => void poll(), 400);
+        retry();
       };
 
       child.once("error", (error) => {
@@ -1101,7 +1234,11 @@ export class DshProcessManager {
         );
       });
 
-      void poll();
+      const handlePollError = (error: unknown): void => {
+        if (isDshStartCancelled(error)) cancel();
+        else void failLaunch(error instanceof Error ? error : new Error(String(error)));
+      };
+      void poll().catch(handlePollError);
     });
   }
 
@@ -1164,7 +1301,7 @@ export class DshProcessManager {
     const ranked = (
       await Promise.all(
         Array.from(candidates.values()).map(async (candidate) => {
-          const probe = await this.probe(candidate.url, 1500);
+          const probe = await this.probeEndpoint(candidate.url, 1500);
           if (!probe.reachable || !probe.isDsh) return null;
           const owned = await this.endpointMatchesCommand(candidate.url, expectedCommand);
           // An endpoint one of this vault's own mv-agent views is showing is
@@ -1219,8 +1356,11 @@ export class DshProcessManager {
     this.cancelPendingLaunch = null;
   }
 
-  async stop(): Promise<void> {
-    this.invalidatePendingStart();
+  stop(): Promise<void> {
+    return this.runLifecycle("stop", () => this.stopInternal(), this.managedCommand);
+  }
+
+  private async stopInternal(): Promise<void> {
     const child = this.child;
     const managedCommand = this.managedCommand;
     const managedPort = this.launchedPort;
@@ -1282,7 +1422,15 @@ export class DshProcessManager {
    * machine is clear so multiple instances and short-lived respawns are also
    * drained before npm mutates the installed package.
    */
-  async stopAllDshForWindowsPackageMutation(options: {
+  stopAllDshForWindowsPackageMutation(options: {
+    platform?: NodeJS.Platform;
+    timeoutMs?: number;
+    pollMs?: number;
+  } = {}): Promise<DshWindowsPackageMutationDrainResult> {
+    return this.runLifecycle("stop", () => this.stopAllDshForWindowsPackageMutationInternal(options));
+  }
+
+  private async stopAllDshForWindowsPackageMutationInternal(options: {
     platform?: NodeJS.Platform;
     timeoutMs?: number;
     pollMs?: number;
@@ -1290,7 +1438,6 @@ export class DshProcessManager {
     const platform = options.platform ?? process.platform;
     if (platform !== "win32") return { stoppedPids: [], remainingPids: [] };
 
-    this.invalidatePendingStart();
     // The drain budget must exceed the strict enumeration timeout (60s): on
     // machines with a degraded WMI service a single enumeration takes 100s+,
     // and a 5s overall deadline previously expired before the first
@@ -1396,11 +1543,14 @@ export class DshProcessManager {
   }
 
   /** Stop only processes proven to implement this Vault's selected runtime. */
-  async stopAllTargetDshInstances(
+  stopAllTargetDshInstances(connectedUrls: readonly string[] = [], options: { portReleaseTimeoutMs?: number } = {}): Promise<DshStopSummary> {
+    return this.runLifecycle("stop", () => this.stopAllTargetDshInstancesInternal(connectedUrls, options));
+  }
+
+  private async stopAllTargetDshInstancesInternal(
     connectedUrls: readonly string[] = [],
     options: { portReleaseTimeoutMs?: number } = {},
   ): Promise<DshStopSummary> {
-    this.invalidatePendingStart();
     const targets = new Map<number, { pid: number; port: number | null }>();
     const stoppedPids: number[] = [];
     const failedPids: number[] = [];
@@ -1438,7 +1588,7 @@ export class DshProcessManager {
           if (!await this.listenerRunsFromVault(port)) continue;
         }
       } else {
-        const probe = await this.probe(normalized, 2000);
+        const probe = await this.probeEndpoint(normalized, 2000);
         if (!probe.reachable || !probe.isDsh) continue;
       }
       const pid = await this.listenerPidOf(port);
@@ -1491,7 +1641,7 @@ export class DshProcessManager {
       (released ? stoppedPids : failedPids).push(target.pid);
       if (released && target.port !== null) {
         stoppedPorts.push(target.port);
-        if (expected) await removeDshRuntimeOwner(expected, target.port);
+        if (expected) await removeDshRuntimeOwner(expected, target.port, target.pid);
       }
     }
 
@@ -1690,28 +1840,39 @@ export class DshProcessManager {
   }
 
   /** Stop the target set, then always spawn one fresh DSH process. */
-  async restartForObsidian(
+  restartForObsidian(connectedUrls: readonly string[] = [], options: { portReleaseTimeoutMs?: number } = {}): Promise<string> {
+    return this.runLifecycle("restart", () => this.restartForObsidianInternal(connectedUrls, options));
+  }
+
+  private async restartForObsidianInternal(
     connectedUrls: readonly string[] = [],
     options: { portReleaseTimeoutMs?: number } = {},
   ): Promise<string> {
-    const stopped = await this.stopAllTargetDshInstances(connectedUrls, options);
+    const stopped = await this.stopAllTargetDshInstancesInternal(connectedUrls, options);
     if (stopped.failedPids.length > 0) {
       throw new Error(`DSH 进程无法停止，已取消重启。PID：${stopped.failedPids.join(", ")}`);
     }
-    return this.ensureStartedNew();
+    return this.ensureStartedNewInternal();
   }
 
   /**
    * Legacy stop entry retained for the existing lifecycle/unit-test surface:
    * managed child first, then the adopted listener on the configured port.
    */
-  async stopInstance(): Promise<DshStopResult> {
+  stopInstance(): Promise<DshStopResult> {
+    const pending = this.connectsPending > 0 || this.starting !== null;
+    return this.runLifecycle("stop", async () => {
+      if (pending) { await this.stopInternal(); return "managed-stopped"; }
+      return this.stopInstanceInternal();
+    }, pending ? this.managedCommand : undefined);
+  }
+
+  private async stopInstanceInternal(): Promise<DshStopResult> {
     if (this.child || this.starting) {
       const running = this.isRunning() || this.starting !== null;
-      await this.stop();
+      await this.stopInternal();
       return running ? "managed-stopped" : "not-running";
     }
-    this.invalidatePendingStart();
     const endpoint = this.announcedUrl ?? dshWebUrl(this.port());
     const actualPort = (() => {
       try {
@@ -1721,7 +1882,7 @@ export class DshProcessManager {
       }
     })();
     const [probe, expected] = await Promise.all([
-      this.probe(endpoint, 2000),
+      this.probeEndpoint(endpoint, 2000),
       this.selectedCommand(),
     ]);
     if (!probe.reachable || !probe.isDsh || !await this.endpointMatchesCommand(endpoint, expected)) {
@@ -1753,7 +1914,7 @@ export class DshProcessManager {
         }
       }
       if (killed) {
-        if (expected) await removeDshRuntimeOwner(expected, actualPort);
+        if (expected && listenerPid) await removeDshRuntimeOwner(expected, actualPort, listenerPid);
         this.announcedUrl = null;
         this.launchUrl = null;
         this.authGatedEndpoint = null;
@@ -1768,13 +1929,17 @@ export class DshProcessManager {
   }
 
   /** Stop then relaunch, for the 「重启 mv-agent」 command. */
-  async restartInstance(): Promise<void> {
-    await this.stopInstance();
-    await this.ensureStarted();
+  restartInstance(): Promise<void> {
+    return this.runLifecycle("legacy-restart", async () => {
+      await this.stopInstanceInternal();
+      await this.ensureStartedInternal();
+    });
   }
 
   dispose(): void {
     this.disposed = true;
+    this.lifecycle.dispose();
+    this.invalidatePendingStart();
     this.stopWebProxy();
     // The managed DSH instance deliberately outlives this plugin session:
     // 「打开 mv-agent」 reconnects to it through its ownership record and the

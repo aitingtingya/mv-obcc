@@ -2,6 +2,7 @@ import type { ItemView, View } from "obsidian";
 import type MvAideIdePlugin from "../main";
 import { t } from "./i18n";
 import { BrowserDownloadsModal } from "./browser-downloads-modal";
+import { snapshotWorkspaceLeaves } from "./workspace-leaves";
 
 // 与 browser-history-button.ts 同一套 viewType 判定。
 const BROWSER_VIEW_TYPES = new Set(["browser", "webviewer"]);
@@ -45,8 +46,7 @@ export class BrowserDownloadsButtonFeature {
   }
 
   install(): void {
-    const views: ItemView[] = [];
-    this.plugin.app.workspace.iterateAllLeaves((leaf) => views.push(leaf.view as ItemView));
+    const views = snapshotWorkspaceLeaves(this.plugin.app).map((leaf) => leaf.view as ItemView);
     // Inactive live views may be detached from the DOM. Ownership follows
     // workspace leaves, not isConnected, so disable still removes their UI.
     this.buttons = this.buttons.filter((button) => views.some((view) => view.containerEl.contains(button)));

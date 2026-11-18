@@ -43,7 +43,7 @@ Claude Code、Codex CLI 和任意 MCP Agent 可以读取当前标签、选区、
 
 mv-agent 把 DSH Web 界面直接放进 Obsidian。视图底部状态栏显示真实桥接状态、当前页面或文件、选区、端口和可展开的现场详情；命令面板提供「打开 / 停止 / 重启 mv-agent」。
 
-当前主要适配 DSH **0.2.1-rc.2**，同时保留 **0.2.0-rc.2** 回归。新版模型设置优先使用原生模态与思考控件，manager 补齐专家参数、等级排序及内置模型覆盖；原生当前目录与子工作区选择互相独立。
+当前主要适配 DSH **0.2.1-rc.5**，同时保留 **0.2.0-rc.2** 回归。新版模型设置优先使用原生模态与思考控件，manager 补齐专家参数、等级排序及内置模型覆盖；原生当前目录与子工作区选择互相独立。
 
 设置页按 Node.js、DSH、pnpm、插件注入四层检测环境，可安装到当前 Vault 或全局位置，也能识别、验证并管理 DeepSeek Harness 源码仓库。注入后 DSH 获得 `/mv-aide` 命令和 `mv_aide__*` IDE 工具，并支持：
 
@@ -114,7 +114,7 @@ mv-AIDE 完整注入会管理 mv-agent、mv-dsh-manager 和独立的 mv-dsh-subw
 
 独立实现的 Vim 编辑核心支持主要模式、motion、operator、text object、寄存器、宏、搜索、Ex 命令和仓库级 `.vimrc`。隐藏 Obsidian 原生状态栏时，Vim 模式徽章自动切换为编辑器内悬浮显示。
 
-支持 `clipboard=unnamed,unnamedplus` 双向系统剪贴板、Unicode 字符边界、次数重复和常用 Vim 搜索语法；不是完整 Vimscript 或第三方 Vim 插件运行环境。具体支持边界见能力清单。
+支持 `clipboard=unnamed,unnamedplus` 双向系统剪贴板、Unicode 字符边界、次数重复和常用 Vim 搜索语法；现在也可从 `mv-aide/vim/` 加载 `.vim` 脚本，使用函数、表达式映射、文件类型插件和本地包；兼容范围见 [Vimscript 手册](docs/vim-scripts.md)，不等同于完整 Vim。
 
 ![Vim 模式、相对行号与真实编辑](media/readme/vim.gif)
 

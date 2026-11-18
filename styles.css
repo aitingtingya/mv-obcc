@@ -240,7 +240,17 @@
   -webkit-app-region: no-drag;
 }
 
+/* Keep all terminal previews below Obsidian's native pane menus, regardless
+   of how many previews are open or how often one is activated. */
+.mv-aide-terminal-preview-layer {
+  position: fixed;
+  inset: 0;
+  z-index: var(--layer-popover);
+  pointer-events: none;
+}
+
 .popover.hover-popover.mv-aide-terminal-preview {
+  pointer-events: auto;
   min-width: 280px;
   min-height: 200px;
   max-width: calc(100vw - 16px);

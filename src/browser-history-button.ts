@@ -1,6 +1,7 @@
 import type { ItemView, View } from "obsidian";
 import type MvAideIdePlugin from "../main";
 import { t } from "./i18n";
+import { snapshotWorkspaceLeaves } from "./workspace-leaves";
 
 // 浏览器视图的 viewType 与历史命令 id 随 Obsidian 版本不同：
 // 旧版（1.6.7 安装包 asar 实证）viewType 为 "browser"、命令为 browser:open-history；
@@ -50,8 +51,7 @@ export class BrowserHistoryButtonFeature {
   }
 
   install(): void {
-    const views: ItemView[] = [];
-    this.plugin.app.workspace.iterateAllLeaves((leaf) => views.push(leaf.view as ItemView));
+    const views = snapshotWorkspaceLeaves(this.plugin.app).map((leaf) => leaf.view as ItemView);
     // Inactive live views may be detached from the DOM. Ownership follows
     // workspace leaves, not isConnected, so disable still removes their UI.
     this.buttons = this.buttons.filter((button) => views.some((view) => view.containerEl.contains(button)));

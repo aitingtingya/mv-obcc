@@ -1,6 +1,7 @@
 import { Menu, Modal, Notice, PluginSettingTab, Setting, setIcon, type App } from "obsidian";
 import type { EditorView } from "@codemirror/view";
 import type MvAideIdePlugin from "../main";
+import { renderVimScriptSettings } from "./vim-host/scripts/settings";
 import {
   DEFAULT_SETTINGS,
   DEFAULT_INLINE_SYSTEM_PROMPT_BODY,
@@ -3109,6 +3110,11 @@ export class MvAideIdeSettingTab extends PluginSettingTab {
       },
       );
     vimrcSetting.settingEl.addClass("mv-aide-vimrc-setting");
+    renderVimScriptSettings(containerEl, {
+      status: () => this.plugin.vimStatus(),
+      openDirectory: () => this.plugin.openVimScriptDirectory(),
+      reload: () => this.plugin.reloadVimConfiguration(),
+    });
 
     new Setting(containerEl)
       .setName(t("允许 Vim 执行外部命令"))

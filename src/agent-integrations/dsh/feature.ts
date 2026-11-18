@@ -1679,6 +1679,7 @@ export class DshFeature {
    */
   async ensureMvAgentViewsConnected(reason: string): Promise<void> {
     if (!this.plugin.settings.dsh.enabled) return;
+    if (this.processManager.isLifecycleChanging()) return;
     if (this.plugin.app.workspace.getLeavesOfType(DSH_WEB_VIEW_TYPE).length === 0) return;
     if (Date.now() < this.mvAgentViewsEnsureNextAt) return;
     if (this.mvAgentViewsEnsureBusy) return this.mvAgentViewsEnsureBusy;
@@ -1700,7 +1701,9 @@ export class DshFeature {
   private async runMvAgentViewEnsure(generation: number, reason: string): Promise<void> {
     try {
       const known = this.processManager.currentUrl();
-      if (await this.processManager.isEndpointLive(known)) {
+      const live = await this.processManager.isEndpointLive(known);
+      if (generation !== this.mvAgentOperationGeneration || this.processManager.isLifecycleChanging()) return;
+      if (live) {
         // The endpoint serves, so no new instance is needed — but a view may
         // still be loading the raw endpoint instead of the loopback proxy, and
         // that document renders without being able to reach /api. Repair those
@@ -1714,6 +1717,7 @@ export class DshFeature {
       await this.connectMvAgentViewsTo(url);
       this.resetMvAgentViewEnsureBackoff();
     } catch (error) {
+      if (generation !== this.mvAgentOperationGeneration || isDshStartCancelled(error)) return;
       const backoff = this.mvAgentViewsEnsureBackoffMs === 0
         ? MV_AGENT_VIEW_ENSURE_INTERVAL_MS
         : Math.min(this.mvAgentViewsEnsureBackoffMs * 2, MV_AGENT_VIEW_ENSURE_MAX_INTERVAL_MS);
@@ -1855,7 +1859,12 @@ export class DshFeature {
    * vault was using instead of starting a second one.
    */
   async confirmDshViewUrl(url: string): Promise<string | null> {
-    return this.processManager.confirmDshUrl(url, 1500, { trustOwnEndpoint: true });
+    const generation = this.mvAgentOperationGeneration;
+    const confirmed = await this.processManager.confirmDshUrl(url, 1500, { trustOwnEndpoint: true });
+    if (generation !== this.mvAgentOperationGeneration || this.processManager.isLifecycleChanging()) {
+      throw new DshStartCancelledError();
+    }
+    return confirmed;
   }
 
   /**

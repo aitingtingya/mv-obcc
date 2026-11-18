@@ -23,7 +23,8 @@ import { anyVimSourceEnabled, vimSourceSettings } from "../vim/settings";
 import { resolveVimCursorColorCss } from "../vim/cursor-color";
 import { t } from "../i18n";
 import { ensureContainedVaultDirectory } from "../external-file-mirror-path";
-import { loadVimrc } from "./vimrc-loader";
+import { VimScriptLoader } from "./scripts/loader";
+import type { VimScriptRuntime } from "../vim/script/runtime";
 import { compileVimRuntime } from "../vim/vimrc/runtime";
 import { isObsidianWorkspaceDragEvent } from "./workspace-drag";
 import { createVimClipboard } from "./clipboard";
@@ -62,9 +63,14 @@ class IndependentVimFeature implements VimFeatureHandle {
   private readonly session = new VimSession();
   private readonly clipboard = createVimClipboard();
   private watchers: fs.FSWatcher[] = [];
+  private watchGeneration = 0;
   private activeLeafEvent: EventRef | null = null;
   private rebuildTimer: number | null = null;
   private generation = 0;
+  private scriptLoader: VimScriptLoader | null = null;
+  private initializingScriptLoader: VimScriptLoader | null = null;
+  private scriptRuntime: VimScriptRuntime | null = null;
+  private scriptsPendingReload = false;
   private diagnosticSignature = "";
   private statusBarItem: HTMLElement | null = null;
   private activeStatusView: EditorView | null = null;
@@ -78,7 +84,7 @@ class IndependentVimFeature implements VimFeatureHandle {
     if (this.state.state === "enabled" || this.state.state === "enabling") return;
     this.state = { ...this.state, state: "enabling", message: t("正在加载独立 Vim 引擎…") };
     try {
-      await this.rebuildRuntimes();
+      if (!await this.rebuildRuntimes()) return;
       if (!this.hasEnabledSources()) {
         this.state = { ...this.state, state: "disabled", message: t("Vim 在加载过程中被关闭。") };
         return;
@@ -119,7 +125,7 @@ class IndependentVimFeature implements VimFeatureHandle {
         this.extensionRegistered = true;
       }
       this.host.refreshEditorExtensions();
-      this.startWatching();
+      if (!await this.startWatching()) return;
       this.state = {
         ...this.state,
         state: "enabled",
@@ -136,6 +142,7 @@ class IndependentVimFeature implements VimFeatureHandle {
 
   disable(): void {
     this.generation += 1;
+    this.initializingScriptLoader?.cancel(); this.initializingScriptLoader = null;
     this.clearRebuildTimer();
     this.stopWatching();
     if (this.activeLeafEvent) this.host.app.workspace.offref(this.activeLeafEvent);
@@ -145,6 +152,7 @@ class IndependentVimFeature implements VimFeatureHandle {
     if (this.extensionRegistered) this.host.refreshEditorExtensions();
     this.editorControllers?.destroy();
     this.editorControllers = null;
+    this.scriptRuntime?.dispose(); this.scriptRuntime = null; this.scriptLoader = null;
     this.viewStatuses.clear();
     this.activeStatusView = null;
     this.unregisterWorkspaceFocus();
@@ -169,25 +177,26 @@ class IndependentVimFeature implements VimFeatureHandle {
       await this.enable();
       return;
     }
-    await this.rebuildRuntimes();
+    if (!await this.refreshConfiguration()) return;
     this.editorControllers?.refreshRuntimes();
-    this.startWatching();
-    this.syncActiveStatusView();
+    if (await this.startWatching()) this.syncActiveStatusView();
   }
 
   async reload(): Promise<void> {
     if (this.state.state !== "enabled") return;
-    await this.rebuildRuntimes();
+    if (!await this.rebuildRuntimes()) return;
     this.editorControllers?.refreshRuntimes();
-    this.startWatching();
+    if (!await this.startWatching()) return;
     this.host.notify(t("Vim 配置已重新加载。"), 3000);
   }
 
   status(): VimFeatureStatus {
+    const capabilities = this.scriptRuntime?.describe();
     return {
       ...this.state,
       editorCount: this.editorControllers?.size ?? 0,
-      loadedFiles: [...this.state.loadedFiles],
+      loadedFiles: [...this.scriptRuntime?.loadedFiles ?? this.state.loadedFiles],
+      ...(this.scriptRuntime && capabilities ? { scripts: { pendingReload: this.scriptsPendingReload, errors: [...this.scriptRuntime.errors], functions: capabilities.functions.map((item) => item.name), commands: capabilities.commands, events: capabilities.events, options: capabilities.options } } : {}),
     };
   }
 
@@ -216,6 +225,12 @@ class IndependentVimFeature implements VimFeatureHandle {
   async openVimrcFile(): Promise<void> {
     if (!await fileExists(this.host.globalVimrcPath)) await this.ensureVimrcFile();
     const error = await electronRuntime().shell.openPath(this.host.globalVimrcPath);
+    if (error) throw new Error(error);
+  }
+
+  async openScriptDirectory(): Promise<void> {
+    await this.ensureVimrcFile();
+    const error = await electronRuntime().shell.openPath(path.dirname(this.host.globalVimrcPath));
     if (error) throw new Error(error);
   }
 
@@ -249,33 +264,43 @@ class IndependentVimFeature implements VimFeatureHandle {
     return true;
   }
 
-  private async rebuildRuntimes(): Promise<void> {
+  private async refreshConfiguration(): Promise<boolean> {
+    if (!this.scriptRuntime || !this.scriptLoader) return this.rebuildRuntimes();
+    const runtime = this.scriptRuntime, loader = this.scriptLoader;
+    const extensions = this.host.sourceExtensions().filter((extension) => vimSourceSettings(this.host.getSettings(), extension).enabled);
+    const virtual = new Map(extensions.map((extension) => [extension, vimSourceSettings(this.host.getSettings(), extension).virtualVimrc]));
+    try { await loader.reloadConfiguration(runtime, virtual); }
+    catch (error) { runtime.report(error); }
+    if (runtime !== this.scriptRuntime || this.state.state !== "enabled") return false;
+    this.runtimes.clear();
+    for (const extension of extensions) this.runtimes.set(extension, this.scriptRuntime.configuration());
+    this.reportDiagnostics(this.scriptRuntime.errors);
+    return true;
+  }
+
+  private async rebuildRuntimes(): Promise<boolean> {
     const generation = ++this.generation;
+    this.initializingScriptLoader?.cancel();
     const extensions = new Set(this.host.sourceExtensions().filter((extension) =>
       vimSourceSettings(this.host.getSettings(), extension).enabled,
     ));
-    const next = new Map<string, VimRuntimeConfig>();
-    const loadedFiles = new Set<string>();
-    const diagnostics: string[] = [];
-    for (const extension of extensions) {
-      const source = vimSourceSettings(this.host.getSettings(), extension);
-      const loaded = await loadVimrc({
-        globalPath: this.host.globalVimrcPath,
-        virtualSource: source.virtualVimrc,
-        virtualName: `${extension} virtual vimrc`,
-        readFile: readOptionalUtf8,
-      });
-      if (generation !== this.generation) return;
-      next.set(extension, loaded.runtime);
-      for (const file of loaded.loadedFiles) loadedFiles.add(file);
-      for (const diagnostic of loaded.diagnostics) {
-        diagnostics.push(`${path.basename(diagnostic.source)}:${diagnostic.line} ${diagnostic.message}`);
-      }
-    }
+    if (extensions.size === 0) return true;
+    const loader = new VimScriptLoader(path.dirname(this.host.globalVimrcPath), this.host.vaultRoot);
+    this.initializingScriptLoader = loader;
+    const virtual = new Map([...extensions].map((extension) => [extension, vimSourceSettings(this.host.getSettings(), extension).virtualVimrc]));
+    let scriptRuntime: VimScriptRuntime;
+    try { scriptRuntime = await loader.initialize(virtual); }
+    catch (error) { loader.cancel(); throw error; }
+    finally { if (this.initializingScriptLoader === loader) this.initializingScriptLoader = null; }
+    if (generation !== this.generation) { scriptRuntime.dispose(); return false; }
+    const oldRuntime = this.scriptRuntime;
+    this.scriptLoader = loader; this.scriptRuntime = scriptRuntime; this.scriptsPendingReload = false;
     this.runtimes.clear();
-    for (const [extension, runtime] of next) this.runtimes.set(extension, runtime);
-    this.state = { ...this.state, loadedFiles: [...loadedFiles] };
-    this.reportDiagnostics(diagnostics);
+    for (const extension of extensions) this.runtimes.set(extension, scriptRuntime.configuration());
+    this.state = { ...this.state, loadedFiles: [...scriptRuntime.loadedFiles] };
+    this.reportDiagnostics(scriptRuntime.errors);
+    oldRuntime?.dispose();
+    return true;
   }
 
   private hasEnabledSources(): boolean {
@@ -594,28 +619,38 @@ class IndependentVimFeature implements VimFeatureHandle {
     }
   }
 
-  private startWatching(): void {
+  private async startWatching(): Promise<boolean> {
     this.stopWatching();
-    const directories = new Set([
-      path.dirname(this.host.globalVimrcPath),
-      ...this.state.loadedFiles
-        .map((file) => path.dirname(file)),
-    ]);
-    for (const directory of directories) {
-      try {
-        const watcher = fs.watch(directory, (_event, fileName) => {
-          if (!fileName || fileName.toString().endsWith(".vimrc") || fileName.toString().endsWith(".vim")) {
-            this.scheduleReload();
-          }
-        });
-        this.watchers.push(watcher);
-      } catch {
-        // The external configuration directory is absent until the user creates it.
-      }
+    const generation = this.watchGeneration;
+    const loader = this.scriptLoader;
+    if (!loader) return false;
+    try {
+      await loader.watchDirectories((directory, real) => {
+        if (generation !== this.watchGeneration) return;
+        try {
+          const watcher = fs.watch(real, (event, fileName) => {
+            const file = fileName ? path.join(directory, fileName.toString()) : null;
+            if (file && loader.configurationFiles.has(file)) {
+              this.scheduleReload();
+            } else if (!fileName || fileName.toString().endsWith(".vim") || event === "rename") {
+              this.scriptsPendingReload = true;
+            }
+          });
+          this.watchers.push(watcher);
+        } catch (error) {
+          if (!isNodeError(error, "ENOENT")) this.scriptRuntime?.report(error);
+        }
+      });
+    } catch (error) {
+      if (generation === this.watchGeneration) this.scriptRuntime?.report(error);
     }
+    if (generation !== this.watchGeneration) return false;
+    this.reportDiagnostics(this.scriptRuntime?.errors ?? []);
+    return true;
   }
 
   private stopWatching(): void {
+    this.watchGeneration++;
     for (const watcher of this.watchers) watcher.close();
     this.watchers = [];
   }
@@ -626,7 +661,11 @@ class IndependentVimFeature implements VimFeatureHandle {
     if (!hostWindow) return;
     this.rebuildTimer = hostWindow.setTimeout(() => {
       this.rebuildTimer = null;
-      void this.reload();
+      void this.refreshConfiguration().then(async (current) => {
+        if (!current) return;
+        this.editorControllers?.refreshRuntimes();
+        await this.startWatching();
+      });
     }, 150);
   }
 
@@ -713,16 +752,6 @@ async function ensurePrivateVimrcDirectory(
     await fs.promises.chmod(storageRoot, 0o700);
   }
 }
-
-async function readOptionalUtf8(filePath: string): Promise<string | null> {
-  try {
-    return await fs.promises.readFile(filePath, "utf8");
-  } catch (error) {
-    if (isNodeError(error, "ENOENT")) return null;
-    throw error;
-  }
-}
-
 
 function isNodeError(error: unknown, code: string): error is NodeJS.ErrnoException {
   return error instanceof Error && (error as NodeJS.ErrnoException).code === code;

@@ -843,7 +843,6 @@ export default class MvAideIdePlugin extends Plugin {
     );
     await this.sourceAssist.load();
     this.registerEditorExtension(this.sourceAssist.extensions);
-    await this.syncVimFeatureFromSettings();
     this.lintFeature = new LintFeature(this);
     this.registerEditorExtension(this.lintFeature.extensions);
     this.lintFeature.registerCommand();
@@ -921,6 +920,11 @@ export default class MvAideIdePlugin extends Plugin {
     this.fileTypeIconView.start();
     this.app.workspace.onLayoutReady(() => this.fileTypeIconView?.refresh());
 
+    this.app.workspace.onLayoutReady(() => {
+      if (!this.unloaded) void this.syncVimFeatureFromSettings().catch((error: unknown) => {
+        console.error("[mv-aide] Vim startup failed", error);
+      });
+    });
     this.schedulePostLayoutStartup();
     this.terminalRegistry?.refresh();
     this.terminalRegistry?.markActiveLeaf(activeWorkspaceLeaf(this.app));
@@ -1134,31 +1138,37 @@ export default class MvAideIdePlugin extends Plugin {
   async reloadVimConfiguration(): Promise<void> {
     if (!this.vimSourceExtensionsEnabled()) return;
     const feature = await this.ensureVimFeature();
-    await feature.reload();
+    await feature?.reload();
   }
 
   async ensureVimConfigFile(): Promise<void> {
     if (!this.vimSourceExtensionsEnabled()) return;
     const feature = await this.ensureVimFeature();
-    await feature.ensureVimrcFile();
+    await feature?.ensureVimrcFile();
   }
 
   async openVimConfigFile(): Promise<void> {
     if (!this.vimSourceExtensionsEnabled()) return;
     const feature = await this.ensureVimFeature();
-    await feature.openVimrcFile();
+    await feature?.openVimrcFile();
+  }
+
+  async openVimScriptDirectory(): Promise<void> {
+    if (!this.vimSourceExtensionsEnabled()) return;
+    const feature = await this.ensureVimFeature();
+    await feature?.openScriptDirectory();
   }
 
   async hasLegacyVimConfigFile(): Promise<boolean> {
     if (!this.vimSourceExtensionsEnabled()) return false;
     const feature = await this.ensureVimFeature();
-    return feature.hasLegacyVimrcFile();
+    return feature?.hasLegacyVimrcFile() ?? false;
   }
 
   async migrateLegacyVimConfigFile(): Promise<boolean> {
     if (!this.vimSourceExtensionsEnabled()) return false;
     const feature = await this.ensureVimFeature();
-    return feature.migrateLegacyVimrcFile();
+    return feature?.migrateLegacyVimrcFile() ?? false;
   }
 
   private async syncVimFeatureFromSettings(): Promise<void> {
@@ -1176,7 +1186,7 @@ export default class MvAideIdePlugin extends Plugin {
       return;
     }
     const feature = await this.ensureVimFeature();
-    await feature.settingsChanged();
+    if (!this.unloaded) await feature?.settingsChanged();
   }
 
   private vimSourceExtensionsEnabled(): boolean {
@@ -1186,9 +1196,11 @@ export default class MvAideIdePlugin extends Plugin {
     );
   }
 
-  private async ensureVimFeature(): Promise<VimFeatureHandle> {
+  private async ensureVimFeature(): Promise<VimFeatureHandle | null> {
     if (this.vimFeature) return this.vimFeature;
     const { createVimFeature } = await import("./src/vim-host/feature");
+    if (this.unloaded || !this.vimSourceExtensionsEnabled()) return null;
+    if (this.vimFeature) return this.vimFeature;
     const host: VimFeatureHost = {
       app: this.app,
       pluginId: this.manifest.id,

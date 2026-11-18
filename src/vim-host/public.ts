@@ -11,6 +11,14 @@ export interface VimFeatureStatus {
   message: string;
   editorCount: number;
   loadedFiles: readonly string[];
+  scripts?: {
+    pendingReload: boolean;
+    errors: readonly string[];
+    functions: readonly string[];
+    commands: readonly string[];
+    events: readonly string[];
+    options: readonly string[];
+  };
 }
 
 export interface VimLegacyConfigSource {
@@ -48,6 +56,7 @@ export interface VimFeatureHandle {
   effectiveSelection(view: EditorView): VimEffectiveSelection | null;
   ensureVimrcFile(): Promise<void>;
   openVimrcFile(): Promise<void>;
+  openScriptDirectory(): Promise<void>;
   migrateLegacyVimrcFile(): Promise<boolean>;
   hasLegacyVimrcFile(): Promise<boolean>;
 }

@@ -28,6 +28,9 @@ import { VimExecutionQueue } from "./execution";
 import { tokenizeVimKeys } from "./keys";
 import { parseVimrc } from "../vimrc/parser";
 import { compileVimRuntime } from "../vimrc/runtime";
+import { createScriptEditor } from "../script/editor-port";
+import type { ScriptEditor, ScriptMapping } from "../script/contracts";
+import { integer, stringValue, type VimValue } from "../script/value";
 import {
   DEFAULT_VIM_OPTIONS,
   type VimAutocmdEvent,
@@ -48,6 +51,7 @@ import {
 } from "./types";
 
 type OperatorName =
+  | "script"
   | "delete"
   | "change"
   | "yank"
@@ -172,6 +176,18 @@ export class VimEngine {
   private virtualReplace = false;
   private blockInsertion = false;
   private blockInsertionOrigin: number | null = null;
+  private scriptEditor: ScriptEditor | null = null;
+  private scriptReady: Promise<void> = Promise.resolve();
+  private readonly scriptTasks = new Set<Promise<void>>();
+  private scriptLastCommand: Promise<void> | null = null;
+  private scriptChangeDepth = 0;
+  private scriptMappingKeys: string[] = [];
+  private scriptInputDepth = 0;
+  private scriptSilentDepth = 0;
+  private scriptEventsScheduled = false;
+  private readonly pendingScriptEvents = new Set<VimAutocmdEvent>();
+  private expressionPrompt: { mode: VimMode; prefix: ":" | "/" | "?"; text: string; insert: boolean } | null = null;
+  private expressionRegister = "";
 
   constructor(
     private readonly buffer: VimBuffer,
@@ -189,9 +205,10 @@ export class VimEngine {
     this.playback = new VimExecutionQueue((entry) => {
       const depth = this.mappingDepth;
       this.mappingDepth = entry.mappingDepth;
-      try { this.replayMacroKey(entry.key, entry.remap); return this.pendingRead ?? undefined; }
+      try { const before = this.scriptLastCommand; this.replayMacroKey(entry.key, entry.remap); return this.scriptLastCommand && this.scriptLastCommand !== before ? this.scriptLastCommand : this.pendingRead ?? undefined; }
       finally { this.mappingDepth = depth; }
     }, (message) => { this.reportError(message); this.finishChange(false); this.pendingOperator = null; this.resetCommandState(); });
+    this.attachScriptRuntime();
     this.emitStatus();
   }
 
@@ -205,7 +222,7 @@ export class VimEngine {
     return {
       mode: this.mode,
       command: this.modeValue === "command-line"
-        ? `${this.commandPrefix}${this.commandBuffer}`
+        ? `${this.expressionPrompt ? "=" : this.commandPrefix}${this.commandBuffer}`
         : this.pendingDisplay(),
       message: this.message,
       recordingRegister: this.recordingRegister,
@@ -217,7 +234,11 @@ export class VimEngine {
   }
 
   setRuntime(runtime: VimRuntimeConfig): void {
+    const changedScript = runtime.script !== this.runtime.script;
+    if (!changedScript && runtime.script && this.scriptEditor) runtime = runtime.script.configuration(this.scriptEditor);
+    if (changedScript && this.scriptEditor) this.runtime.script?.detach(this.scriptEditor);
     this.runtime = cloneRuntime(runtime);
+    if (changedScript) this.attachScriptRuntime();
     this.rebuildAbbreviations();
     this.buffer.updateOptions?.(this.runtime.options);
     this.mappingBuffer = [];
@@ -237,12 +258,13 @@ export class VimEngine {
   handleKey(key: string): VimHandleResult {
     if (!key || this.disposed) return this.result(false);
     if (this.recordingRegister && (key !== "q" || this.modeValue !== "normal")) this.recordedMacro.push(key);
-    if (this.pendingRead || this.playback.busy) {
+    if (this.busy) {
       if (key === "<Esc>" || key === "<C-c>") {
         this.operationGeneration += 1;
         this.queuedKeys.length = 0;
         this.pendingRead = null;
         this.playback.cancel();
+        this.runtime.script?.cancel(this.scriptEditor ?? undefined);
         this.resetCommandState();
         if (this.modeValue === "insert" || this.modeValue === "replace") this.handleInsertKey("<Esc>");
         else if (this.isVisualMode()) this.exitVisual();
@@ -268,10 +290,10 @@ export class VimEngine {
     return this.mappingBuffer.length > 0 || this.insertMappingBuffer.length > 0;
   }
 
-  get busy(): boolean { return this.pendingRead !== null || this.playback.busy; }
+  get busy(): boolean { return this.pendingRead !== null || this.playback.busy || this.scriptTasks.size > 0; }
 
   async settled(): Promise<void> {
-    do { await this.pendingRead; await this.playback.idle(); await Promise.all(this.pendingWrites); }
+    do { await this.pendingRead; await this.playback.idle(); await Promise.all(this.pendingWrites); await Promise.all(this.scriptTasks); }
     while (!this.disposed && (this.busy || this.pendingWrites.size));
   }
 
@@ -299,7 +321,10 @@ export class VimEngine {
   }
 
   readRegister(name = '"'): VimRegister | Promise<VimRegister> {
-    if (name === "=") throw new Error("Expression registers require a Vimscript evaluator.");
+    if (name === "=") {
+      if (!this.runtime.script || !this.scriptEditor) throw new Error("Expression registers require a Vimscript evaluator.");
+      return this.runtime.script.evaluateExpression(this.expressionRegister || "''", this.scriptEditor).then((value) => ({ text: stringValue(value), kind: "character" as const }));
+    }
     if (["/", ".", ":", "%"].includes(name)) {
       return { text: name === "/" ? this.searchPattern : name === "." ? this.session.readRegister(".").text : name === ":" ? this.session.commandHistory[0] ?? "" : this.buffer.id, kind: "character" };
     }
@@ -447,6 +472,13 @@ export class VimEngine {
 
   runAutocmd(event: VimAutocmdEvent, fileName: string): Promise<boolean> {
     if (this.disposed) return Promise.resolve(false);
+    if (this.runtime.script && this.scriptEditor) {
+      const runtime = this.runtime.script, editor = this.scriptEditor;
+      if (!runtime.autocmds.some((entry) => entry.events.includes(event))) return Promise.resolve(true);
+      let success = true;
+      const work = this.scriptReady.then(() => runtime.emit(event, editor, fileName)).catch((error: unknown) => { success = false; throw error; });
+      return this.trackScript(work).then(() => success && !this.disposed);
+    }
     const eventKey = `${event}\0${fileName}`;
     if (this.queuedAutocmds.has(eventKey)) return Promise.resolve(false);
     this.queuedAutocmds.add(eventKey);
@@ -472,6 +504,26 @@ export class VimEngine {
     );
     this.autocmdTail = result.then(() => undefined);
     return result;
+  }
+
+  /** Coalesces actual editor changes; no work is scheduled without a subscription. */
+  notifyScriptUpdate(textChanged: boolean, cursorChanged: boolean): void {
+    const runtime = this.runtime.script, editor = this.scriptEditor;
+    if (!runtime || !editor || this.disposed || runtime.inEvent(editor)) return;
+    const insert = this.modeValue === "insert" || this.modeValue === "replace";
+    const events: VimAutocmdEvent[] = [];
+    if (textChanged) events.push(insert ? "TextChangedI" : "TextChanged");
+    if (cursorChanged) events.push(insert ? "CursorMovedI" : "CursorMoved");
+    for (const event of events) if (runtime.observes(event, editor)) this.pendingScriptEvents.add(event);
+    if (!this.pendingScriptEvents.size || this.scriptEventsScheduled) return;
+    this.scriptEventsScheduled = true;
+    queueMicrotask(() => {
+      void this.settled().then(async () => {
+        if (this.disposed || runtime !== this.runtime.script) return;
+        const pending = [...this.pendingScriptEvents]; this.pendingScriptEvents.clear();
+        for (const event of pending) await this.runAutocmd(event, this.buffer.id);
+      }).finally(() => { this.scriptEventsScheduled = false; this.pendingScriptEvents.clear(); });
+    });
   }
 
   /** Converts a completed pointer range into the engine-owned Visual snapshot. */
@@ -561,6 +613,8 @@ export class VimEngine {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    if (this.scriptEditor) this.runtime.script?.detach(this.scriptEditor);
+    this.scriptEditor = null;
     this.session.releaseBuffer(this.observedBufferId);
     this.observedDocument = null;
     this.playback.cancel();
@@ -1141,6 +1195,7 @@ export class VimEngine {
     }
     if (this.pendingRegister) {
       this.pendingRegister = false;
+      if (key === "=" && this.runtime.script) { this.startExpressionPrompt(true); return true; }
       this.withRegister(key, (value) => this.insertLiteral(value.text));
       return true;
     }
@@ -1149,6 +1204,23 @@ export class VimEngine {
 
   private handleCommandLineKey(key: string): boolean {
     if (this.confirmation) return this.confirmSubstitute(key);
+    if (this.expressionPrompt && ["<CR>", "Enter", "<Esc>", "<C-c>"].includes(key)) {
+      const prompt = this.expressionPrompt, expression = this.commandBuffer; this.expressionPrompt = null;
+      this.commandPrefix = prompt.prefix; this.commandBuffer = prompt.text; this.setMode(prompt.mode);
+      if (key === "<Esc>" || key === "<C-c>") return true;
+      this.expressionRegister = expression;
+      if (prompt.insert) this.withRegister("=", (value) => { if (prompt.mode === "command-line") { this.commandBuffer += value.text; this.emitStatus(); } else this.insertLiteral(value.text); });
+      else this.activeRegister = "=";
+      return true;
+    }
+    if (key === "<C-r>") { this.pendingRegister = true; return true; }
+    if (this.pendingRegister) {
+      this.pendingRegister = false;
+      if (key === "=" && this.runtime.script) this.startExpressionPrompt(true);
+      else this.withRegister(key, (value) => { this.commandBuffer += value.text; this.emitStatus(); });
+      return true;
+    }
+    if (key === "<C-u>") { this.commandBuffer = ""; this.emitStatus(); return true; }
     if (key === "<Esc>" || key === "<C-c>") {
       this.commandBuffer = "";
       if (this.commandPrefix !== ":") { this.setCursor(this.searchStart); this.restoreSearchHighlight(); }
@@ -1186,9 +1258,10 @@ export class VimEngine {
         history.length = Math.min(history.length, 100);
       }
       if (prefix === ":") {
-        void this.executeEx(command).catch((error: unknown) => {
+        const execution = this.executeEx(command).catch((error: unknown) => {
           this.reportError(errorMessage(error));
         });
+        if (this.runtime.script) this.scriptLastCommand = this.trackScript(execution);
       }
       else this.executeSearch(command, prefix === "/" ? 1 : -1);
       return true;
@@ -1219,6 +1292,7 @@ export class VimEngine {
     if (this.pendingRegister) {
       this.activeRegister = key[0] ?? '"';
       this.pendingRegister = false;
+      if (key === "=" && this.runtime.script) { this.startExpressionPrompt(false); return true; }
       this.emitStatus();
       return true;
     }
@@ -1313,6 +1387,11 @@ export class VimEngine {
     if (this.pendingPrefix === "g") {
       const count = this.takeCountState();
       this.pendingPrefix = "";
+      if (key === "@" && this.runtime.script) {
+        if (this.isVisualMode()) this.applyVisualOperator("script", ["g", "@"]);
+        else this.startOperator("script", count.value, count.explicit, ["g", "@"]);
+        return true;
+      }
       if (key === "*" || key === "#") { this.searchWord(key === "*" ? 1 : -1, count.value, false); return true; }
       if (key === "h" || key === "H" || key === "<C-h>") {
         this.enterVisual(key === "H" ? "visual-line" : key === "<C-h>" ? "visual-block" : "visual");
@@ -1530,6 +1609,7 @@ export class VimEngine {
     rawTo: number,
     linewise: boolean,
     keys: string[],
+    scriptKind?: "block",
   ): void {
     let from = Math.min(rawFrom, rawTo);
     let to = Math.max(rawFrom, rawTo);
@@ -1538,6 +1618,20 @@ export class VimEngine {
       const last = this.buffer.lineAt(Math.max(from, to - 1));
       from = first.from;
       to = last.number < this.buffer.lineCount ? last.to + 1 : last.to;
+    }
+    if (name === "script" && this.runtime.script && this.scriptEditor) {
+      const runtime = this.runtime.script, editor = this.scriptEditor;
+      this.marks.set("[", from); this.marks.set("]", Math.max(from, previousCharacter(this.buffer.text(), to)));
+      const frame = runtime.frame(":operator", editor);
+      const fn = runtime.getOption("operatorfunc", frame);
+      this.finishOperator(); this.setCursor(from);
+      const repeatKeys = this.scriptMappingKeys.length ? [...this.scriptMappingKeys, ...(this.scriptInputDepth ? [] : keys.slice(2))] : keys;
+      this.scriptLastCommand = this.trackScript((async () => {
+        this.beginChange(repeatKeys); this.scriptChangeDepth++;
+        try { await runtime.context(frame).invoke(fn, [scriptKind ?? (linewise ? "line" : "char")]); }
+        finally { this.scriptChangeDepth--; this.finishChange(); this.scriptMappingKeys = []; }
+      })());
+      return;
     }
     if (to <= from && name !== "indent" && name !== "outdent" && name !== "format") {
       this.cancelOperator();
@@ -1618,6 +1712,7 @@ export class VimEngine {
       from: Math.min(range.anchor, range.head),
       to: Math.max(range.anchor, range.head),
     }));
+    if (name === "script" && ordered.length) { this.applyOperatorRange(name, ordered[0].from, ordered.at(-1)!.to, false, keys, "block"); return; }
     const text = ordered.map((range) => this.buffer.text(range.from, range.to)).join("\n");
     if (name === "yank") {
       this.writeRegister(text, "block", false, true);
@@ -2088,6 +2183,14 @@ export class VimEngine {
     const matching = mappings.filter((mapping) => startsWith(mapping.lhs, candidate));
     if (matching.length === 0) {
       if (this.mappingBuffer.length === 0) return null;
+      if (this.runtime.script) {
+        const prefix = mappings.filter((mapping) => startsWith(candidate, mapping.lhs)).sort((a, b) => b.lhs.length - a.lhs.length)[0];
+        if (prefix) {
+          this.mappingBuffer = []; this.executeMapping(prefix);
+          for (const suffix of candidate.slice(prefix.lhs.length)) this.handleKey(suffix);
+          return true;
+        }
+      }
       const buffered = [...this.mappingBuffer, key];
       this.mappingBuffer = [];
       for (const bufferedKey of buffered) this.handleDirectKey(bufferedKey);
@@ -2095,7 +2198,7 @@ export class VimEngine {
     }
     this.mappingBuffer = candidate;
     const exact = matching.find((mapping) => arraysEqual(mapping.lhs, candidate));
-    if (!exact || matching.some((mapping) => mapping.lhs.length > candidate.length)) return true;
+    if (!exact || !exact.nowait && matching.some((mapping) => mapping.lhs.length > candidate.length)) return true;
     this.mappingBuffer = [];
     this.executeMapping(exact);
     return true;
@@ -2115,7 +2218,7 @@ export class VimEngine {
     }
     this.insertMappingBuffer = candidate;
     const exact = matching.find((mapping) => arraysEqual(mapping.lhs, candidate));
-    if (!exact || matching.some((mapping) => mapping.lhs.length > candidate.length)) return true;
+    if (!exact || !exact.nowait && matching.some((mapping) => mapping.lhs.length > candidate.length)) return true;
     this.insertMappingBuffer = [];
     this.executeMapping(exact);
     return true;
@@ -2123,6 +2226,19 @@ export class VimEngine {
 
   private executeMapping(mapping: VimMapping): void {
     if (this.mappingDepth >= this.runtime.options.maxmapdepth) throw new Error("E223: Recursive mapping exceeded maxmapdepth");
+    if (this.runtime.script && this.scriptEditor) {
+      const runtime = this.runtime.script, editor = this.scriptEditor;
+      this.scriptMappingKeys = [...mapping.lhs];
+      this.scriptLastCommand = this.trackScript((async () => {
+        await this.scriptReady;
+        const value = await runtime.mappingValue(mapping as ScriptMapping, editor, this.scriptSpecials());
+        this.scriptChangeDepth++;
+        if ((mapping as ScriptMapping).silent) this.scriptSilentDepth++;
+        try { await this.runScriptKeys(value, mapping.recursive); }
+        finally { if ((mapping as ScriptMapping).silent) this.scriptSilentDepth--; this.scriptChangeDepth--; if (!this.pendingOperator) { this.finishChange(); this.scriptMappingKeys = []; } this.emitStatus(); }
+      })());
+      return;
+    }
     this.playback.enqueue(mapping.rhs.map((key) => ({ key, remap: mapping.recursive, mappingDepth: this.mappingDepth + 1 })));
     if (this.playback.busy) void this.playback.idle().then(() => this.flushQueuedKeys());
   }
@@ -2156,6 +2272,15 @@ export class VimEngine {
     const replacement = this.abbreviations.get(prefix.slice(index));
     if (replacement === undefined) return false;
     const from = start + index;
+    if (this.runtime.script && this.scriptEditor && this.runtime.abbreviations.find((entry) => entry.lhs === prefix.slice(index))?.expression) {
+      const runtime = this.runtime.script, editor = this.scriptEditor;
+      this.scriptLastCommand = this.trackScript(runtime.abbreviationValue(prefix.slice(index), editor).then((text) => {
+        if (this.disposed) return;
+        this.apply([{ from, to: cursor, insert: text + delimiter }], [{ anchor: from + text.length + delimiter.length, head: from + text.length + delimiter.length }]);
+        this.currentChange?.appendText(text, true); this.currentChange?.push(delimiter);
+      }));
+      return true;
+    }
     this.apply(
       [{ from, to: cursor, insert: replacement + delimiter }],
       [{ anchor: from + replacement.length + delimiter.length, head: from + replacement.length + delimiter.length }],
@@ -2274,6 +2399,7 @@ export class VimEngine {
   }
 
   private finishChange(record = true): void {
+    if (this.scriptChangeDepth > 0) return;
     if (this.replayingChange) return;
     if (record && this.currentChange && this.currentChange.length > 0) {
       this.lastChange = this.currentChange.clone();
@@ -2388,8 +2514,13 @@ export class VimEngine {
     if (motion) this.move(motion);
   }
 
-  private async executeEx(rawCommand: string): Promise<void> {
+  private async executeEx(rawCommand: string, nativeOnly = false): Promise<void> {
     if (this.disposed) return;
+    if (!nativeOnly && this.runtime.script && this.scriptEditor) {
+      await this.scriptReady;
+      await this.runtime.script.run(rawCommand, this.scriptEditor);
+      return;
+    }
     let command = rawCommand.trim();
     if (!command) return;
     const firstWord = command.split(/\s+/, 1)[0] ?? "";
@@ -2647,6 +2778,77 @@ export class VimEngine {
     if (result instanceof Promise) void result.catch((error: unknown) => { if (!this.disposed) this.reportError(errorMessage(error)); });
   }
 
+  private attachScriptRuntime(): void {
+    const runtime = this.runtime.script;
+    this.scriptEditor = null;
+    if (!runtime) { this.scriptReady = Promise.resolve(); return; }
+    const editor = createScriptEditor({
+      buffer: this.buffer, mode: () => this.mode, options: () => this.options,
+      cursor: () => this.cursor(), setCursor: (position) => this.setCursor(position), marks: this.marks,
+      apply: (edits) => {
+        if (this.disposed) throw new Error("Vim editor is closed");
+        this.beginChange(this.scriptMappingKeys); this.apply(edits);
+        if (!this.scriptChangeDepth) this.finishChange();
+      },
+      readRegister: (name) => this.readRegister(name),
+      writeRegister: (name, value) => { this.session.setRegister(name, value); for (const target of clipboardWriteTargets(name, this.runtime.options, false)) this.writeSystemClipboard(target, value); },
+      normal: async (keys, remap) => {
+        await this.runScriptKeys(keys, remap);
+        if (this.modeValue === "insert" || this.modeValue === "replace") this.handleInsertKey("<Esc>");
+      }, ex: (command) => this.executeEx(command, true),
+      configure: (config) => { if (!this.disposed) { this.setRuntime(config); this.hooks.onOptionsChanged?.(); } },
+      message: (text, error) => { if (error) this.reportError(text); else { this.message = text; this.emitStatus(); } },
+      beginEdit: () => { this.scriptChangeDepth++; }, endEdit: () => { if (--this.scriptChangeDepth === 0) this.finishChange(); },
+    });
+    this.scriptEditor = editor;
+    const initialization = runtime.attach(editor);
+    this.scriptReady = initialization ? initialization.catch((error: unknown) => {
+      if (!this.disposed && this.runtime.script === runtime) runtime.report(error, editor);
+    }) : Promise.resolve();
+    if (initialization) void this.trackScript(this.scriptReady);
+  }
+
+  private startExpressionPrompt(insert: boolean): void {
+    this.expressionPrompt = { mode: this.modeValue, prefix: this.commandPrefix, text: this.commandBuffer, insert };
+    this.commandBuffer = ""; this.commandPrefix = ":"; this.setMode("command-line");
+  }
+
+  private trackScript(work: Promise<void>): Promise<void> {
+    const runtime = this.runtime.script, editor = this.scriptEditor;
+    const pending = work.catch((error: unknown) => { if (!this.disposed) runtime?.report(error, editor ?? undefined); }).finally(() => {
+      this.scriptTasks.delete(pending);
+      if (!this.disposed && !this.busy) this.flushQueuedKeys();
+    });
+    this.scriptTasks.add(pending); return pending;
+  }
+
+  private scriptSpecials(): Map<string, VimValue> {
+    return new Map<string, VimValue>([["count", integer(Number(this.countDigits || 0))], ["count1", integer(Number(this.countDigits || 1))], ["register", this.activeRegister], ["operator", this.pendingOperator ? operatorKey(this.pendingOperator.name) : ""]]);
+  }
+
+  private async runScriptKeys(value: string, remap: boolean): Promise<void> {
+    if (++this.scriptInputDepth > this.runtime.options.maxmapdepth) { this.scriptInputDepth--; throw new Error("E223: Recursive mapping exceeded maxmapdepth"); }
+    const keys = tokenizeVimKeys(value.replaceAll(String.fromCharCode(27), "<Esc>").replaceAll("\r", "<CR>").replaceAll(String.fromCharCode(21), "<C-u>"));
+    try {
+      for (let index = 0; index < keys.length && !this.disposed; index++) {
+        const runtime = this.runtime.script, editor = this.scriptEditor;
+        const mode = this.modeValue === "replace" ? "insert" : this.mode;
+        const mapping = runtime && editor && (remap || keys[index] === "<Plug>") ? runtime.effectiveMappings(editor).filter((m) => m.modes.includes(mode) && m.lhs.every((key, at) => keys[index + at] === key)).sort((a, b) => b.lhs.length - a.lhs.length)[0] : undefined;
+        if (mapping && runtime && editor) {
+          const expansion = await runtime.mappingValue(mapping, editor, this.scriptSpecials());
+          if (mapping.silent) this.scriptSilentDepth++;
+          try { await this.runScriptKeys(expansion, mapping.recursive); } finally { if (mapping.silent) this.scriptSilentDepth--; }
+          index += mapping.lhs.length - 1; continue;
+        }
+        const before = this.scriptLastCommand;
+        const abbreviated = remap && this.modeValue === "insert" && isLiteralTextToken(keys[index]) && this.expandAbbreviation(keys[index]);
+        if (!abbreviated) this.replayMacroKey(keys[index], false);
+        if (this.scriptLastCommand && this.scriptLastCommand !== before) await this.scriptLastCommand;
+        if (this.pendingRead) await this.pendingRead;
+      }
+    } finally { this.scriptInputDepth--; }
+  }
+
   private changeNumber(delta: number): void {
     const line = this.buffer.lineAt(this.cursor());
     const start = this.cursor() - line.from;
@@ -2789,6 +2991,7 @@ export class VimEngine {
     }
     this.buffer.apply(edits, selections);
     this.mapDocumentPositions(positionMap ?? ((position) => mapPositionThroughEdits(position, edits)));
+    this.notifyScriptUpdate(true, !!selections);
   }
 
   private setCursor(position: number, allowLineEnd = false): void {
@@ -2796,7 +2999,9 @@ export class VimEngine {
     const line = this.buffer.lineAt(safe);
     const maximum = allowLineEnd ? line.to : Math.max(line.from, previousCharacterPosition(this.buffer.text(), line.to));
     const cursor = clamp(safe, line.from, maximum);
+    const changed = this.cursor() !== cursor;
     this.buffer.setSelections([{ anchor: cursor, head: cursor }]);
+    if (changed) this.notifyScriptUpdate(false, true);
   }
 
   private setMode(mode: VimMode): void {
@@ -2837,6 +3042,7 @@ export class VimEngine {
   }
 
   private emitStatus(): void {
+    if (this.scriptSilentDepth && this.modeValue === "command-line") return;
     this.hooks.onStatus?.(this.status);
     for (const listener of this.subscribers) listener(this.status);
   }
@@ -2904,6 +3110,7 @@ function visualSnapshotsEqual(
 }
 
 function operatorKey(name: OperatorName): string {
+  if (name === "script") return "g@";
   if (name === "delete") return "d";
   if (name === "change") return "c";
   if (name === "yank") return "y";
@@ -2958,6 +3165,7 @@ function isLiteralTextToken(key: string): boolean {
 
 function cloneRuntime(runtime: VimRuntimeConfig): VimRuntimeConfig {
   return {
+    script: runtime.script,
     mapleader: runtime.mapleader,
     options: { ...runtime.options },
     mappings: runtime.mappings,

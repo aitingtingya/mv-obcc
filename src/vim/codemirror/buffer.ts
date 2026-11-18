@@ -80,6 +80,17 @@ export class CodeMirrorVimBuffer implements VimBuffer {
 
   get readOnly(): boolean { return this.view.state.facet(EditorState.readOnly); }
 
+  saveScriptView(): { topline: number; leftcol: number } {
+    const block = this.view.lineBlockAtHeight(this.view.scrollDOM.scrollTop);
+    return { topline: this.view.state.doc.lineAt(block.from).number, leftcol: Math.round(this.view.scrollDOM.scrollLeft / this.view.defaultCharacterWidth) };
+  }
+
+  restoreScriptView(position: { topline: number; leftcol: number }): void {
+    const line = this.view.state.doc.line(Math.max(1, Math.min(this.lineCount, position.topline)));
+    this.view.scrollDOM.scrollTop = this.view.lineBlockAt(line.from).top;
+    this.view.scrollDOM.scrollLeft = position.leftcol * this.view.defaultCharacterWidth;
+  }
+
   displayLineMotion(position: number, direction: -1 | 1, count: number): number {
     let selection = EditorSelection.cursor(position);
     for (let index = 0; index < count; index += 1) {

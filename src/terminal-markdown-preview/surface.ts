@@ -1,20 +1,29 @@
 import {
   MarkdownView, WorkspaceLeaf, WorkspaceSplit, setIcon,
-  type App, type TFile, type WorkspaceContainer,
+  type App, type Menu, type TFile, type WorkspaceContainer,
 } from "obsidian";
 import { t } from "../i18n";
 import { previewFiles } from "./storage";
+import { mountTerminalPreview } from "./layer";
 
 interface FloatingWorkspace {
   rootSplit: WorkspaceContainer;
   floatingSplit?: WorkspaceContainer & { children?: WorkspaceContainer[] };
 }
 
-let layer = 60;
+// Obsidian's pane menu presents its DOM outside the Markdown leaf. The host's
+// own hit test follows the complete submenu chain, including third-party items.
+interface PaneMenu extends Menu {
+  parentEl: HTMLElement | null;
+  isInside(node: Node): boolean;
+}
 
 /** Owns one native Markdown leaf, its temporary file, and its floating UI. */
 export class TerminalPreviewSurface {
   private readonly root: HTMLElement;
+  private readonly layer: ReturnType<typeof mountTerminalPreview>;
+  private paneMenu: WeakRef<PaneMenu> | undefined;
+  private menuDismissalTurn: number | null = null;
   private readonly win: Window & typeof window;
   private readonly host: HTMLElement;
   private readonly status: HTMLElement;
@@ -76,15 +85,28 @@ export class TerminalPreviewSurface {
     this.saveNote.classList.add("mod-cta");
     toolbar.append(copy, this.saveNote);
     root.append(titlebar, this.host, this.status, toolbar);
-    root.addEventListener("pointerdown", () => this.activate(), { capture: true });
+    this.layer = mountTerminalPreview(root);
+    root.addEventListener("pointerdown", () => this.layer.activate(), { capture: true });
+    const menuEvent = app.workspace.on("file-menu", (menu, _file, source, leaf) => {
+      if (source !== "more-options" || !leaf || leaf !== this.leaf) return;
+      this.paneMenu = new WeakRef(menu as PaneMenu);
+      // Obsidian's window keymap can hide the menu before the same Escape
+      // reaches our document listener. Let that entire event finish first.
+      menu.register(() => {
+        if (this.menuDismissalTurn !== null) win.clearTimeout(this.menuDismissalTurn);
+        this.menuDismissalTurn = win.setTimeout(() => { this.menuDismissalTurn = null; }, 0);
+      });
+    });
     this.installDrag(titlebar);
     const outside = (event: PointerEvent) => {
-      if (event.button === 0 && !this.pinned && !root.contains(event.target as Node)) {
+      const target = event.target as Node;
+      if (event.button === 0 && !this.pinned && !root.contains(target) && !this.openPaneMenu()?.isInside(target)) {
         this.run(() => this.close());
       }
     };
     const escape = (event: KeyboardEvent) => {
-      if (event.key !== "Escape" || this.pinned || !root.contains(doc.activeElement)) return;
+      if (event.key !== "Escape" || event.defaultPrevented || this.pinned || !root.contains(doc.activeElement)) return;
+      if (this.openPaneMenu() || this.menuDismissalTurn !== null) return;
       event.preventDefault();
       event.stopPropagation();
       this.run(() => this.close());
@@ -94,12 +116,11 @@ export class TerminalPreviewSurface {
     const observer = new win.ResizeObserver(() => this.leaf?.onResize());
     observer.observe(root);
     this.cleanups.push(
+      () => app.workspace.offref(menuEvent),
       () => doc.removeEventListener("pointerdown", outside, true),
       () => doc.removeEventListener("keydown", escape, true),
       () => observer.disconnect(),
     );
-    doc.body.appendChild(root);
-    this.activate();
     root.focus({ preventScroll: true });
   }
 
@@ -143,7 +164,7 @@ export class TerminalPreviewSurface {
         });
       }
       if (!this.closing) {
-        this.activate();
+        this.layer.activate();
         this.markdownView().editor.focus();
       }
     });
@@ -206,7 +227,10 @@ export class TerminalPreviewSurface {
     if (this.closing) return this.closing;
     this.dragCleanup?.();
     for (const cleanup of this.cleanups.splice(0)) cleanup();
-    this.root.remove();
+    this.openPaneMenu()?.hide();
+    if (this.menuDismissalTurn !== null) this.win.clearTimeout(this.menuDismissalTurn);
+    this.paneMenu = undefined;
+    this.layer.remove();
     this.closing = this.enqueue(async () => {
       if (this.leaf) {
         await this.leaf.setViewState({ type: "empty" });
@@ -232,7 +256,10 @@ export class TerminalPreviewSurface {
     this.pin.setAttribute("aria-pressed", String(this.pinned));
   }
 
-  private activate(): void { this.root.style.zIndex = String(++layer); }
+  private openPaneMenu(): PaneMenu | undefined {
+    const menu = this.paneMenu?.deref();
+    return menu?.parentEl && this.root.contains(menu.parentEl) ? menu : undefined;
+  }
 
   private installDrag(handle: HTMLElement): void {
     handle.addEventListener("pointerdown", (event: PointerEvent) => {

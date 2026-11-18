@@ -17,6 +17,7 @@ import type { DshAutoOpenRegion } from "../settings";
 import type { SelectionState } from "../../../types";
 import {
   DshAuthorizationRequiredError,
+  isDshStartCancelled,
   normalizeDshLaunchUrl,
   normalizeDshWebUrl,
   sameDshWebUrl,
@@ -404,6 +405,7 @@ export class DshWebView extends ItemView {
           ? requestedLaunch
           : confirmed ?? "";
       } catch (error) {
+        if (isDshStartCancelled(error)) return;
         if (error instanceof DshAuthorizationRequiredError) {
           // The endpoint is ours and still running; only its stored session is
           // unusable. Surface the authorization state — never fall through to
@@ -421,6 +423,7 @@ export class DshWebView extends ItemView {
       try {
         url = await feature.resolveDshViewUrl();
       } catch (error) {
+        if (isDshStartCancelled(error)) return;
         this.loadFailed = true;
         this.renderStatus();
         new Notice(t("mv-agent 重连失败：{message}", {

@@ -543,6 +543,7 @@ class VimEditorController {
     }
     const engine = this.engineValue;
     if (!engine) return;
+    engine.notifyScriptUpdate(update.docChanged, update.selectionSet);
     const producedByVim = (transaction: (typeof update.transactions)[number]) =>
       transaction.annotation(vimTransaction) === true;
     const anyVimTransaction = update.transactions.some(producedByVim);
